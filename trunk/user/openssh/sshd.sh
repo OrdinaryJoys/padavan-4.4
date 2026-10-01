@@ -4,7 +4,6 @@ dir_storage="/etc/storage/openssh"
 sshd_config="$dir_storage/sshd_config"
 
 rsa_key="$dir_storage/ssh_host_rsa_key"
-dsa_key="$dir_storage/ssh_host_dsa_key"
 ed25519_key="$dir_storage/ssh_host_ed25519_key"
 
 func_create_config()
@@ -27,7 +26,6 @@ func_create_config()
 
 # HostKeys for protocol version 2
 HostKey ${rsa_key}
-HostKey ${dsa_key}
 #HostKey ${dir_storage}/ssh_host_ecdsa_key
 HostKey ${ed25519_key}
 
@@ -123,7 +121,7 @@ func_start()
 		[ -f "${old_path}/${i}.pub" ] && mv -n "${old_path}/${i}.pub" "$dir_storage"
 	done
 
-	if [ ! -f "$rsa_key" ] || [ ! -f "$dsa_key" ] || [ ! -f "$ed25519_key" ] ; then
+	if [ ! -f "$rsa_key" ] || [ ! -f "$ed25519_key" ] ; then
 		/usr/bin/ssh-keygen -A
 	fi
 

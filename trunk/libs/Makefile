@@ -21,6 +21,7 @@ DESTDIR=$(ROOTDIR)/stage
 dir_y =
 dir_n =
 dir_  =
+dir_$(CONFIG_FIRMWARE_INCLUDE_OPENVPN) += libcap-ng
 
 LIBS_INCLUDE_LIBLZO=n
 LIBS_INCLUDE_LIBICONV=n
