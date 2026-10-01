@@ -1,15 +1,23 @@
-SRC_NAME=openvpn-2.5.2
+SRC_NAME=openvpn-2.6.23
+SRC_URL=https://github.com/OpenVPN/openvpn/releases/download/v2.6.23/$(SRC_NAME).tar.gz
+SRC_SHA256=4041c709162bec1325abf5aa8cf27a255cc477c634b15ee310411c701fc40a96
 
 CFLAGS += -ffunction-sections -fdata-sections -fvisibility=hidden
 LDFLAGS += -Wl,--gc-sections
 
-all: extract_test config_test
+all: download_test extract_test config_test
 	$(MAKE) -j$(HOST_NCPU) -C $(SRC_NAME)
+
+download_test:
+	( if [ ! -f $(SRC_NAME).tar.gz ]; then \
+		wget -t5 --timeout=20 -O $(SRC_NAME).tar.gz $(SRC_URL); \
+	fi; \
+	echo "$(SRC_SHA256)  $(SRC_NAME).tar.gz" | sha256sum -c -; \
+	)
 
 extract_test:
 	( if [ ! -d $(SRC_NAME) ]; then \
-		tar -xf $(SRC_NAME).tar.xz; \
-		patch -d $(SRC_NAME) -p1 < $(SRC_NAME).patch ; \
+		tar -xf $(SRC_NAME).tar.gz; \
 	fi )
 
 config_test:
@@ -21,7 +29,7 @@ config_test:
 
 configure:
 	( cd $(SRC_NAME) ; \
-	autoreconf -fi ; \
+	PKG_CONFIG_LIBDIR="$(STAGEDIR)/lib/pkgconfig" \
 	IFCONFIG=/sbin/ifconfig \
 	ROUTE=/sbin/route \
 	NETSTAT=/bin/netstat \
@@ -36,9 +44,10 @@ configure:
 		--disable-iproute2 \
 		--disable-unit-tests \
 		--disable-management \
+		--disable-dco \
+		--disable-lz4 \
 		--enable-small \
 		--enable-multihome \
-		--enable-pf \
 		--enable-fragment \
 		--enable-def-auth \
 		--enable-lzo \

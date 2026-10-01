@@ -25,9 +25,9 @@ TA_KEY=ta.key
 STC2_KEY=stc2.key
 ECPARAM=ecparam.pem
 ## number of bits to use when generate new key
-RSA_BITS=1024
+RSA_BITS=2048
 ## number of bits for prime
-DH_BITS=1024
+DH_BITS=2048
 ## CA common name
 CA_CN="OpenVPN CA"
 ## temp config file with cert extensions
@@ -39,9 +39,8 @@ if [ -z "$CRT_PATH_CLI" ] ; then
   CRT_PATH_CLI="$CRT_PATH/client"
 fi
 
-# Check if -sha256 is supported
-DGST_ALG="-sha1"
-openssl list -1 --digest-commands 2>&1 | grep -q 'sha256' && DGST_ALG="-sha256"
+# OpenSSL 3.5 provides SHA-256 for newly generated certificates.
+DGST_ALG="-sha256"
 
 func_help() {
   local BOLD="echo -ne \\033[1m"

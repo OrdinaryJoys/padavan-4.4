@@ -1,5 +1,6 @@
-SRC_NAME=curl-7.75.0
-SRC_URL=https://github.com/curl/curl/releases/download/curl-7_75_0/curl-7.75.0.tar.xz
+SRC_NAME=curl-8.22.0
+SRC_URL=https://curl.se/download/$(SRC_NAME).tar.xz
+SRC_SHA256=f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7
 
 LDFLAGS += -Wl,-rpath-link=$(STAGEDIR)/lib
 
@@ -8,13 +9,14 @@ all: download_test extract_test config_test
 
 download_test:
 	( if [ ! -f $(SRC_NAME).tar.xz ]; then \
-		wget -t5 --timeout=20 --no-check-certificate -O $(SRC_NAME).tar.xz $(SRC_URL); \
-	fi )
+		wget -t5 --timeout=20 -O $(SRC_NAME).tar.xz $(SRC_URL); \
+	fi; \
+	echo "$(SRC_SHA256)  $(SRC_NAME).tar.xz" | sha256sum -c -; \
+	)
 
 extract_test:
 	( if [ ! -d $(SRC_NAME) ]; then \
 		tar xf $(SRC_NAME).tar.xz; \
-		patch -d $(SRC_NAME) -p1 -i ../no_docs_test.patch; \
 	fi )
 
 config_test:
@@ -26,6 +28,7 @@ config_test:
 
 configure:
 	( cd $(SRC_NAME) ; \
+	PKG_CONFIG_LIBDIR="$(STAGEDIR)/lib/pkgconfig" \
 	./configure \
 		--prefix=$(STAGEDIR) \
 		--enable-static \
@@ -44,21 +47,24 @@ configure:
 		--disable-dict \
 		--disable-ares \
 		--disable-debug \
-		--disable-curldebug \
+		--disable-docs \
 		--disable-manual \
-		--disable-verbose \
 		--disable-tls-srp \
 		--disable-libcurl-option \
 		--disable-threaded-resolver \
 		--without-gnutls \
-		--without-ca-bundle \
-		--without-libidn \
+		--with-ca-bundle=/etc/ssl/cert.pem \
+		--without-libidn2 \
 		--without-libssh2 \
-		--without-krb4 \
-		--without-nss \
-		--with-random=/dev/urandom \
+		--without-libssh \
+		--without-libpsl \
+		--without-brotli \
+		--without-zstd \
+		--without-nghttp2 \
+		--without-nghttp3 \
+		--without-ngtcp2 \
 		--with-zlib=$(STAGEDIR) \
-		--with-ssl=$(STAGEDIR) \
+		--with-openssl=$(STAGEDIR) \
 		--host=$(HOST_TARGET) \
 		--build=$(HOST_BUILD) ; \
 	)
