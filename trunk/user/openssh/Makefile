@@ -1,5 +1,6 @@
-SRC_NAME=openssh-8.1p1
-SRC_URL=https://ftp.usa.openbsd.org/pub/OpenBSD/OpenSSH/portable/$(SRC_NAME).tar.gz
+SRC_NAME=openssh-9.9p2
+SRC_URL=https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/$(SRC_NAME).tar.gz
+SRC_SHA256=91aadb603e08cc285eddf965e1199d02585fa94d994d6cae5b41e1721e215673
 
 CFLAGS += -ffunction-sections -fdata-sections
 LDFLAGS += -Wl,--gc-sections
@@ -11,8 +12,10 @@ all: download_test extract_test config_test
 
 download_test:
 	( if [ ! -f $(SRC_NAME).tar.gz ]; then \
-		wget -t5 --timeout=20 --no-check-certificate -O $(SRC_NAME).tar.gz $(SRC_URL); \
-	fi )
+		wget -t5 --timeout=20 -O $(SRC_NAME).tar.gz $(SRC_URL); \
+	fi; \
+	echo "$(SRC_SHA256)  $(SRC_NAME).tar.gz" | sha256sum -c -; \
+	)
 
 extract_test:
 	( if [ ! -d $(SRC_NAME) ]; then \
@@ -39,6 +42,9 @@ configure:
 		--with-privsep-path=/var/empty \
 		--with-privsep-user=sshd \
 		--with-sandbox=no \
+		--with-ssl-dir=$(STAGEDIR) \
+		--without-libedit \
+		--without-security-key-builtin \
 		--without-pam \
 		--without-selinux \
 		--without-bsd-auth \
@@ -62,6 +68,7 @@ clean:
 	rm -f config_done
 
 romfs:
+	mkdir -p $(INSTALLDIR)/usr/libexec
 ifeq ($(CONFIG_FIRMWARE_INCLUDE_OPENSSH),y)
 	mkdir -p $(INSTALLDIR)/etc_ro/ssh
 	$(ROMFSINST) $(THISDIR)/$(SRC_NAME)/moduli /etc_ro/ssh/moduli
@@ -69,6 +76,7 @@ ifeq ($(CONFIG_FIRMWARE_INCLUDE_OPENSSH),y)
 	$(ROMFSINST) $(THISDIR)/$(SRC_NAME)/scp /usr/bin/scp
 	$(ROMFSINST) $(THISDIR)/$(SRC_NAME)/ssh /usr/bin/ssh
 	$(ROMFSINST) $(THISDIR)/$(SRC_NAME)/ssh-keygen /usr/bin/ssh-keygen
+	$(ROMFSINST) $(THISDIR)/$(SRC_NAME)/sshd-session /usr/libexec/sshd-session
 	$(ROMFSINST) $(THISDIR)/$(SRC_NAME)/sshd /usr/sbin/sshd
 	$(ROMFSINST) -p +x /usr/bin/sshd.sh
 endif

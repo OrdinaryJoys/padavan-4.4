@@ -1,6 +1,6 @@
-SRC_NAME=openssl-1.1.1w
-SRC_URL=https://www.openssl.org/source/old/1.1.1/$(SRC_NAME).tar.gz
-SRC_SHA256=cf3098950cb4d853ad95c0841f1f9c6d3dc102dccfcacd521d93925208b76ac8
+SRC_NAME=openssl-3.5.9
+SRC_URL=https://github.com/openssl/openssl/releases/download/$(SRC_NAME)/$(SRC_NAME).tar.gz
+SRC_SHA256=603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a
 
 # openssl use CROSS_COMPILE prefix
 CC = gcc
@@ -10,18 +10,18 @@ CXX = g++
 
 COPTS = $(CPUFLAGS) -O3 $(filter-out -O%, $(CFLAGS))
 COPTS += $(if $(CONFIG_IPV6),-DOPENSSL_USE_IPV6=1,)
-COPTS += -DOPENSSL_PREFER_CHACHA_OVER_GCM
 
 CFLAGS := $(COPTS)
 CXXFLAGS := $(COPTS)
 
-OPENSSL_CIPHERS = no-capieng no-cms no-rfc3779 no-seed \
-  no-ec2m no-err no-threads no-idea no-rc5 no-rmd160 \
-  no-static-engine no-md2 no-sse2 no-dso no-ts no-mdc2 \
-  no-cast no-whirlpool no-sctp no-srp no-ssl2 no-ssl3 \
-  no-async no-blake2 no-hw-padlock no-aria no-hw \
-  no-devcryptoeng no-ssl3-method no-tests no-sm2 \
-  no-sm3 no-sm4 no-afalgeng no-comp
+# Built-in providers avoid a build-host module path in the router image.
+# Retain deprecated APIs for existing Padavan consumers and thread support.
+OPENSSL_CIPHERS = no-tests no-docs no-fips no-module no-legacy \
+  no-cmp no-cms no-ts no-rfc3779 no-sctp no-srp no-ssl3 \
+  no-ssl3-method no-async no-dynamic-engine no-afalgeng \
+  no-devcryptoeng no-padlockeng no-ml-dsa no-ml-kem no-slh-dsa \
+  no-sm2 no-sm3 no-sm4 no-aria no-seed no-idea no-rc5 no-md2 \
+  no-mdc2 no-cast no-whirlpool no-camellia no-blake2
 
 ifneq ($(CONFIG_FIRMWARE_INCLUDE_SSWAN),y)
 OPENSSL_CIPHERS += no-rc2
@@ -44,7 +44,6 @@ download_test:
 extract_test:
 	( if [ ! -d $(SRC_NAME) ]; then \
 		tar -xf $(SRC_NAME).tar.gz; \
-		patch -d $(SRC_NAME) -p1 < openssl-1.1.1k.patch; \
 	fi )
 
 config_test:
@@ -61,6 +60,7 @@ configure:
 		shared \
 		--prefix=$(STAGEDIR) \
 		--openssldir=/etc/ssl \
+		--libdir=lib \
 		$(OPENSSL_CIPHERS) ; \
 	)
 
@@ -79,6 +79,7 @@ install:
 romfs:
 	cp -fP $(DESTDIR)/lib/libssl.so* $(ROMFSDIR)/lib
 	cp -fP $(DESTDIR)/lib/libcrypto.so* $(ROMFSDIR)/lib
+	cp -fL $(CONFIG_CROSS_COMPILER_ROOT)/mipsel-linux-uclibc/sysroot/lib/libatomic.so.1 $(ROMFSDIR)/lib/libatomic.so.1
 	$(ROMFSINST) /etc_ro/openssl.cnf
 ifeq ($(CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE),y)
 	$(ROMFSINST) $(SRC_NAME)/apps/openssl /usr/bin/openssl
