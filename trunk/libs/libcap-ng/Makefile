@@ -25,6 +25,7 @@ config_test:
 
 configure:
 	( cd $(SRC_NAME) && \
+	touch NEWS && \
 	autoreconf -fi && \
 	./configure \
 		--prefix=$(STAGEDIR) \
