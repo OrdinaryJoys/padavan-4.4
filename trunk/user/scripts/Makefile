@@ -4,6 +4,7 @@ all:
 clean:
 
 romfs:
+	$(ROMFSINST) $(THISDIR)/ca-certificates.crt /etc_ro/ca-certificates.crt
 	./makedevlinks $(ROMFSDIR)
 	$(ROMFSINST) /sbin/dev_init.sh
 	$(ROMFSINST) /sbin/reset_ss.sh

@@ -1025,7 +1025,8 @@ write_inadyn_conf(const char *conf_file)
 		fprintf(fp, "period = %d\n", i_ddns_period);
 		fprintf(fp, "forced-update = %d\n", i_ddns_forced);
 		fprintf(fp, "allow-ipv6 = %s\n", i_ddns_ipv6 ? "true" : "false");
-		fprintf(fp, "secure-ssl = false\n");
+		fprintf(fp, "secure-ssl = true\n");
+		fprintf(fp, "ca-trust-file = \"/etc/ssl/cert.pem\"\n");
 		fprintf(fp, "broken-rtc = true\n");
 
 		/* DDNS 1*/
@@ -1174,4 +1175,3 @@ manual_ddns_hostname_check(void)
 {
 	nvram_set_temp("ddns_return_code", "inadyn_unsupport");
 }
-

@@ -1,5 +1,6 @@
-SRC_NAME=openssl-1.1.1k
-SRC_URL=https://www.openssl.org/source/$(SRC_NAME).tar.gz
+SRC_NAME=openssl-1.1.1w
+SRC_URL=https://www.openssl.org/source/old/1.1.1/$(SRC_NAME).tar.gz
+SRC_SHA256=cf3098950cb4d853ad95c0841f1f9c6d3dc102dccfcacd521d93925208b76ac8
 
 # openssl use CROSS_COMPILE prefix
 CC = gcc
@@ -35,13 +36,15 @@ all: download_test extract_test config_test
 
 download_test:
 	( if [ ! -f $(SRC_NAME).tar.gz ]; then \
-		wget -t5 --timeout=20 --no-check-certificate -O $(SRC_NAME).tar.gz $(SRC_URL); \
-	fi )
+		wget -t5 --timeout=20 -O $(SRC_NAME).tar.gz $(SRC_URL); \
+	fi; \
+	echo "$(SRC_SHA256)  $(SRC_NAME).tar.gz" | sha256sum -c -; \
+	)
 
 extract_test:
 	( if [ ! -d $(SRC_NAME) ]; then \
 		tar -xf $(SRC_NAME).tar.gz; \
-		patch -d $(SRC_NAME) -p1 < $(SRC_NAME).patch; \
+		patch -d $(SRC_NAME) -p1 < openssl-1.1.1k.patch; \
 	fi )
 
 config_test:
@@ -80,4 +83,3 @@ romfs:
 ifeq ($(CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE),y)
 	$(ROMFSINST) $(SRC_NAME)/apps/openssl /usr/bin/openssl
 endif
-
