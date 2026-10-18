@@ -1,5 +1,6 @@
-SRC_NAME = wireguard-tools-1.0.20210914
-SRC_URL = https://git.zx2c4.com/wireguard-tools/snapshot/wireguard-tools-1.0.20210914.tar.xz
+SRC_NAME = wireguard-tools-1.0.20260223
+SRC_URL = https://git.zx2c4.com/wireguard-tools/snapshot/wireguard-tools-1.0.20260223.tar.xz
+SRC_SHA256 = af459827b80bfd31b83b08077f4b5843acb7d18ad9a33a2ef532d3090f291fbf
 THISDIR = $(shell pwd)
 
 all: download_test extract_test
@@ -7,8 +8,10 @@ all: download_test extract_test
 
 download_test:
 	( if [ ! -f $(SRC_NAME).tar.xz ]; then \
-		wget -t5 --timeout=20 --no-check-certificate -O $(SRC_NAME).tar.xz $(SRC_URL); \
-	fi )
+		wget -t5 --timeout=20 -O $(SRC_NAME).tar.xz $(SRC_URL); \
+	fi; \
+	echo "$(SRC_SHA256)  $(SRC_NAME).tar.xz" | sha256sum -c -; \
+	)
 
 extract_test:
 	( if [ ! -d $(SRC_NAME) ]; then \

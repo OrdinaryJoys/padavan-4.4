@@ -10,6 +10,10 @@ CXX = g++
 
 COPTS = $(CPUFLAGS) -O3 $(filter-out -O%, $(CFLAGS))
 COPTS += $(if $(CONFIG_IPV6),-DOPENSSL_USE_IPV6=1,)
+# MT7621 (MIPS 1004Kc) has no AES instructions: ChaCha20-Poly1305 runs ~3.7x
+# faster than AES-GCM there (measured 32.9 MB/s vs 8.8 MB/s), so prefer it when
+# this build acts as the TLS server (HTTPS management, VPN).
+COPTS += -DOPENSSL_PREFER_CHACHA_OVER_GCM
 
 CFLAGS := $(COPTS)
 CXXFLAGS := $(COPTS)
