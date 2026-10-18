@@ -32,6 +32,10 @@
 #include "codelength.h"
 #include "macros.h"
 
+#ifndef MIN
+#define MIN(x,y) (((x)<(y))?(x):(y))
+#endif /* MIN */
+
 /* SSDP ip/port */
 #define SSDP_PORT (1900)
 #define SSDP_MCAST_ADDR ("239.255.255.250")
@@ -839,6 +843,7 @@ ProcessSSDPData(int s, const char *bufr, int n,
 	int st_ver = 0;
 	char sender_str[64];
 	char ver_str[4];
+	char atoi_buffer[8];
 	const char * announced_host = NULL;
 #ifdef UPNP_STRICT
 #ifdef ENABLE_IPV6
@@ -886,15 +891,19 @@ ProcessSSDPData(int s, const char *bufr, int n,
 			{
 				st = bufr+i+3;
 				st_len = 0;
-				while((*st == ' ' || *st == '\t') && (st < bufr + n))
+				while((st < bufr + n) && (*st == ' ' || *st == '\t'))
 					st++;
-				while(st[st_len]!='\r' && st[st_len]!='\n'
-				     && (st + st_len < bufr + n))
+				while((st + st_len < bufr + n)
+				      && (st[st_len]!='\r' && st[st_len]!='\n'))
 					st_len++;
 				l = st_len;
 				while(l > 0 && st[l-1] != ':')
 					l--;
-				st_ver = atoi(st+l);
+				/* copy at most 7 chars into a NUL-terminated buffer: the
+				 * SSDP payload is not NUL-terminated (upstream 2017 fix) */
+				memset(atoi_buffer, 0, sizeof(atoi_buffer));
+				memcpy(atoi_buffer, st + l, MIN((int)(sizeof(atoi_buffer) - 1), st_len - l));
+				st_ver = atoi(atoi_buffer);
 				syslog(LOG_DEBUG, "ST: %.*s (ver=%d)", st_len, st, st_ver);
 				/*j = 0;*/
 				/*while(bufr[i+j]!='\r') j++;*/

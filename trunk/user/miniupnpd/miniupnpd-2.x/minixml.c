@@ -161,7 +161,8 @@ static void parseelt(struct xmlparser * p)
 						if (p->xml >= p->xmlend)
 							return;
 					}
-					if(memcmp(p->xml, "<![CDATA[", 9) == 0)
+					/* CDATA is at least 9 + 3 characters: <![CDATA[ ]]>
+					if((p->xmlend >= (p->xml + (9 + 3))) && (memcmp(p->xml, "<![CDATA[", 9) == 0))
 					{
 						/* CDATA handling */
 						p->xml += 9;

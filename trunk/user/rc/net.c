@@ -240,6 +240,13 @@ start_udpxy(char *wan_ifname)
 	if (nvram_get_int("udpxy_enable_x") < 1024)
 		return;
 
+	/* IPTV 关闭后 MAN 接口不再创建，此时不要拉起 udpxy（否则它会在
+	 * 不存在的接口上重试）。接口存在才启动，保持服务本身不变。 */
+	if (!is_interface_exist(wan_ifname)) {
+		logmessage(LOGNAME, "udpxy: %s not present, skip start", wan_ifname);
+		return;
+	}
+
 	eval("/usr/sbin/udpxy",
 		"-m", wan_ifname,
 		"-p", nvram_safe_get("udpxy_enable_x"),
