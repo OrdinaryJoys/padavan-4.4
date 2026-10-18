@@ -129,6 +129,15 @@ func_start()
 		func_create_config
 	fi
 
+	# Migration for configs written by older firmware: DSA host keys are no
+	# longer generated (OpenSSH ships DSA disabled), so drop a dangling HostKey
+	# line instead of letting sshd log "Could not load host key" on every start.
+	# Every other setting in the file is left untouched.
+	if [ -f "$sshd_config" ] && [ ! -f "$dir_storage/ssh_host_dsa_key" ] \
+		&& grep -q 'ssh_host_dsa_key' "$sshd_config" ; then
+		sed -i '/^[[:space:]]*HostKey[[:space:]].*ssh_host_dsa_key/d' "$sshd_config"
+	fi
+
 	touch /var/run/utmp
 
 	if [ -n "$1" ] ; then
