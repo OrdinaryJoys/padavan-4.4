@@ -791,6 +791,10 @@ start_upnp(void)
 
 	fclose(fp);
 
+	/* xt_DSCP is a loadable module on this kernel and nothing loads it at boot;
+	 * miniupnpd writes "-j DSCP" peer rules, so register the target first. */
+	doSystem("modprobe xt_DSCP 2>/dev/null");
+
 	return eval("/usr/bin/miniupnpd");
 }
 
