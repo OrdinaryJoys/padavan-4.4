@@ -913,6 +913,13 @@ ProcessSSDPData(int s, const char *bufr, int n,
 				     && (mx + mx_len < bufr + n))
 					mx_len++;
 				mx_value = atoi(mx);
+				/* UPnP DA 2.0: MX must be 1..5; 0/negative is invalid.
+				 * Drop the search instead of answering immediately.
+				 * Mirrors the upstream fix for CVE-2026-107159. */
+				if(mx_value <= 0) {
+					syslog(LOG_WARNING, "MX: %.*s (value=%d) INVALID (must be 1..5)", mx_len, mx, mx_value);
+					return;
+				}
 				syslog(LOG_DEBUG, "MX: %.*s (value=%d)", mx_len, mx, mx_value);
 			}
 #endif /* defined(UPNP_STRICT) || defined(DELAY_MSEARCH_RESPONSE) */

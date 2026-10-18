@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <limits.h>
 #include <string.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -227,9 +228,17 @@ ParseHttpHeaders(struct upnphttp * h)
 				p = colon;
 				while((*p < '0' || *p > '9') && (*p != '\r') && (*p != '\n'))
 					p++;
-				h->req_contentlen = atoi(p);
-				if(h->req_contentlen < 0) {
-					syslog(LOG_WARNING, "ParseHttpHeaders() invalid Content-Length %d", h->req_contentlen);
+				/* Only parse when a digit is actually present and clamp to
+				 * INT_MAX: mirrors upstream hardening (CVE follow-ups). */
+				if(*p >= '0' && *p <= '9') {
+					unsigned long ul = strtoul(p, NULL, 10);
+					if(ul > INT_MAX) {
+						h->req_contentlen = INT_MAX;
+						syslog(LOG_WARNING, "ParseHttpHeaders() Content-Length overflow : %lu", ul);
+					} else {
+						h->req_contentlen = (int)ul;
+					}
+				} else {
 					h->req_contentlen = 0;
 				}
 				/*printf("*** Content-Lenght = %d ***\n", h->req_contentlen);
