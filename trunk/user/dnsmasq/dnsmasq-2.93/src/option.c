@@ -240,6 +240,7 @@ static const struct myoption opts[] =
     { "filterwin2k", 0, 0, 'f' },
     { "filter-A", 0, 0, LOPT_FILTER_A },
     { "filter-AAAA", 0, 0, LOPT_FILTER_AAAA },
+    { "filter-aaaa", 0, 0, LOPT_FILTER_AAAA }, /* Padavan dnsmasq.sh writes lower case */
     { "filter-rr", 1, 0, LOPT_FILTER_RR },
     { "pid-file", 2, 0, 'x' },
     { "strict-order", 0, 0, 'o' },
@@ -332,6 +333,7 @@ static const struct myoption opts[] =
     { "neg-ttl", 1, 0, LOPT_NEGTTL },
     { "max-ttl", 1, 0, LOPT_MAXTTL },
     { "min-cache-ttl", 1, 0, LOPT_MINCTTL },
+    { "min-ttl", 1, 0, LOPT_MINCTTL }, /* legacy alias kept for existing configs */
     { "max-cache-ttl", 1, 0, LOPT_MAXCTTL },
     { "dhcp-alternate-port", 2, 0, LOPT_ALTPORT },
     { "dhcp-scriptuser", 1, 0, LOPT_SCRIPTUSR },
