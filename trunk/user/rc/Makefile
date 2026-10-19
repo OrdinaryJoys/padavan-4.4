@@ -77,7 +77,7 @@ clean:
 
 romfs:
 	$(ROMFSINST) /sbin/$(EXEC)
-	cd $(INSTALLDIR) && rm -f init && ln -sf sbin/rc init
+	cd $(INSTALLDIR) && ln -sfn sbin/rc init
 	cd $(INSTALLDIR)/sbin && ln -sf rc init
 	cd $(INSTALLDIR)/sbin && ln -sf rc watchdog
 	cd $(INSTALLDIR)/sbin && ln -sf rc gpio_btn
