@@ -416,6 +416,11 @@ static void
 init_sysctl(void)
 {
 	fput_int("/proc/sys/kernel/panic", 1);
+	/* Apply the hardening on every boot, not only when the storage is
+	 * generated for the first time: an upgrade keeps the old start_script,
+	 * so the template alone would never reach existing installations. */
+	fput_int("/proc/sys/kernel/kptr_restrict", 1);
+	fput_int("/proc/sys/kernel/dmesg_restrict", 1);
 
 	fput_int("/proc/sys/net/core/rmem_max", KERNEL_NET_CORE_RMEM);
 	fput_int("/proc/sys/net/core/wmem_max", KERNEL_NET_CORE_WMEM);
