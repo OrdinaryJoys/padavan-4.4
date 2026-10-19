@@ -7,7 +7,7 @@ IPT_VERSION:=iptables-1.8.7
 # --leasefile / --vendorcfg match the keys written by rc into /etc/miniupnpd.conf.
 CONFIG_OPTIONS=--firewall=iptables --leasefile --vendorcfg --iptablespath=$(IPTABLESPATH)
 
-IPTABLESPATH=$(ROOTDIR)/user/iptables/$(IPT_VERSION)
+IPTABLESPATH=$(CURDIR)/../iptables/$(IPT_VERSION)
 
 all:
 	cd $(SRC_NAME) && PKG_CONFIG= ./configure $(CONFIG_OPTIONS)
