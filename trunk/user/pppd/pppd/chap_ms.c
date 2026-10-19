@@ -314,7 +314,11 @@ static void
 chapms_make_response(unsigned char *response, int id, char *our_name,
 		     unsigned char *challenge, char *secret, int secret_len)
 {
-	challenge++;	/* skip length, should be 8 */
+	/* Make sure the challenge is at least 8 bytes (we only use 8) */
+	if (*challenge++ < 8) {
+		*response = 0;	/* generate 0-length response */
+		return;
+	}
 	*response++ = MS_CHAP_RESPONSE_LEN;
 	ChapMS(challenge, secret, secret_len, response);
 }
@@ -380,7 +384,11 @@ chapms2_make_response(unsigned char *response, int id, char *our_name,
 	const struct chapms2_response_cache_entry *cache_entry;
 	unsigned char auth_response[MS_AUTH_RESPONSE_LENGTH+1];
 
-	challenge++;	/* skip length, should be 16 */
+	/* Make sure the challenge is at least 16 bytes (we only use 16) */
+	if (*challenge++ < 16) {
+		*response = 0;	/* generate 0-length response */
+		return;
+	}
 	*response++ = MS_CHAP2_RESPONSE_LEN;
 	cache_entry = chapms2_find_in_response_cache(id, challenge, NULL);
 	if (cache_entry) {
