@@ -5,7 +5,7 @@ IPT_VERSION:=iptables-1.8.7
 
 # IPv6/IGDv2 stay off (Windows does not support IGDv2 and UPnP breaks).
 # --leasefile / --vendorcfg match the keys written by rc into /etc/miniupnpd.conf.
-CONFIG_OPTIONS:=--firewall=iptables --leasefile --vendorcfg
+CONFIG_OPTIONS=--firewall=iptables --leasefile --vendorcfg --iptablespath=$(IPTABLESPATH)
 
 IPTABLESPATH=$(ROOTDIR)/user/iptables/$(IPT_VERSION)
 
