@@ -37,7 +37,6 @@ CPPFLAGS += -D_GNU_SOURCE
 CFLAGS ?= -Os
 CFLAGS += -fno-strict-aliasing
 CFLAGS += -fno-common
-CFLAGS += -fstack-protector
 CFLAGS += -Wall
 CFLAGS += -Wextra -Wstrict-prototypes -Wdeclaration-after-statement
 #CFLAGS += -Wno-missing-field-initializers
