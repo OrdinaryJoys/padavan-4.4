@@ -456,7 +456,13 @@ restart_iptv(int is_ap_mode)
 		viptv_iflast = nvram_safe_get("viptv_ifname");
 		if (*viptv_iflast && is_interface_exist(viptv_iflast))
 			wan_ifname = viptv_iflast;
-		else
+		else if (nvram_get_int("wan_stb_x") == 0) {
+			/* IPTV is disabled: do not fall back to the Internet WAN
+			 * interface, or udpxy/igmpproxy would be started on eth3.2
+			 * and keep running for nothing. */
+			stop_igmpproxy(NULL);
+			return;
+		} else
 			wan_ifname = get_man_ifname(0);
 		start_igmpproxy(wan_ifname);
 	} else {

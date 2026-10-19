@@ -32,6 +32,13 @@
 #include "upnpevents.h"
 #include "upnputils.h"
 
+/* Bound the SOAP/HTTP body we are willing to buffer: a LAN client can send a
+ * huge Content-Length and make EWaitingForHttpContent realloc until the root
+ * process runs out of memory. Mirrors upstream (CONTENT_LENGTH_LIMIT). */
+#ifndef CONTENT_LENGTH_LIMIT
+#define CONTENT_LENGTH_LIMIT (1024*1024)
+#endif
+
 #ifdef ENABLE_HTTPS
 #include <openssl/err.h>
 #include <openssl/engine.h>
@@ -789,6 +796,12 @@ ProcessHttpQuery_upnphttp(struct upnphttp * h)
 	syslog(LOG_INFO, "HTTP REQUEST from %s : %s %s (%s)",
 	       h->clientaddr_str, HttpCommand, HttpUrl, HttpVer);
 	ParseHttpHeaders(h);
+	if(h->req_contentlen > CONTENT_LENGTH_LIMIT) {
+		syslog(LOG_WARNING, "Content-Length over limit : %d", h->req_contentlen);
+		BuildResp2_upnphttp(h, 413, "Content Too Large", 0, 0);
+		SendRespAndClose_upnphttp(h);
+		return;
+	}
 	if(h->req_HostOff > 0 && h->req_HostLen > 0) {
 		syslog(LOG_DEBUG, "Host: %.*s", h->req_HostLen, h->req_buf + h->req_HostOff);
 		p = h->req_buf + h->req_HostOff;
