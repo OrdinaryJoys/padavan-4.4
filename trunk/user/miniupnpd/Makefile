@@ -10,7 +10,7 @@ CONFIG_OPTIONS:=--firewall=iptables --leasefile --vendorcfg
 IPTABLESPATH=$(ROOTDIR)/user/iptables/$(IPT_VERSION)
 
 all:
-	cd $(SRC_NAME) && ./configure $(CONFIG_OPTIONS)
+	cd $(SRC_NAME) && PKG_CONFIG= ./configure $(CONFIG_OPTIONS)
 	$(MAKE) -C $(SRC_NAME) -f Makefile.linux IPTABLESPATH=$(IPTABLESPATH)
 
 clean:
