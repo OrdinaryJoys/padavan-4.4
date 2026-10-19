@@ -795,7 +795,7 @@ start_upnp(void)
 	 * miniupnpd writes "-j DSCP" peer rules, so register the target first. */
 	doSystem("modprobe xt_DSCP 2>/dev/null");
 
-	return eval("/usr/bin/miniupnpd");
+	return eval("/usr/bin/miniupnpd", "-f", "/etc/miniupnpd.conf");
 }
 
 void
