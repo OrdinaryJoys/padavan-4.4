@@ -744,7 +744,19 @@ VOID RTMPDrvClose(VOID *pAdSrc, VOID *net_dev)
 		/* register access before Radio off.*/
 #ifdef RTMP_PCI_SUPPORT
 
-		if (pAd->infType == RTMP_DEV_INF_PCI || pAd->infType == RTMP_DEV_INF_PCIE) {
+		/* RT28xxPciAsicRadioOff() is the legacy RT28xx/MAC helper.  For HIF_MT
+		 * chips (MT7615/MT7622) it is an empty stub that only logs and returns
+		 * FALSE, so calling it here neither powers the RF off nor reports a real
+		 * failure.  Radio on/off for those chips is owned by the hdev/radio_dev
+		 * layer and is driven over the MCU command path
+		 * (RTMP_RADIO_ON_OFF_CTRL() -> HwCtrlRadioOnOff() ->
+		 *  AsicRadioOnOffCtrl() -> MtCmdExtPmStateCtrl(PM5)), which is already
+		 * torn down at this point because RtmpMgmtTaskExit() above killed the
+		 * command thread.  Skip the stub instead of logging a bogus error on
+		 * every interface close.
+		 */
+		if (!IS_HIF_TYPE(pAd, HIF_MT) &&
+		    (pAd->infType == RTMP_DEV_INF_PCI || pAd->infType == RTMP_DEV_INF_PCIE)) {
 			BOOLEAN brc = TRUE;
 			brc = RT28xxPciAsicRadioOff(pAd, RTMP_HALT, 0);
 
