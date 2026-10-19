@@ -1,22 +1,23 @@
-SRC_NAME=miniupnpd-2.3.11
+SRC_NAME=miniupnpd-2.x
 
 # reference to iptables package
 IPT_VERSION:=iptables-1.8.7
 
-# IPv6/IGDv2 stay off (Windows does not support IGDv2 and UPnP breaks).
-# --leasefile / --vendorcfg match the keys written by rc into /etc/miniupnpd.conf.
-CONFIG_OPTIONS=--firewall=iptables --leasefile --vendorcfg --iptablespath=$(IPTABLESPATH)
+# disable support IPv6 yet, because no profit w/o IGDv2
+# e.g. Windows not supported IGDv2 and UPnP not worked
+ENABLE_IPV6:=0
 
-IPTABLESPATH=$(CURDIR)/../iptables/$(IPT_VERSION)
+IPTABLESPATH=$(ROOTDIR)/user/iptables/$(IPT_VERSION)
 
 all:
-	cd $(SRC_NAME) && PKG_CONFIG= ./configure $(CONFIG_OPTIONS)
-	$(MAKE) -C $(SRC_NAME) -f Makefile.linux IPTABLESPATH=$(IPTABLESPATH)
+	cd $(SRC_NAME) && ./genconfig.sh
+	$(MAKE) -f Makefile.linux -C $(SRC_NAME) IPTABLESPATH=$(IPTABLESPATH) ENABLE_IPV6=$(ENABLE_IPV6)
 
 clean:
-	$(MAKE) -C $(SRC_NAME) -f Makefile.linux clean
+	$(MAKE) -f Makefile.linux -C $(SRC_NAME) clean
 	rm -f miniupnpd
 
 romfs:
 	cp $(SRC_NAME)/miniupnpd .
 	$(ROMFSINST) /usr/bin/miniupnpd
+
