@@ -1083,6 +1083,10 @@ write_inadyn_conf(const char *conf_file)
 		load_user_config(fp, INADYN_USER_DIR, "inadyn.conf", NULL);
 		
 		fclose(fp);
+		/* The generated file carries the DDNS password in clear text; the
+		 * umask-0 fopen leaves it 0666, i.e. readable and writable by every
+		 * local user. Keep it owner-only. */
+		chmod("/etc/inadyn.conf", 0600);
 		
 		return 1;
 	}
