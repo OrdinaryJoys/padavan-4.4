@@ -60,6 +60,11 @@ echo 1        > /proc/sys/kernel/panic
 echo 1        > /proc/sys/kernel/panic_on_oops
 echo 0        > /proc/sys/vm/panic_on_oom
 
+# kernel hardening: do not leak kernel pointers / boot log to non-root.
+# Padavan services run as root, so this only narrows local information exposure.
+echo 1        > /proc/sys/kernel/kptr_restrict
+echo 1        > /proc/sys/kernel/dmesg_restrict
+
 EOF
 chmod 755 "$script_start"
 
