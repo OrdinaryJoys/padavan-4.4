@@ -133,6 +133,10 @@ romfs.post:
 	-find $(ROMFSDIR)/. -name CVS | xargs -r rm -rf ; \
 	$(ROOTDIR)/tools/strip-romfs.sh ; \
 	$(MAKEARCH) -C vendors romfs.post
+	# The image must always carry the init links, even if the rc package's
+	# romfs rule was skipped or raced with a parallel build.
+	ln -sfn sbin/rc $(ROMFSDIR)/init
+	ln -sfn rc $(ROMFSDIR)/sbin/init
 
 .PHONY: image
 image:
