@@ -661,7 +661,7 @@ case $FW in
 					IPTABLES_143=1
 				fi
 				if [ "$IPTABLES_143" = "1" ] ; then
-					echo "LDLIBS += ${IPTABLESPATH}/libiptc/.libs/libip4tc.o" >> ${CONFIG_MK}
+					echo "LDLIBS += ${IPTABLESPATH}/libiptc/.libs/libip4tc.a" >> ${CONFIG_MK}
 				else
 					echo "LDLIBS += ${IPTABLESPATH}/libiptc/libiptc.a" >> ${CONFIG_MK}
 				fi
