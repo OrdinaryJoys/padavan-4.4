@@ -140,6 +140,16 @@ func_start()
 		fi
 	fi
 
+	# Boot-time guard: if the stored config no longer parses (e.g. a directive
+	# dropped by a newer OpenSSH), keep the box reachable by regenerating the
+	# default config instead of letting sshd refuse to start. The old file is
+	# kept as sshd_config.bad for inspection.
+	if ! /usr/sbin/sshd -t -f "$sshd_config" >/dev/null 2>&1 ; then
+		cp -f "$sshd_config" "${sshd_config}.bad" 2>/dev/null
+		func_create_config
+		logger -t sshd "config test failed; kept sshd_config.bad and regenerated the default"
+	fi
+
 	touch /var/run/utmp
 
 	if [ -n "$1" ] ; then
