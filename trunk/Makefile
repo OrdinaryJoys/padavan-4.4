@@ -141,6 +141,10 @@ romfs.post:
 .PHONY: image
 image:
 	[ -d $(IMAGEDIR) ] || mkdir $(IMAGEDIR)
+	# The romfs staging copy can turn the init symlink into a regular file;
+	# recreate it right before the image is packed.
+	ln -sfn sbin/rc $(ROMFSDIR)/init
+	ln -sfn rc $(ROMFSDIR)/sbin/init
 	$(MAKEARCH) -C vendors image
 
 .PHONY: linux
