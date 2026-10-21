@@ -57,6 +57,26 @@ xps_queue_set(const char *ifname, int cpu_mask)
 	fput_string(proc_path, cmx);
 }
 
+#define RPS_SOCK_FLOW_ENTRIES	8192
+#define RPS_FLOW_CNT		2048
+#define NETDEV_MAX_BACKLOG	3000
+
+static void
+rps_global_set(void)
+{
+	fput_int("/proc/sys/net/core/rps_sock_flow_entries", RPS_SOCK_FLOW_ENTRIES);
+	fput_int("/proc/sys/net/core/netdev_max_backlog", NETDEV_MAX_BACKLOG);
+}
+
+static void
+rps_flow_cnt_set(const char *ifname)
+{
+	char proc_path[64];
+
+	snprintf(proc_path, sizeof(proc_path), "/sys/class/net/%s/queues/rx-%d/rps_flow_cnt", ifname, 0);
+	fput_int(proc_path, RPS_FLOW_CNT);
+}
+
 struct smp_irq_layout_t {
 	unsigned int irq;
 	unsigned int cpu_mask;
@@ -151,10 +171,12 @@ set_cpu_affinity(void)
 		irq_affinity_set(mt7621a_irq[i].irq, mt7621a_irq[i].cpu_mask);
 
 	/* set network interfaces RPS/XPS mask */
+	rps_global_set();
 	for (i = 0; i < ARRAY_SIZE(mt7621a_rps); i++) {
 		if (!is_interface_exist(mt7621a_rps[i].ifname))
 			continue;
 		rps_queue_set(mt7621a_rps[i].ifname, mt7621a_rps[i].cpu_mask);
+		rps_flow_cnt_set(mt7621a_rps[i].ifname);
 	}
 
 	for (i = 0; i < ARRAY_SIZE(mt7621a_xps); i++) {

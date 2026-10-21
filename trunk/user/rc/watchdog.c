@@ -31,6 +31,43 @@
 #include <math.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <sys/ioctl.h>
+#ifndef WDIOC_SETTIMEOUT
+#define WDIOC_SETTIMEOUT	_IOWR('W', 6, int)
+#endif
+#ifndef WDIOC_KEEPALIVE
+#define WDIOC_KEEPALIVE		_IOR('W', 5, int)
+#endif
+#define HW_WD_TIMEOUT		60	/* seconds; the timer feeds every 10s */
+static int hw_wd_fd = -1;
+
+static void
+hw_watchdog_init(void)
+{
+	int timeout = HW_WD_TIMEOUT;
+
+	hw_wd_fd = open("/dev/watchdog", O_WRONLY);
+	if (hw_wd_fd < 0) {
+		logmessage("watchdog", "hardware watchdog not available: %s", strerror(errno));
+		return;
+	}
+	if (ioctl(hw_wd_fd, WDIOC_SETTIMEOUT, &timeout) != 0)
+		timeout = HW_WD_TIMEOUT;
+	ioctl(hw_wd_fd, WDIOC_KEEPALIVE, 0);
+	logmessage("watchdog", "hardware watchdog enabled, timeout %d s", timeout);
+}
+
+static void
+hw_watchdog_feed(void)
+{
+	if (hw_wd_fd < 0)
+		return;
+	if (write(hw_wd_fd, "\0", 1) != 1) {
+		logmessage("watchdog", "hardware watchdog feed failed: %s", strerror(errno));
+		close(hw_wd_fd);
+		hw_wd_fd = -1;
+	}
+}
 
 #include "rc.h"
 
@@ -541,6 +578,8 @@ watchdog_on_timer(void)
 {
 	int is_ap_mode = get_ap_mode();
 
+	hw_watchdog_feed();
+
 	/* check for time-dependent services */
 	svc_timecheck();
 
@@ -648,6 +687,9 @@ watchdog_main(int argc, char *argv[])
 	}
 
 	nvram_set_int_temp("wd_notify_id", 0);
+
+	/* arm the hardware watchdog; the 10s service timer feeds it */
+	hw_watchdog_init();
 
 	/* set timer */
 	wd_alarmtimer(WD_NORMAL_PERIOD, 0);

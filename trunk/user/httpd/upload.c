@@ -21,7 +21,9 @@
 #include <string.h>
 #include <ctype.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <errno.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -44,6 +46,23 @@
 #define UPLOAD_BUF_SIZE		1024
 
 typedef int (*check_header_t)(const char *, long *);
+
+/* Diagnostic trail for the firmware upload; lives in /tmp and is tiny. */
+static void
+fwlog(const char *fmt, ...)
+{
+	FILE *lf;
+	va_list ap;
+
+	lf = fopen("/tmp/fwcheck.log", "a");
+	if (!lf)
+		return;
+	va_start(ap, fmt);
+	vfprintf(lf, fmt, ap);
+	va_end(ap);
+	fputc('\n', lf);
+	fclose(lf);
+}
 
 static int
 check_header_bz2(const char *buf, long *file_len)
@@ -121,8 +140,10 @@ check_crc_image(const char *fw_image)
 	int ret = 0;
 
 	ifd = open(fw_image, O_RDONLY|O_BINARY);
-	if (ifd < 0)
+	if (ifd < 0) {
+		fwlog("crc: open failed: %s", strerror(errno));
 		return -1;
+	}
 
 	/* We're a bit of paranoid */
 #if defined(_POSIX_SYNCHRONIZED_IO) && !defined(__sun__) && !defined(__FreeBSD__)
@@ -135,9 +156,11 @@ check_crc_image(const char *fw_image)
 		goto checkcrc_fail;
 	}
 
+	fwlog("crc: size=%u mtd=%u", (unsigned int)sbuf.st_size, get_mtd_size(FW_MTD_NAME));
 	if ((unsigned int)sbuf.st_size < (sizeof(image_header_t) + (2 * 1024 * 1024)) || 
 	    (unsigned int)sbuf.st_size > get_mtd_size(FW_MTD_NAME)) {
 		ret = -1;
+		fwlog("crc: size check failed");
 		httpd_log("%s: Firmware image size is invalid!", "Firmware update");
 		goto checkcrc_fail;
 	}
@@ -145,6 +168,7 @@ check_crc_image(const char *fw_image)
 	ptr = (unsigned char *)mmap(0, sbuf.st_size, PROT_READ, MAP_SHARED, ifd, 0);
 	if (ptr == (unsigned char *)MAP_FAILED) {
 		ret = -1;
+		fwlog("crc: mmap failed: %s", strerror(errno));
 		httpd_log("%s: Unable to mmap firmware image!", "Firmware update");
 		goto checkcrc_fail;
 	}
@@ -155,6 +179,7 @@ check_crc_image(const char *fw_image)
 	memset(&hdr2->ih_hcrc, 0, sizeof(uint32_t));
 	checksum = crc32_sp(0, (const char *)hdr2, sizeof(image_header_t));
 
+	fwlog("crc: hdr calc=%08lx stored=%08x", (unsigned long)checksum, ntohl(hdr->ih_hcrc));
 	if (checksum != ntohl(hdr->ih_hcrc)) {
 		ret = -1;
 		httpd_log("%s: Firmware image %s has invalid CRC!", "Firmware update", "header");
@@ -169,6 +194,7 @@ check_crc_image(const char *fw_image)
 	}
 
 	checksum = crc32_sp(0, (const char *)(ptr + sizeof(image_header_t)), datalen);
+	fwlog("crc: body calc=%08lx stored=%08x len=%u", (unsigned long)checksum, ntohl(hdr->ih_dcrc), datalen);
 	if (checksum != ntohl(hdr->ih_dcrc)) {
 		ret = -1;
 		httpd_log("%s: Firmware image %s has invalid CRC!", "Firmware update", "body");
@@ -247,8 +273,10 @@ do_upload_file(FILE *stream, int clen, char *bndr, const char *fn, const char *o
 			offset = 0;
 			cnt++;
 			
-			if (func_hdr(ptr, &filelen) != 0)
+			if (func_hdr(ptr, &filelen) != 0) {
+				fwlog("upload: header check failed");
 				goto err;
+			}
 			
 			valid_header = 1;
 		}
@@ -274,7 +302,10 @@ do_upload_file(FILE *stream, int clen, char *bndr, const char *fn, const char *o
 			count = filelen;
 		
 		filelen -= count;
-		fwrite(ptr, 1, count, fp);
+		if (fwrite(ptr, 1, count, fp) != (size_t)count) {
+			fwlog("upload: short write: %s", strerror(errno));
+			goto err;
+		}
 		
 		if (bndr && count >= 64)
 			memcpy(buf, ptr + count - 64, 64);
@@ -289,7 +320,10 @@ do_upload_file(FILE *stream, int clen, char *bndr, const char *fn, const char *o
 			break;
 		
 		if (filelen > 0) {
-			fwrite(&ch, 1, 1, fp);
+			if (fwrite(&ch, 1, 1, fp) != 1) {
+				fwlog("upload: short write (tail): %s", strerror(errno));
+				goto err;
+			}
 			filelen--;
 		}
 	}
@@ -318,7 +352,18 @@ void
 do_upgrade_fw_post(const char *url, FILE *stream, int clen, char *boundary)
 {
 	const char *upload_file = FW_IMG_NAME;
+	struct statvfs vfs;
+	unsigned long long avail = 0;
 	int ret;
+
+	if (statvfs("/tmp", &vfs) == 0)
+		avail = (unsigned long long)vfs.f_bavail * vfs.f_frsize;
+	fwlog("post: clen=%d avail=%llu", clen, avail);
+	if (avail > 0 && avail < (unsigned long long)clen + (1U << 20)) {
+		fwlog("post: not enough free space in /tmp");
+		httpd_log("%s: not enough free space in /tmp", "Firmware update");
+		return;
+	}
 
 	/* delete some files (need free space in /tmp) */
 	unlink("/tmp/usb.log");
@@ -333,8 +378,10 @@ do_upgrade_fw_post(const char *url, FILE *stream, int clen, char *boundary)
 	fput_int("/proc/sys/vm/drop_caches", 1);
 
 	ret = do_upload_file(stream, clen, NULL, upload_file, "file", check_header_image, sizeof(image_header_t));
+	fwlog("post: upload ret=%d", ret);
 	if (ret == 0) {
 		ret = check_crc_image(upload_file);
+		fwlog("post: crc ret=%d", ret);
 		if (ret != 0)
 			unlink(upload_file);
 	}
