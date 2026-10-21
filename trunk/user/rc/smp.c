@@ -57,7 +57,7 @@ xps_queue_set(const char *ifname, int cpu_mask)
 	fput_string(proc_path, cmx);
 }
 
-#define RPS_SOCK_FLOW_ENTRIES	8192
+#define RPS_SOCK_FLOW_ENTRIES	32768
 #define RPS_FLOW_CNT		2048
 #define NETDEV_MAX_BACKLOG	3000
 

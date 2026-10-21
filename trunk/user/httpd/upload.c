@@ -356,6 +356,7 @@ do_upgrade_fw_post(const char *url, FILE *stream, int clen, char *boundary)
 	unsigned long long avail = 0;
 	int ret;
 
+	unlink("/tmp/fwcheck.log");
 	if (statvfs("/tmp", &vfs) == 0)
 		avail = (unsigned long long)vfs.f_bavail * vfs.f_frsize;
 	fwlog("post: clen=%d avail=%llu", clen, avail);

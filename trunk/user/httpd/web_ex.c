@@ -4013,7 +4013,7 @@ do_restore_nv_cgi(const char *url, FILE *stream)
 	char *upload_file = PROFILE_FIFO_UPLOAD;
 	int ret = -1;
 
-	if (f_exists(upload_file) && get_login_safe()) {
+	if (f_exists(upload_file) && (get_login_safe() || get_login_valid())) {
 		doSystem("killall %s %s", "-q", "watchdog");
 		sleep(1);
 		ret = eval("/usr/sbin/nvram", "restore", upload_file);
@@ -4041,7 +4041,7 @@ do_restore_st_cgi(const char *url, FILE *stream)
 	const char *upload_file = STORAGE_FIFO_FILENAME;
 	int ret = -1;
 
-	if (f_exists(upload_file) && get_login_safe()) {
+	if (f_exists(upload_file) && (get_login_safe() || get_login_valid())) {
 		ret = eval("/sbin/mtd_storage.sh", "restore");
 	}
 
