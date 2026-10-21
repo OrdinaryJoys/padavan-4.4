@@ -164,6 +164,7 @@ extern time_t tdate_parse(char *str);
 extern long uptime(void);
 extern void fill_login_ip(char *p_out_ip, size_t out_ip_len);
 extern const char *get_login_mac(void);
+extern int get_login_valid(void);
 extern int get_login_safe(void);
 
 // initial_web_hook.c

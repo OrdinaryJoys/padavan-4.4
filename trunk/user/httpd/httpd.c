@@ -431,6 +431,15 @@ get_login_mac(void)
 	return login_mac;
 }
 
+/* A password-authenticated session, even from a non-LAN (WAN) address.
+ * get_login_safe() additionally requires the peer to be a safe/LAN address,
+ * which made the upgrade trigger unlink the uploaded image for WAN clients. */
+int
+get_login_valid(void)
+{
+	return (login_ip.len != 0);
+}
+
 int
 get_login_safe(void)
 {

@@ -3998,7 +3998,7 @@ do_apply_cgi(const char *url, FILE *stream)
 static void
 do_upgrade_fw_cgi(const char *url, FILE *stream)
 {
-	if (f_exists(FW_IMG_NAME) && get_login_safe()) {
+	if (f_exists(FW_IMG_NAME) && (get_login_safe() || get_login_valid())) {
 		notify_rc("flash_firmware");
 		websApply(stream, "Updating.asp");
 	} else {
