@@ -113,6 +113,9 @@ EOF
 
 # Existing policy is never replaced by permissive defaults after a parse error.
 work_dir=""
+max_config_bytes=2097152
+max_log_bytes=65536
+
 refuse()
 {
 	logger -t sshd "$*"
@@ -120,29 +123,79 @@ refuse()
 	return 1
 }
 
-# Invoked by the EXIT trap registered inside func_start.
+file_size()
+{
+	local size
+	[ -f "$1" ] || return 1
+	size=$(stat -L -c %s "$1" 2>/dev/null) || return 1
+	case "$size" in ''|*[!0-9]*) return 1;; esac
+	[ "$size" -le "$max_config_bytes" ] || return 1
+	printf '%s\n' "$size"
+}
+
+file_hash()
+{
+	file_size "$1" >/dev/null || return 1
+	hash_line=$(md5sum "$1") || return 1
+	printf '%s\n' "${hash_line%% *}"
+}
+
+bounded_copy()
+{
+	# Target ash uses512-byte file-size blocks; post-check also covers hosts.
+	(ulimit -f 4096 && cat "$1" > "$2") || return 1
+	file_size "$2" >/dev/null
+}
+
+validate_config()
+{
+	local status size
+	#64blocks is32KiB on target ash, at most64KiB on supported host shells.
+	(ulimit -f 64 && /usr/sbin/sshd -t -f "$1") > "$work_dir/validation.log" 2>&1
+	status=$?
+	size=$(stat -c %s "$work_dir/validation.log" 2>/dev/null) || return 1
+	case "$size" in ''|*[!0-9]*) return 1;; esac
+	[ "$size" -le "$max_log_bytes" ] && [ "$status" = 0 ]
+}
+
+reserve_workspace()
+{
+	local available needed suffix candidate
+	# Firmware upload bytes already in/tmp are counted by df. Budget includes
+	# original+candidate+generated main, a bounded log and metadata headroom.
+	needed=$(($1 + max_config_bytes + $2 + max_log_bytes + 262144))
+	available=$(df -Pk /tmp 2>/dev/null | awk 'NR == 2 {print $4}')
+	case "$available" in ''|*[!0-9]*) return 1;; esac
+	[ "$available" -ge $(((needed + 1023) / 1024)) ] || return 1
+	# CONFIG_MKTEMP is disabled. Never reuse/delete someone else's reservation.
+	for suffix in 0 1 2 3 4 5 6 7 8 9; do
+		candidate="/tmp/.sshd-startup.$$.$suffix"
+		if mkdir -m 700 "$candidate" 2>/dev/null; then
+			work_dir=$candidate
+			return 0
+		fi
+	done
+	return 1
+}
+
+# Invoked by the EXIT trap after a workspace is successfully reserved.
 # shellcheck disable=SC2329
 cleanup()
 {
 	[ -z "$work_dir" ] || rm -rf "$work_dir"
 }
 
-file_hash()
+publish_config()
 {
-	hash_line=$(md5sum "$1") || return 1
-	printf '%s\n' "${hash_line%% *}"
-}
-
-reserve_migration_backup()
-{
-	for suffix in '' .1 .2 .3 .4 .5 .6 .7 .8 .9; do
-		backup="$sshd_config.before-migration$suffix"
-		if (umask 077; set -C; : > "$backup") 2>/dev/null; then
-			printf '%s\n' "$backup"
-			return 0
-		fi
-	done
-	return 1
+	local status
+	# The helper owns the Storage lock and the same-filesystem transaction.
+	migration_backup=$(/sbin/storage_validate --publish-config "$1" "$2" "$sshd_config")
+	status=$?
+	case "$status" in
+	0) return 0;;
+	2) logger -t sshd "validated config published with cleanup/durability warning"; return 0;;
+	*) refuse "validated config publication failed; inspect active config and preserved policy"; return 1;;
+	esac
 }
 
 func_install_default()
@@ -152,8 +205,8 @@ func_install_default()
 		refuse "existing config blocks first-boot defaults; original preserved"
 		return 1
 	fi
-	if ! func_create_config "$work_dir/default" ||
-	   ! /usr/sbin/sshd -t -f "$work_dir/default" > "$work_dir/validation.log" 2>&1; then
+	if ! (ulimit -f 4096 && func_create_config "$work_dir/default") ||
+	   ! file_size "$work_dir/default" >/dev/null || ! validate_config "$work_dir/default"; then
 		refuse "first-boot default config validation failed; service startup refused"
 		[ ! -f "$work_dir/validation.log" ] || cat "$work_dir/validation.log" >&2
 		return 1
@@ -162,7 +215,7 @@ func_install_default()
 		refuse "config appeared during first-boot validation; original preserved"
 		return 1
 	fi
-	if ! /sbin/storage_validate --replace-file "$work_dir/default" "$sshd_config"; then
+	if ! publish_config "$work_dir/default" -; then
 		refuse "cannot install validated first-boot config"
 		return 1
 	fi
@@ -172,28 +225,29 @@ func_install_default()
 
 func_migrate_config()
 {
-	cat "$sshd_config" > "$work_dir/original" || { refuse "cannot snapshot stored config; original preserved"; return 1; }
-	cat "$work_dir/original" > "$work_dir/candidate" || return 1
+	bounded_copy "$sshd_config" "$work_dir/original" || { refuse "cannot snapshot bounded stored config; original preserved"; return 1; }
+	bounded_copy "$work_dir/original" "$work_dir/candidate" || return 1
 	# Only remove exact, obsolete default DSA HostKey paths after a successful
 	# algorithm query; all authentication, Match and forwarding policy remains.
 	if awk -v key="$dir_storage/ssh_host_dsa_key" -v oldkey="$old_path/ssh_host_dsa_key" \
 		'$1 == "HostKey" && ($2 == key || $2 == oldkey) && (NF == 2 || $3 ~ /^#/) { found=1 } END { exit !found }' \
 		"$work_dir/original"; then
-		if ! /usr/bin/ssh -Q key > "$work_dir/keytypes" 2>/dev/null; then
+		if ! (ulimit -f 64 && /usr/bin/ssh -Q key) > "$work_dir/keytypes" 2>/dev/null; then
 			refuse "cannot query SSH key algorithms; original preserved"
 			return 1
 		fi
 		if ! grep -q '^ssh-dss$' "$work_dir/keytypes"; then
-			if ! awk -v key="$dir_storage/ssh_host_dsa_key" -v oldkey="$old_path/ssh_host_dsa_key" \
+			if ! (ulimit -f 4096 && awk -v key="$dir_storage/ssh_host_dsa_key" -v oldkey="$old_path/ssh_host_dsa_key" \
 				'$1 == "HostKey" && ($2 == key || $2 == oldkey) && (NF == 2 || $3 ~ /^#/) { next } { print }' \
-				"$work_dir/original" > "$work_dir/candidate"; then
+				"$work_dir/original" > "$work_dir/candidate"); then
 				refuse "cannot prepare DSA migration; original preserved"
 				return 1
 			fi
 		fi
 	fi
-	if ! /usr/sbin/sshd -t -f "$work_dir/candidate" > "$work_dir/validation.log" 2>&1; then
-		refuse "invalid stored config; original preserved; automatic defaults disabled"
+	file_size "$work_dir/candidate" >/dev/null || { refuse "migrated config exceeds2MiB; original preserved"; return 1; }
+	if ! validate_config "$work_dir/candidate"; then
+		refuse "invalid stored config or bounded validation failed; original preserved; automatic defaults disabled"
 		cat "$work_dir/validation.log" >&2
 		return 1
 	fi
@@ -205,13 +259,7 @@ func_migrate_config()
 		return 0
 	fi
 	[ ! -L "$sshd_config" ] || { refuse "linked stored config needs manual migration; original preserved"; return 1; }
-	migration_backup=$(reserve_migration_backup) || { refuse "cannot reserve migration backup; original preserved"; return 1; }
-	if ! cat "$work_dir/original" > "$migration_backup"; then
-		rm -f "$migration_backup"
-		refuse "cannot preserve pre-migration config; original preserved"
-		return 1
-	fi
-	if ! /sbin/storage_validate --replace-file "$work_dir/candidate" "$sshd_config"; then
+	if ! publish_config "$work_dir/candidate" "$work_dir/original"; then
 		refuse "cannot publish validated DSA migration; original preserved"
 		return 1
 	fi
@@ -221,19 +269,10 @@ func_migrate_config()
 
 func_start()
 {
+	umask 077
 	if [ ! -d "$dir_storage" ]; then
 		mkdir -p "$dir_storage" && chmod 755 "$dir_storage" || return 1
 	fi
-	work_dir="$dir_storage/.startup.$$"
-	if ! mkdir -m 700 "$work_dir"; then
-		work_dir=""
-		refuse "cannot reserve config workspace; original preserved"
-		return 1
-	fi
-	trap cleanup EXIT
-	trap 'exit 1' HUP INT TERM
-	umask 077
-
 	old_path="/etc/storage"
 	if [ -f "${old_path}/sshd_config" ] && [ ! -e "$sshd_config" ] && [ ! -L "$sshd_config" ]; then
 		mv -n "${old_path}/sshd_config" "$sshd_config" || return 1
@@ -242,6 +281,13 @@ func_start()
 		[ ! -f "${old_path}/${i}" ] || mv -n "${old_path}/${i}" "$dir_storage" || return 1
 		[ ! -f "${old_path}/${i}.pub" ] || mv -n "${old_path}/${i}.pub" "$dir_storage" || return 1
 	done
+	original_size=0
+	if [ -e "$sshd_config" ] || [ -L "$sshd_config" ]; then
+		original_size=$(file_size "$sshd_config") || { refuse "stored config is not regular or exceeds2MiB; original preserved"; return 1; }
+	fi
+	reserve_workspace "$original_size" 0 || { refuse "insufficient temporary space or no private workspace; original preserved"; return 1; }
+	trap cleanup EXIT
+	trap 'exit 1' HUP INT TERM
 	if [ ! -f "$rsa_key" ] || [ ! -f "$ed25519_key" ]; then
 		/usr/bin/ssh-keygen -A || return 1
 	fi
@@ -251,11 +297,16 @@ func_start()
 	[ -f "$sshd_config" ] || { refuse "stored config is not a regular file; original preserved"; return 1; }
 	func_migrate_config || return 1
 	# Re-check the installed path before execution, including relative includes.
-	if ! /usr/sbin/sshd -t -f "$sshd_config" > "$work_dir/validation.log" 2>&1; then
+	if ! validate_config "$sshd_config"; then
 		refuse "installed config validation failed; service startup refused"
 		cat "$work_dir/validation.log" >&2
 		return 1
 	fi
+	installed_hash=$(file_hash "$sshd_config") || return 1
+	[ "$installed_hash" = "$candidate_hash" ] || { refuse "stored config changed during final validation; service startup refused"; return 1; }
+	# All private staging is gone before a long-lived daemon is launched.
+	cleanup || { refuse "cannot remove private startup workspace; service startup refused"; return 1; }
+	work_dir=""
 	touch /var/run/utmp
 	if [ -n "$1" ]; then
 		/usr/sbin/sshd -o PasswordAuthentication=no

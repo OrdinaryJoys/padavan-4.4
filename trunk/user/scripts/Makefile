@@ -1,7 +1,7 @@
 THISDIR = $(shell pwd)
 all: storage_validate
 
-storage_validate: storage_validate.c
+storage_validate: storage_validate.c startup_config_publish.h
 	$(CC) $(CFLAGS) -Wall -Wextra -o $@ $< $(LDFLAGS)
 
 clean:

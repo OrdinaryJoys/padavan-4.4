@@ -8,6 +8,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "startup_config_publish.h"
 
 #define BLOCK 512U
 #define MAX_TAR (8U * 1024U * 1024U)
@@ -238,6 +239,8 @@ int main(int argc, char **argv)
 	unsigned long long budget;
 	unsigned int i;
 	int result;
+	if (argc == 5 && !strcmp(argv[1], "--publish-config"))
+		return startup_config_publish(argv[2], argv[3], argv[4]);
 	/* rename(2) replaces the final path itself. BusyBox mv follows a
 	 * destination symlink to a directory, which is unsafe in public /tmp. */
 	if (argc == 4 && !strcmp(argv[1], "--rename-directory")) {

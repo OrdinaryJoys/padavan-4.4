@@ -149,7 +149,7 @@ void shutdown_router(int level);
 void handle_notifications(void);
 void LED_CONTROL(int gpio_led, int flag);
 void storage_save_time(time_t delta);
-void write_storage_to_mtd(void);
+int write_storage_to_mtd(void);
 void erase_storage(void);
 void erase_nvram(void);
 

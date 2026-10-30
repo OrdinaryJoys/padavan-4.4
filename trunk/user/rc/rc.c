@@ -453,10 +453,12 @@ nvram_convert_misc_values(void)
 	time_zone_x_mapping();
 }
 
-void
+int
 write_storage_to_mtd(void)
 {
-	doSystem("/sbin/mtd_storage.sh %s", "save");
+	/* Preserve system() status: exit failure, signal and spawn failure all
+	 * have to remain distinguishable from a successful save. */
+	return doSystem("/sbin/mtd_storage.sh %s", "save");
 }
 
 void
@@ -472,10 +474,12 @@ erase_nvram(void)
 	nvram_commit();
 }
 
-static void
+/* Return 1 only after the service-stop/write phase has been entered. */
+static int
 flash_firmware(void)
 {
 	const char *script_name = SCRIPT_SHUTDOWN;
+	int status;
 	char* svcs[] = { "l2tpd",
 			 "xl2tpd",
 			 "pppd",
@@ -483,11 +487,36 @@ flash_firmware(void)
 			 "wpa_supplicant",
 			 NULL };
 
+	/* Fail while management services and the watchdog are still running.
+	 * This is a validated save snapshot, not a lock on non-cooperating
+	 * Storage writers (including rstats or a user hook's background work). */
+	storage_save_time(60);
+	status = write_storage_to_mtd();
+	if (status != 0) {
+		logmessage("firmware", "Storage save failed before upgrade (status %d); upgrade aborted", status);
+		return 0;
+	}
+
+	/* Run the user hook while core services are still available, so its
+	 * failure cannot strand them stopped. Hooks must return 0 on success. */
+	if (check_if_file_exist(script_name)) {
+		status = doSystem("%s %d", script_name, 0);
+		if (status != 0) {
+			logmessage("firmware", "Shutdown hook failed (status %d); upgrade aborted", status);
+			return 0;
+		}
+		/* Preserve completed hook edits before stopping services. On failure
+		 * the hook's own side effects cannot be undone, but do not stop any
+		 * more services or attempt a firmware write. */
+		status = write_storage_to_mtd();
+		if (status != 0) {
+			logmessage("firmware", "Storage save after shutdown hook failed (status %d); upgrade aborted", status);
+			return 0;
+		}
+	}
+
 	stop_misc();
 	stop_services(0); // don't stop httpd/telnetd/sshd/vpn
-
-	if (check_if_file_exist(script_name))
-		doSystem("%s %d", script_name, 0);
 
 #if defined (USE_STORAGE)
 	safe_remove_all_stor_devices(0);
@@ -499,16 +528,13 @@ flash_firmware(void)
 
 	kill_services(svcs, 6, 1);
 
-	/* save storage (if changed) */
-	storage_save_time(60);
-	write_storage_to_mtd();
-
 	sync();
 	sleep(1);
 
 	if (eval("/tmp/mtd_write", "-r", "write", FW_IMG_NAME, FW_MTD_NAME) != 0) {
 		start_watchdog();
 	}
+	return 1;
 }
 
 static void
@@ -878,8 +904,9 @@ handle_notifications(void)
 		}
 		else if (!strcmp(entry->d_name, "flash_firmware"))
 		{
-			stop_handle = 1;
-			flash_firmware();
+			/* A preflight abort leaves services running: continue draining
+			 * coalesced notifications instead of leaving them stranded. */
+			stop_handle = flash_firmware();
 		}
 #if defined (USE_IPV6)
 		else if (!strcmp(entry->d_name, RCN_RESTART_IPV6))
