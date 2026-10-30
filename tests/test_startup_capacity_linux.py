@@ -25,7 +25,9 @@ def namespace_case(kind):
     import test_startup_config_policy as policy
     cls = policy.StartupPolicyFixture
     cls.setUpClass()
-    fixture = cls(unittest.defaultTestLoader.getTestCaseNames(cls)[0])
+    # This is the shared fixture base, intentionally without test methods.
+    # We call its lifecycle/helpers explicitly rather than running a TestCase.
+    fixture = cls()
     mounted = []
     try:
         fixture.setUp()
