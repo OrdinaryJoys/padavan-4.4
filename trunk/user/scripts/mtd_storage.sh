@@ -204,6 +204,45 @@ func_record_hash()
 	/sbin/storage_validate --replace-file "$work_dir/hash.commit" "$hsh"
 }
 
+# Repair the previous candidate's implicit 0700 DNS directory after it has
+# been saved with an explicit header.  Only the known public-data layout is
+# migrated: private/unknown entries and aliases keep their original boundary.
+func_dns_directory_access()
+{
+	local dnsdir member mode
+	dnsdir="$1/dnsmasq"
+	if [ ! -e "$dnsdir" ] && [ ! -L "$dnsdir" ]; then
+		return 0
+	fi
+	if [ -L "$dnsdir" ] || [ ! -d "$dnsdir" ] ||
+	   [ "$(stat -c %u "$dnsdir" 2>/dev/null)" != 0 ]; then
+		logger -t "Storage permissions" "Linked or nonstandard DNS directory retained; review data access manually"
+		return 0
+	fi
+	mode=$(stat -c %a "$dnsdir" 2>/dev/null) || {
+		logger -t "Storage permissions" "DNS directory mode is unavailable; retained without permission migration"
+		return 0
+	}
+	[ "$mode" = 700 ] || return 0
+	for member in "$dnsdir"/* "$dnsdir"/.[!.]* "$dnsdir"/..?*; do
+		[ -e "$member" ] || [ -L "$member" ] || continue
+		case "${member##*/}" in
+		dnsmasq.conf|hosts|dhcp.conf)
+			if [ ! -L "$member" ] && [ -f "$member" ] &&
+			   [ "$(stat -c %u "$member" 2>/dev/null)" = 0 ] &&
+			   [ "$(stat -c %h "$member" 2>/dev/null)" = 1 ]; then
+				continue
+			fi
+			;;
+		esac
+		logger -t "Storage permissions" "Private DNS directory with unknown entries or aliases retained; review data access manually"
+		return 0
+	done
+	chmod 755 "$dnsdir" || return 1
+	logger -t "Storage permissions" "Repaired known DNS data directory access; file permissions preserved"
+	return 0
+}
+
 func_install_tar()
 {
 	local parent available budget old_storage
@@ -220,7 +259,9 @@ func_install_tar()
 	mkdir -m 700 "$restore_container/storage" || return 1
 	# A private parent keeps archive-supplied directory modes inaccessible
 	# while extraction is in progress. -o never restores archive ownership.
-	if ! tar xof "$tmp" -C "$restore_container/storage" 2>/dev/null; then
+	# Legacy backups omit directory headers.  Their implicit parents need
+	# 0755 for low-uid readers; explicit private directory/file modes remain.
+	if ! (umask 022; tar xof "$tmp" -C "$restore_container/storage") 2>/dev/null; then
 		logger -t "Storage restore" "Cannot extract complete validated storage"
 		return 1
 	fi
@@ -229,6 +270,7 @@ func_install_tar()
 	# Restored configuration must not become replaceable by other users.
 	chmod -R go-w "$restore_container/storage" || return 1
 	chmod 755 "$restore_container/storage" || return 1
+	func_dns_directory_access "$restore_container/storage" || return 1
 	old_storage="$restore_container/previous"
 	if [ -e "$dir_storage" ]; then
 		[ ! -L "$dir_storage" ] || return 1

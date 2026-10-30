@@ -33,6 +33,42 @@ def checksum(header):
     header[148:156]=('%06o\0 '%sum(header)).encode()
     return header
 
+def permission_archive(dns_mode=None,private_tree=False,dns_link=False,dns_extra_mode=None):
+    """Synthetic legacy layout: omitted DNS parents must gain normal rx bits.
+
+    The explicit private modes represent intentional archive policy.  No real
+    configuration, key or device backup is copied into the source tests.
+    """
+    entries=[('start_script.sh',tarfile.REGTYPE,0o755,b'#!/bin/sh\n','')]
+    if dns_link:
+        entries.append(('dnsmasq',tarfile.SYMTYPE,0o777,b'','secret'))
+    else:
+        if dns_mode is not None:
+            entries.append(('dnsmasq',tarfile.DIRTYPE,dns_mode,b'',''))
+        entries.extend([
+            ('dnsmasq/dnsmasq.conf',tarfile.REGTYPE,0o644,b'local-service\n',''),
+            ('dnsmasq/hosts',tarfile.REGTYPE,0o644,b'192.0.2.1 fixture.invalid\n',''),
+            ('dnsmasq/dhcp.conf',tarfile.REGTYPE,0o644,b'# synthetic DHCP policy\n',''),
+        ])
+    if private_tree or dns_link:
+        entries.extend([
+            ('secret',tarfile.DIRTYPE,0o700,b'',''),
+            ('secret/key',tarfile.REGTYPE,0o600,b'synthetic private bytes\n',''),
+            ('openssh',tarfile.DIRTYPE,0o700,b'',''),
+            ('openssh/ssh_host_ed25519_key',tarfile.REGTYPE,0o600,b'synthetic host key\n',''),
+            ('policy',tarfile.DIRTYPE,0o750,b'',''),
+            ('policy/restrictions',tarfile.REGTYPE,0o640,b'preserve unrelated policy\n',''),
+        ])
+    if not dns_link and dns_extra_mode is not None:
+        entries.append(('dnsmasq/extra-private',tarfile.REGTYPE,dns_extra_mode,b'preserve DNS-side extra\n',''))
+    output=io.BytesIO()
+    with tarfile.open(fileobj=output,mode='w',format=tarfile.USTAR_FORMAT) as tf:
+        for name,kind,mode,payload,target in entries:
+            info=tarfile.TarInfo(name);info.type=kind;info.mode=mode;info.linkname=target
+            info.size=len(payload) if kind==tarfile.REGTYPE else 0
+            tf.addfile(info,io.BytesIO(payload) if info.size else None)
+    return output.getvalue()
+
 class StorageRegression(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -54,7 +90,10 @@ class StorageRegression(unittest.TestCase):
         self.proc=self.base/'mtd';self.proc.write_text('mtd6: 00080000 00010000 "Storage"\n')
         self.device=self.base/'mtdblock6';self.flash_calls=self.base/'flash-calls'
         self.env=dict(os.environ,PATH=str(self.bin)+':'+os.environ['PATH'])
-        self.stub('tar','export COPYFILE_DISABLE=1\ncase "$1" in -cf|cf) exec /usr/bin/tar --format=ustar "$@";; *) exec /usr/bin/tar "$@";; esac')
+        # The target BusyBox extractor is root and restores explicit header
+        # modes even with -o (which suppresses ownership only). Nonroot host
+        # tar needs -p to model that; implicit parents still obey the umask.
+        self.stub('tar','export COPYFILE_DISABLE=1\ncase "$1" in -cf|cf) exec /usr/bin/tar --format=ustar "$@";; xof) shift; exec /usr/bin/tar xopf "$@";; *) exec /usr/bin/tar "$@";; esac')
         self.stub('storage_validate','exec \"'+str(self.validator)+'\" \"$@\"')
         self.stub('id','echo 0')
         self.stub('flock', "exec python3 -c 'import fcntl,sys; fcntl.flock(int(sys.argv[1]),fcntl.LOCK_EX|fcntl.LOCK_NB)' \"$2\"")
@@ -64,7 +103,8 @@ class StorageRegression(unittest.TestCase):
         self.stub('stat',"""python3 - "$2" "$3" <<'CODE'
 import os,sys
 fmt=sys.argv[1];path=sys.argv[2]
-print(0 if fmt=='%u' else (oct(os.stat(path).st_mode & 0o7777)[2:] if fmt=='%a' else os.path.getsize(path)))
+st=os.stat(path)
+print(0 if fmt=='%u' else (oct(st.st_mode & 0o7777)[2:] if fmt=='%a' else st.st_nlink if fmt=='%h' else st.st_size))
 CODE""")
         self.stub('df','printf "Filesystem 1024-blocks Used Available Capacity Mounted\\nfixture 65536 0 65536 0%% /fixture\\n"')
         self.stub('md5sum','exec python3 -c \'import hashlib,sys; p=sys.argv[1]; print(hashlib.md5(open(p,"rb").read()).hexdigest()+"  "+p)\' "$1"')
@@ -248,6 +288,150 @@ CODE""")
         p=self.run_script('restore');self.assertEqual(p.returncode,0,p.stderr)
         for path in [self.storage/'openssh',self.storage/'dnsmasq',self.storage/'start_script.sh',self.storage/'openssh/sshd_config']:
             self.assertEqual(path.stat().st_mode & 0o022,0)
+
+    def install_permission_archive(self,action,data):
+        (self.device if action=='load' else self.tbz).write_bytes(bz2.compress(data))
+        return self.run_script(action)
+
+    def check_private_permission_policy(self):
+        expected={
+            'secret':(0o700,None),
+            'secret/key':(0o600,b'synthetic private bytes\n'),
+            'openssh':(0o700,None),
+            'openssh/ssh_host_ed25519_key':(0o600,b'synthetic host key\n'),
+            'policy':(0o750,None),
+            'policy/restrictions':(0o640,b'preserve unrelated policy\n'),
+        }
+        for name,(mode,payload) in expected.items():
+            path=self.storage/name
+            self.assertEqual(path.stat().st_mode&0o777,mode,name)
+            if payload is not None:self.assertEqual(path.read_bytes(),payload,name)
+
+    def test_legacy_file_only_dns_parents_are_searchable_on_load_and_restore(self):
+        data=permission_archive()
+        with tarfile.open(fileobj=io.BytesIO(data),mode='r:') as tf:
+            self.assertFalse(any(member.isdir() for member in tf.getmembers()))
+        # Loosening the extraction umask is safe only while the staging parent
+        # remains inaccessible to other users, including during tar itself.
+        self.stub('tar',"""python3 - "$@" <<'CODE'
+import os,pathlib,sys
+args=sys.argv[1:]
+target=pathlib.Path(args[args.index('-C')+1])
+assert target.parent.stat().st_mode&0o777==0o700
+os.environ['COPYFILE_DISABLE']='1'
+if args[0]=='xof':args[0]='xopf'
+os.execv('/usr/bin/tar',['/usr/bin/tar',*args])
+CODE""")
+        for action in ('load','restore'):
+            with self.subTest(action=action):
+                result=self.install_permission_archive(action,data)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertEqual((self.storage/'dnsmasq').stat().st_mode&0o777,0o755)
+                for name in ('dnsmasq.conf','hosts','dhcp.conf'):
+                    self.assertEqual((self.storage/'dnsmasq'/name).stat().st_mode&0o777,0o644)
+                self.assertEqual((self.storage/'dnsmasq/hosts').read_bytes(),b'192.0.2.1 fixture.invalid\n')
+
+    def test_explicit_private_modes_survive_public_parent_umask(self):
+        for action in ('load','restore'):
+            with self.subTest(action=action):
+                result=self.install_permission_archive(action,permission_archive(private_tree=True))
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertEqual((self.storage/'dnsmasq').stat().st_mode&0o777,0o755)
+                self.check_private_permission_policy()
+
+    def test_saved_dns_0700_is_repaired_without_relaxing_other_policy(self):
+        # A backup saved by the affected candidate contains explicit0700 DNS.
+        # An extraction umask change alone cannot repair that persisted mode.
+        for action in ('load','restore'):
+            with self.subTest(action=action):
+                result=self.install_permission_archive(action,permission_archive(dns_mode=0o700,private_tree=True))
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertEqual((self.storage/'dnsmasq').stat().st_mode&0o777,0o755)
+                self.check_private_permission_policy()
+
+    def test_dns_mode_migration_failure_never_publishes_over_live_policy(self):
+        dns=self.storage/'dnsmasq';dns.mkdir(mode=0o700)
+        (dns/'hosts').write_bytes(b'original DNS policy\n')
+        policy=self.storage/'private-policy';policy.write_bytes(b'original restricted policy\n');policy.chmod(0o600)
+        self.hash.write_text('previous hash')
+        # Reject the DNS-specific mode repair, while permitting ordinary
+        # recursive go-w removal and root storage/container modes.
+        self.stub('chmod',"""python3 - "$@" <<'CODE'
+import os,sys
+args=sys.argv[1:]
+if any(arg.endswith('/dnsmasq') for arg in args):sys.exit(1)
+os.execv('/bin/chmod',['/bin/chmod',*args])
+CODE""")
+        for action in ('load','restore'):
+            with self.subTest(action=action):
+                result=self.install_permission_archive(action,permission_archive(dns_mode=0o700,private_tree=True))
+                self.assertNotEqual(result.returncode,0)
+                self.assertEqual((self.storage/'original').read_text(),'keep original')
+                self.assertEqual((dns/'hosts').read_bytes(),b'original DNS policy\n')
+                self.assertEqual(dns.stat().st_mode&0o777,0o700)
+                self.assertEqual(policy.read_bytes(),b'original restricted policy\n')
+                self.assertEqual(policy.stat().st_mode&0o777,0o600)
+                self.assertEqual(self.hash.read_text(),'previous hash')
+                self.assertFalse(list((self.base/'etc').glob('.storage-restore.*')))
+
+    def test_linked_dns_directory_preserves_private_target_and_compatibility(self):
+        for action in ('load','restore'):
+            with self.subTest(action=action):
+                result=self.install_permission_archive(action,permission_archive(dns_link=True))
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertTrue((self.storage/'dnsmasq').is_symlink())
+                self.assertEqual(os.readlink(self.storage/'dnsmasq'),'secret')
+                self.assertEqual((self.storage/'secret').stat().st_mode&0o777,0o700)
+                self.check_private_permission_policy()
+                self.assertFalse(list((self.base/'etc').glob('.storage-restore.*')))
+
+    def test_unknown_dns_files_preserve_private_directory_without_blocking_restore(self):
+        # Directory0700 may be deliberate policy. Unknown data must neither
+        # become public via ancestor chmod nor turn a valid archive into a
+        # newly fatal boot failure. This also applies to extra0600 files.
+        for action in ('load','restore'):
+            for mode in (0o600,0o644):
+                with self.subTest(action=action,mode=oct(mode)):
+                    data=permission_archive(dns_mode=0o700,private_tree=True,dns_extra_mode=mode)
+                    result=self.install_permission_archive(action,data)
+                    self.assertEqual(result.returncode,0,result.stderr)
+                    self.assertEqual((self.storage/'dnsmasq').stat().st_mode&0o777,0o700)
+                    extra=self.storage/'dnsmasq/extra-private'
+                    self.assertEqual(extra.stat().st_mode&0o777,mode)
+                    self.assertEqual(extra.read_bytes(),b'preserve DNS-side extra\n')
+                    self.check_private_permission_policy()
+
+    def test_known_dns_leaf_alias_keeps_private_target_and_directory(self):
+        # A known basename does not make an alias public data. In particular,
+        # a hardlinked private key must not qualify for ancestor mode repair.
+        original=permission_archive(dns_mode=0o700,private_tree=True)
+        for kind in (tarfile.LNKTYPE,tarfile.SYMTYPE):
+            data=io.BytesIO()
+            with tarfile.open(fileobj=io.BytesIO(original),mode='r:') as source:
+                with tarfile.open(fileobj=data,mode='w',format=tarfile.USTAR_FORMAT) as output:
+                    for info in source.getmembers():
+                        if info.name!='dnsmasq/hosts':
+                            output.addfile(info,source.extractfile(info) if info.isfile() else None)
+                    alias=tarfile.TarInfo('dnsmasq/hosts');alias.type=kind;alias.mode=0o600
+                    # The existing validator deliberately rejects dot-dot
+                    # link targets, so the symlink uses a same-directory file.
+                    alias.linkname='secret/key' if kind==tarfile.LNKTYPE else 'dhcp.conf'
+                    output.addfile(alias)
+            for action in ('load','restore'):
+                with self.subTest(kind=kind,action=action):
+                    result=self.install_permission_archive(action,data.getvalue())
+                    self.assertEqual(result.returncode,0,result.stderr)
+                    self.assertEqual((self.storage/'dnsmasq').stat().st_mode&0o777,0o700)
+                    target=self.storage/'secret/key';alias_path=self.storage/'dnsmasq/hosts'
+                    self.assertEqual(target.stat().st_mode&0o777,0o600)
+                    if kind==tarfile.LNKTYPE:
+                        self.assertEqual(alias_path.read_bytes(),b'synthetic private bytes\n')
+                        self.assertEqual(alias_path.stat().st_ino,target.stat().st_ino)
+                        self.assertEqual(target.stat().st_nlink,2)
+                    else:
+                        self.assertTrue(alias_path.is_symlink())
+                        self.assertEqual(alias_path.read_bytes(),b'# synthetic DHCP policy\n')
+                    self.check_private_permission_policy()
 
     def test_backup_publish_replaces_symlink_itself(self):
         for directory in [False,True]:
