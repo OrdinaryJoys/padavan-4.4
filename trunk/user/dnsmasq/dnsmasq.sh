@@ -5,6 +5,13 @@ main_config=/etc/dnsmasq.conf
 work_dir=""
 max_config_bytes=2097152
 max_log_bytes=65536
+validation_sequence=0
+launch=0
+case "$#" in
+0) ;;
+1) [ "$1" = --launch ] || exit 1; launch=1;;
+*) exit 1;;
+esac
 
 refuse()
 {
@@ -39,20 +46,36 @@ bounded_copy()
 
 validate_config()
 {
-	local status size
-	#64blocks is32KiB on target ash, at most64KiB on supported host shells.
-	(ulimit -f 64 && /usr/sbin/dnsmasq --test -C "$1") > "$work_dir/validation.log" 2>&1
+	local status size status_file producer
+	validation_sequence=$((validation_sequence + 1))
+	status_file="$work_dir/validation-status.$validation_sequence"
+	[ ! -e "$status_file" ] && [ ! -L "$status_file" ] || return 1
+	# Capture may write a16MiB flat snapshot. Bound diagnostics separately;
+	# pipeline success alone is never the producer's process exit status.
+	(
+		(ulimit -f 32768 && /usr/sbin/dnsmasq "$@")
+		producer=$?
+		(set -C; printf '%s\n' "$producer" > "$status_file")
+	) 2>&1 | (ulimit -f 128 && head -c 65537 > "$work_dir/validation.log")
 	status=$?
+	[ "$status" = 0 ] || return 1
+	[ -f "$status_file" ] && [ ! -L "$status_file" ] || return 1
+	[ "$(stat -c %h "$status_file")" = 1 ] || return 1
+	[ "$(stat -c %s "$status_file")" = 2 ] || return 1
+	IFS= read -r producer < "$status_file" || return 1
+	[ "$producer" = 0 ] || return 1
 	size=$(stat -c %s "$work_dir/validation.log" 2>/dev/null) || return 1
 	case "$size" in ''|*[!0-9]*) return 1;; esac
-	[ "$size" -le "$max_log_bytes" ] && [ "$status" = 0 ]
+	[ "$size" -le "$max_log_bytes" ]
 }
 
 reserve_workspace()
 {
 	local available needed suffix candidate
 	# Firmware upload bytes already in/tmp are counted by df. Budget includes
-	# original+candidate+generated main, a bounded log and metadata headroom.
+	# original+candidate+estimated main, a bounded log and metadata headroom.
+	# Snapshot output uses its actual size and checks free space each4KiB;
+	# do not reserve its16MiB upper bound and reject every uploaded firmware.
 	needed=$(($1 + max_config_bytes + $2 + max_log_bytes + 262144))
 	available=$(df -Pk /tmp 2>/dev/null | awk 'NR == 2 {print $4}')
 	case "$available" in ''|*[!0-9]*) return 1;; esac
@@ -119,48 +142,61 @@ if ! (ulimit -f 4096 && sed -e '/^[[:space:]]*filter-aaaa[[:space:]]*\(#.*\)\{0,
 fi
 file_size "$work_dir/custom" >/dev/null || { refuse "migrated config exceeds2MiB; original preserved"; exit 1; }
 
-# Validate the full generated config with only its custom include redirected.
-if ! (ulimit -f 4096 && awk -v old="conf-file=$custom_config" -v new="conf-file=$work_dir/custom" \
-	'{ if ($0 == old) { print new; found=1 } else print } END { if (!found) exit 1 }' \
-	"$main_config" > "$work_dir/main"); then
-	refuse "cannot locate generated custom include or bound main config; original preserved"
-	exit 1
-fi
-file_size "$work_dir/main" >/dev/null || exit 1
-if ! validate_config "$work_dir/main"; then
+# The parser overlays the candidate at its logical live path, expands every
+# startup include/generator once in order, and binds the original source graph.
+set -- --test -C "$main_config" --snapshot-capture "$work_dir/snapshot" \
+	--snapshot-overlay "$custom_config" --snapshot-candidate "$work_dir/custom"
+[ "$launch" = 0 ] || set -- "$@" --snapshot-managed
+if ! validate_config "$@"; then
 	refuse "invalid custom config or bounded validation failed; original preserved; automatic defaults disabled"
 	cat "$work_dir/validation.log" >&2
 	exit 1
 fi
+[ -f "$work_dir/snapshot/manifest" ] && [ ! -L "$work_dir/snapshot/manifest" ] || exit 1
+snapshot_ticket=$(cat "$work_dir/snapshot/ticket") || exit 1
+case "$snapshot_ticket" in ''|*[!0-9a-f]*) exit 1;; esac
+case "$snapshot_ticket" in ????????????????????????????????) ;; *) exit 1;; esac
 original_hash=$(file_hash "$work_dir/original") || exit 1
 candidate_hash=$(file_hash "$work_dir/custom") || exit 1
 if [ "$existed" = 1 ]; then
 	current_hash=$(file_hash "$custom_config") || exit 1
 	[ "$current_hash" = "$original_hash" ] || { refuse "custom config changed during validation; original preserved"; exit 1; }
 	if [ "$original_hash" = "$candidate_hash" ]; then
-		validate_config "$main_config" || { refuse "installed config validation failed; service startup refused"; exit 1; }
-		installed_hash=$(file_hash "$custom_config") || exit 1
-		[ "$installed_hash" = "$candidate_hash" ] || { refuse "custom config changed during final validation; service startup refused"; exit 1; }
-		exit 0
+		:
+	else
+		[ ! -L "$custom_config" ] || { refuse "linked custom config needs manual migration; original preserved"; exit 1; }
+		publish_config "$work_dir/custom" "$work_dir/original" || exit 1
+		logger -t dnsmasq "validated legacy migration; pre-migration config kept: $migration_backup"
 	fi
-	[ ! -L "$custom_config" ] || { refuse "linked custom config needs manual migration; original preserved"; exit 1; }
-	publish_config "$work_dir/custom" "$work_dir/original" || exit 1
 else
 	if [ -e "$custom_config" ] || [ -L "$custom_config" ]; then
 		refuse "custom config appeared during validation; original preserved"
 		exit 1
 	fi
 	publish_config "$work_dir/custom" - || exit 1
-fi
-if [ "$existed" = 1 ]; then
-	logger -t dnsmasq "validated legacy migration; pre-migration config kept: $migration_backup"
-else
 	logger -t dnsmasq "first boot: installed validated custom config"
 fi
-if ! validate_config "$main_config"; then
-	refuse "installed config validation failed after publication; service startup refused"
+set -- --snapshot-seal "$work_dir/snapshot" --snapshot-ticket "$snapshot_ticket"
+[ "$launch" = 0 ] || set -- "$@" --snapshot-managed
+if ! validate_config "$@"; then
+	refuse "installed policy retained but snapshot sealing failed; service startup refused"
+	cat "$work_dir/validation.log" >&2
+	exit 1
+fi
+set -- --test --snapshot-use "$work_dir/snapshot" --snapshot-ticket "$snapshot_ticket"
+[ "$launch" = 0 ] || set -- "$@" --snapshot-managed
+if ! validate_config "$@"; then
+	refuse "installed policy retained but sealed snapshot validation failed; service startup refused"
+	cat "$work_dir/validation.log" >&2
 	exit 1
 fi
 installed_hash=$(file_hash "$custom_config") || exit 1
 [ "$installed_hash" = "$candidate_hash" ] || { refuse "installed config changed after publication; service startup refused"; exit 1; }
+if [ "$launch" = 1 ]; then
+	# The daemon's invoking parent returns only after its startup handshake.
+	# Startup parsing is complete before then; runtime hosts/leases/servers
+	# stay live and service readiness is not established by this return alone.
+	/usr/sbin/dnsmasq --snapshot-use "$work_dir/snapshot" --snapshot-ticket "$snapshot_ticket" --snapshot-managed ||
+		{ refuse "sealed snapshot service startup failed"; exit 1; }
+fi
 exit 0

@@ -93,7 +93,7 @@ static char *next_word(char *out,char *s) {
 }
 #define foreach(word, list, next) for(next=(char *)(list); (next=next_word(word,next))!=NULL; )
 static int doSystem(const char *fmt,...) {
-    struct stat st;assert(!strcmp(fmt,"/usr/bin/dnsmasq.sh"));
+    struct stat st;assert(!strcmp(fmt,"/usr/bin/dnsmasq.sh")||!strcmp(fmt,"/usr/bin/dnsmasq.sh --launch"));
     /* Validation must see newly generated, owner-write-only servers input. */
     assert(stat(map_path("/tmp/dnsmasq.servers"),&st)==0 && (st.st_mode&0777)==0644);
     validation_calls++;return fail_validation;
@@ -187,7 +187,7 @@ int main(int argc,char **argv) {
             assert(rc!=0 && exec_calls==0);
             if(strstr(argv[1],"symlink"))check_old("/etc/target.conf");
         } else {
-            assert(rc==0 && exec_calls==1 && validation_calls==1);
+            assert(rc==0 && exec_calls==0 && validation_calls==1);
             check_mode("/etc/dnsmasq.conf");check_mode("/etc/ethers");check_mode("/tmp/hosts.static");
             check_mode("/etc/dnsmasq/dhcp/dhcp-hosts.rc");check_mode("/tmp/dnsmasq.servers");
             check_mode("/tmp/dnsmasq.leases");check_mode("/etc/resolv.conf");

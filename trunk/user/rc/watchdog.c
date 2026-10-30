@@ -328,17 +328,39 @@ inet_handler(int is_ap_mode)
 	}
 }
 
+static int
+watchdog_schedule_valid(const char *schedule)
+{
+	int i, selected = 0, hour, minute;
+	if (!schedule || strlen(schedule) != 11)
+		return 0;
+	for (i = 0; i < 7; i++) {
+		if (schedule[i] != '0' && schedule[i] != '1')
+			return 0;
+		selected |= schedule[i] == '1';
+	}
+	for (i = 7; i < 11; i++)
+		if (schedule[i] < '0' || schedule[i] > '9')
+			return 0;
+	hour = (schedule[7] - '0') * 10 + schedule[8] - '0';
+	minute = (schedule[9] - '0') * 10 + schedule[10] - '0';
+	return selected && hour < 24 && minute < 60;
+}
+
 int timecheck_reboot(char *activeSchedule)
 {
 	int active, current_time, current_date, Time2Active, Date2Active;
 	time_t now;
 	struct tm *tm;
 	int i;
+	if (!watchdog_schedule_valid(activeSchedule))
+		return 0;
 
-	setenv("TZ", nvram_safe_get("time_zone_x"), 1);
-
-	time(&now);
+	if (setenv("TZ", nvram_safe_get("time_zone_x"), 1) != 0 || time(&now) == (time_t)-1)
+		return 0;
 	tm = localtime(&now);
+	if (!tm)
+		return 0;
 	current_time = tm->tm_hour * 60 + tm->tm_min;
 	current_date = 1 << (6-tm->tm_wday);
 	active = 0;
@@ -358,6 +380,28 @@ int timecheck_reboot(char *activeSchedule)
 
 	return active;
 }
+
+#if defined(APP_SHADOWSOCKS)
+/* A scheduled subscription update can perform network I/O. Only queue it
+ * here: this function runs on the hardware watchdog's signal/feed path.
+ * Replace the old blocking70s delay with a monotonic debounce. */
+static void
+watchdog_schedule_dlink(void)
+{
+	static unsigned long previous;
+	static int issued;
+	long seconds = uptime();
+	unsigned long now;
+	if (seconds < 0 || firmware_upgrade_inhibited())
+		return;
+	now = (unsigned long)seconds;
+	if (issued && now >= previous && now - previous < 70UL)
+		return;
+	previous = now;
+	issued = 1;
+	notify_rc(RCN_SCHEDULE_DLINK);
+}
+#endif
 
 /* Check for time-dependent service */
 static int 
@@ -455,7 +499,7 @@ svc_timecheck(void)
 		if (nvram_match("ntp_ready", "1"))
 		{
 			snprintf(reboot_schedule, sizeof(reboot_schedule), "%s", nvram_safe_get("reboot_schedule"));
-			if (strlen(reboot_schedule) == 11 && atoi(reboot_schedule) > 2359)
+			if (watchdog_schedule_valid(reboot_schedule))
 			{
 				if (timecheck_reboot(reboot_schedule))
 				{
@@ -468,23 +512,23 @@ svc_timecheck(void)
 		//	logmessage("reboot scheduler", "[%s] NTP sync error\n", __FUNCTION__);
 	}
 
+#if defined(APP_SHADOWSOCKS)
 	char ss_schedule[PATH_MAX];
 	if (nvram_match("ss_schedule_enable", "1"))
 	{
 		if (nvram_match("ntp_ready", "1"))
 		{
 			snprintf(ss_schedule, sizeof(ss_schedule), "%s", nvram_safe_get("ss_schedule"));
-			if (strlen(ss_schedule) == 11 && atoi(ss_schedule) > 2359)
+			if (watchdog_schedule_valid(ss_schedule))
 			{
 				if (timecheck_reboot(ss_schedule))
 				{
-					//logmessage("reboot scheduler", "[%s] The system is going down for reboot\n", __FUNCTION__);
-		            doSystem("/usr/bin/update_dlink.sh %s", "update");
-					sleep(70);
+					watchdog_schedule_dlink();
 				}
 			}
 		}
 	}
+#endif
 	return 0;
 }
 
@@ -549,6 +593,11 @@ static void httpd_process_check(void)
 static void
 dnsmasq_process_check(void)
 {
+	if (firmware_upgrade_inhibited()) {
+		dnsmasq_missing = 0;
+		return;
+	}
+
 	if (!is_dns_dhcpd_run())
 		dnsmasq_missing++;
 	else
@@ -556,8 +605,12 @@ dnsmasq_process_check(void)
 	
 	if (dnsmasq_missing > 1) {
 		dnsmasq_missing = 0;
-		logmessage("watchdog", "dnsmasq is missing, start again!");
-		start_dns_dhcpd(0);
+		logmessage("watchdog", "dnsmasq is missing, queue recovery");
+		/* DNS startup can wait for configuration generators. Keep it out of
+		 * this signal handler so the hardware watchdog continues to be fed.
+		 * PID 1 rechecks the process before starting, without stopping a
+		 * daemon which recovered while this request was queued. */
+		notify_rc(RCN_RECOVER_DNSMASQ);
 	}
 }
 

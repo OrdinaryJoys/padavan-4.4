@@ -403,7 +403,7 @@ int main(int argc,char **argv) {
                 self.assertEqual(result.returncode,0 if accepted else 1,result.stderr)
                 self.assertEqual('RESOLVER_STUB_CALLED' in result.stderr,resolver_called)
                 if not accepted and not resolver_called:
-                    self.assertIn('hostname upstream is not supported after conf-script',result.stderr)
+                    self.assertIn('hostname upstream',result.stderr)
 
     def test_collector_setup_and_read_failures_are_closed(self):
         for fault in ('fork', 'pipe', 'cloexec', 'allocation', 'stream', 'read', 'poll', 'clock', 'calls', 'depth'):
@@ -472,13 +472,18 @@ int main(int argc,char **argv) {
             'nvram': '#!/bin/sh\nprintf "0\\n"\n',
             'logger': '#!/bin/sh\nexit 0\n',
             'df': '#!/bin/sh\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted\\nfixture 24576 0 24576 0%% fixture\\n"\n',
-            'stat': '#!/usr/bin/env python3\nimport os,sys\na=sys.argv[1:];print(os.stat(a[-1]).st_size)\n',
+            'stat': '#!/usr/bin/env python3\nimport os,sys\na=sys.argv[1:];s=os.stat(a[-1]);print(s.st_nlink if a[a.index("-c")+1]=="%h" else s.st_size)\n',
             'md5sum': '#!/usr/bin/env python3\nimport hashlib,sys\nprint(hashlib.md5(open(sys.argv[1],"rb").read()).hexdigest()+"  "+sys.argv[1])\n',
         }.items():
             path = bin_dir/name; path.write_text(code); path.chmod(0o700)
+        proxy = bin_dir/'native-dnsmasq'
+        proxy.write_text('#!/usr/bin/env python3\nimport os,sys\nargs=sys.argv[1:]\n'
+                         'program='+repr(str(self.binary))+' if "--test" in args or "--snapshot-seal" in args else '+repr(str(self.parse_binary))+'\n'
+                         'os.execv(program,[program,*args])\n')
+        proxy.chmod(0o700)
         text = (ROOT/'trunk/user/dnsmasq/dnsmasq.sh').read_text()
         mapping = {'/etc/storage/dnsmasq/dnsmasq.conf': str(custom),
-                   '/etc/dnsmasq.conf': str(main), '/usr/sbin/dnsmasq': str(self.binary),
+                   '/etc/dnsmasq.conf': str(main), '/usr/sbin/dnsmasq': str(proxy),
                    '/tmp/.dnsmasq-startup': str(work/'.dnsmasq-startup')}
         pattern = '|'.join(re.escape(k) for k in sorted(mapping,key=len,reverse=True))
         wrapper = self.base/'startup.sh'
@@ -494,8 +499,8 @@ int main(int argc,char **argv) {
         wrapper, custom, main, work, env = self.prepare_wrapper(body)
         original = hashlib.sha256(custom.read_bytes()).hexdigest()
         result = subprocess.run(['sh',str(wrapper)], env=env, capture_output=True,text=True,timeout=5)
-        self.assertEqual(result.returncode,1,result.stderr)
-        self.assertEqual(int(counter.read_text()),failing_call)
+        self.assertEqual(result.returncode,1 if failing_call==1 else 0,result.stderr)
+        self.assertEqual(int(counter.read_text()),1)
         self.assertEqual(hashlib.sha256(custom.read_bytes()).hexdigest(),original)
         self.assertFalse(list(work.iterdir()))
         self.assertFalse(list(self.base.rglob('*.before-migration*')))
@@ -503,10 +508,10 @@ int main(int argc,char **argv) {
     def test_wrapper_first_validation_timeout_preserves_original(self):
         self.check_wrapper_failure(1)
 
-    def test_wrapper_second_validation_timeout_preserves_original(self):
+    def test_wrapper_second_validation_reuses_first_output_without_second_execution(self):
         self.check_wrapper_failure(2)
 
-    def test_third_startup_parse_has_its_own_guard_and_preserves_config(self):
+    def test_third_managed_startup_reuses_snapshot_and_never_runs_hanging_third_call(self):
         counter = self.base/'counter'
         body = ('n=0; [ ! -f '+str(counter)+' ] || n=$(cat '+str(counter)+'); '
                 'n=$((n+1)); printf "%s" "$n" > '+str(counter)+'; '
@@ -514,31 +519,24 @@ int main(int argc,char **argv) {
                 "printf 'cache-size=123\\n'")
         wrapper, custom, main, work, env = self.prepare_wrapper(body)
         original = custom.read_bytes()
-        result = subprocess.run(['sh',str(wrapper)],env=env,capture_output=True,text=True,timeout=5)
+        result = subprocess.run(['sh',str(wrapper),'--launch'],env=env,capture_output=True,text=True,timeout=5)
         self.assertEqual(result.returncode,0,result.stderr)
-        self.assertEqual(counter.read_text(),'2')
-        result = subprocess.run([str(self.parse_binary),'-C',str(main)],env=env,
-                                capture_output=True,text=True,timeout=3)
-        self.assertEqual(result.returncode,1,result.stderr)
-        self.assertIn('time budget',result.stderr)
-        self.assertEqual(counter.read_text(),'3')
+        self.assertIn('PARSED_CACHE=123',result.stdout)
+        self.assertEqual(counter.read_text(),'1')
         self.assertEqual(custom.read_bytes(),original)
         self.assertFalse(list(work.iterdir()))
 
-    def test_three_successful_generations_are_not_claimed_as_identical(self):
+    def test_both_validations_and_managed_startup_share_one_generation(self):
         counter = self.base/'counter'
         body = ('n=0; [ ! -f '+str(counter)+' ] || n=$(cat '+str(counter)+'); '
                 'n=$((n+1)); printf "%s" "$n" > '+str(counter)+'; '
                 "printf 'cache-size=%s\\n' \"$n\"")
         wrapper, custom, main, work, env = self.prepare_wrapper(body)
         original = custom.read_bytes()
-        result = subprocess.run(['sh',str(wrapper)],env=env,capture_output=True,text=True,timeout=5)
+        result = subprocess.run(['sh',str(wrapper),'--launch'],env=env,capture_output=True,text=True,timeout=5)
         self.assertEqual(result.returncode,0,result.stderr)
-        result = subprocess.run([str(self.parse_binary),'-C',str(main)],env=env,
-                                capture_output=True,text=True,timeout=3)
-        self.assertEqual(result.returncode,0,result.stderr)
-        self.assertIn('PARSED_CACHE=3',result.stdout)
-        self.assertEqual(counter.read_text(),'3')
+        self.assertIn('PARSED_CACHE=1',result.stdout)
+        self.assertEqual(counter.read_text(),'1')
         self.assertEqual(custom.read_bytes(),original)
         self.assertFalse(list(work.iterdir()))
 

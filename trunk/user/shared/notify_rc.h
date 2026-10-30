@@ -20,6 +20,7 @@
 
 #define RCN_RESTART_FIREWALL		"restart_firewall"
 #define RCN_RESTART_DHCPD		"restart_dhcpd"
+#define RCN_RECOVER_DNSMASQ		"recover_dnsmasq"
 #define RCN_RESTART_RADV		"restart_radv"
 #define RCN_RESTART_DDNS		"restart_ddns"
 #define RCN_RESTART_UPNP		"restart_upnp"
@@ -70,6 +71,7 @@
 #define RCN_RESTART_SS_TUNNEL		"restart_ss_tunnel"
 #define RCN_RESTART_GFWLIST_UPD		"restart_gfwlist_upd"
 #define RCN_RESTART_DLINK		"restart_dlink"
+#define RCN_SCHEDULE_DLINK		"schedule_dlink_update"
 #define RCN_RESTART_REDLINK		"restart_redlink"
 #define RCN_RESTART_KOOLPROXY		"restart_koolproxy"
 #define RCN_RESTART_ADGUARDHOME		"restart_adguardhome"

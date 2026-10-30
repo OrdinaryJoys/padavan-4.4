@@ -16,7 +16,7 @@ CFLAGS += -I$(ROOTDIR)/$(LINUXDIR)/include/ralink
 # Disable/Enable ugly httpd_check
 #CFLAGS += -DHTTPD_CHECK
 
-LDFLAGS += -L. -lm
+LDFLAGS += -L. -lm -lrt
 LDFLAGS += -L$(USERDIR)/wireless_tools -liw
 LDFLAGS += -L$(SHDIR) -lshared
 ifeq ($(STORAGE_ENABLED),y)
@@ -68,6 +68,8 @@ endif
 all: $(OBJS) Makefile
 	$(CC) -o $(EXEC) $(OBJS) $(LDFLAGS)
 	$(STRIP) $(EXEC)
+
+rc.o: hook_runner.h
 
 c.o:
 	$(CC) -c $*.c $(CFLAGS)

@@ -19,11 +19,13 @@
 #include "dnsmasq.h"
 #include <setjmp.h>
 #include "dynamic_conf.h"
+#include "conf_snapshot.h"
 
 static volatile int mem_recover = 0;
 static jmp_buf mem_jmp;
 static int one_file(char *file, int hard_opt);
 static struct conf_script_budget script_budget;
+static unsigned int script_context;
 
 static void *opt_malloc_real(const char *func, unsigned int line, size_t size);
 #define opt_malloc(x) opt_malloc_real(__func__, __LINE__, (x))
@@ -203,6 +205,13 @@ struct myoption {
 #define LOPT_LEASEQUERY    389
 #define LOPT_SPLIT_RELAY   390
 #define LOPT_LOG_MALLOC    391
+#define LOPT_SNAP_CAPTURE  392
+#define LOPT_SNAP_USE      393
+#define LOPT_SNAP_SEAL     394
+#define LOPT_SNAP_TICKET   395
+#define LOPT_SNAP_OVERLAY  396
+#define LOPT_SNAP_CANDIDATE 397
+#define LOPT_SNAP_MANAGED  398
 
 #ifdef HAVE_GETOPT_LONG
 static const struct option opts[] =  
@@ -252,6 +261,13 @@ static const struct myoption opts[] =
     { "address", 1, 0, 'A' },
     { "conf-file", 2, 0, 'C' },
     { "conf-script", 1, 0, LOPT_CONF_SCRIPT },
+    { "snapshot-capture", 1, 0, LOPT_SNAP_CAPTURE },
+    { "snapshot-use", 1, 0, LOPT_SNAP_USE },
+    { "snapshot-seal", 1, 0, LOPT_SNAP_SEAL },
+    { "snapshot-ticket", 1, 0, LOPT_SNAP_TICKET },
+    { "snapshot-overlay", 1, 0, LOPT_SNAP_OVERLAY },
+    { "snapshot-candidate", 1, 0, LOPT_SNAP_CANDIDATE },
+    { "snapshot-managed", 0, 0, LOPT_SNAP_MANAGED },
     { "no-resolv", 0, 0, 'R' },
     { "expand-hosts", 0, 0, 'E' },
     { "localmx", 0, 0, 'L' },
@@ -956,7 +972,7 @@ char *parse_server(char *arg, struct server_details *sdetails)
       /* if the argument is neither an IPv4 not an IPv6 address, it might be a
 	 hostname and we should try to resolve it to a suitable address. */
       if (script_budget.deadline)
-        return _("hostname upstream is not supported after conf-script; use a numeric address");
+        return _("hostname upstream is unsupported during bounded startup parsing; use a numeric address");
       memset(&hints, 0, sizeof(hints));
       /* The AI_ADDRCONFIG flag ensures that then IPv4 addresses are returned in
          the result only if the local system has at least one IPv4 address
@@ -2201,6 +2217,29 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 
 	  }
 
+        if (conf_snapshot_mode() == CONF_SNAPSHOT_CAPTURE)
+          {
+            char *filters = malloc(CONF_SCRIPT_LINE_BYTES + 1);
+            size_t used = 0;
+            const char *snapshot_error;
+            int which;
+            if (!filters)
+              die(_("snapshot directory filter allocation failed"), NULL, EC_BADCONF);
+            filters[0] = 0;
+            for (which = 0; which < 2; which++)
+              for (li = which ? match_suffix : ignore_suffix; li; li = li->next)
+                {
+                  size_t size = strlen(li->name);
+                  if (strchr(li->name, '\n') || used + size + 2 > CONF_SCRIPT_LINE_BYTES)
+                    die(_("snapshot directory filter budget exceeded"), NULL, EC_BADCONF);
+                  filters[used++] = which ? 'M' : 'I';
+                  memcpy(filters + used, li->name, size);
+                  used += size; filters[used++] = '\n'; filters[used] = 0;
+                }
+            if (!conf_snapshot_directory(directory, filters, &snapshot_error))
+              die("%s", (char *)snapshot_error, EC_BADCONF);
+            free(filters);
+          }
 	for (li = files; li; li = li->next)
 	  one_file(li->name, 0);
       	
@@ -5490,6 +5529,7 @@ static void read_file(char *file, FILE *f, int hard_opt, int from_script)
   size_t file_bytes = 0;
   int line_status;
   const char *line_error = NULL;
+  unsigned int from_script_id = script_context;
 
   /* Memory allocation failure longjmps here if mem_recover == 1 */ 
   if (hard_opt != 0)
@@ -5511,10 +5551,17 @@ static void read_file(char *file, FILE *f, int hard_opt, int from_script)
       int white, i;
       volatile int option;
       char *errmess, *p, *arg, *start;
+      char *snapshot_line = NULL;
       size_t len;
 
       if (hard_opt == 0 && !conf_script_check(&script_budget))
         die(_("conf-script total parsing time budget exceeded"), NULL, EC_BADCONF);
+      if (hard_opt == 0 && conf_snapshot_mode() == CONF_SNAPSHOT_CAPTURE)
+        {
+          snapshot_line = strdup(buff);
+          if (!snapshot_line)
+            die(_("snapshot raw line allocation failed"), NULL, EC_BADCONF);
+        }
 
       option = (hard_opt == LOPT_REV_SERV) ? 0 : hard_opt;
       
@@ -5582,7 +5629,7 @@ static void read_file(char *file, FILE *f, int hard_opt, int from_script)
       for (len = strlen(start); (len != 0) && (start[len-1] == ' '); len--);
       
       if (len == 0)
-	continue; 
+        { free(snapshot_line); continue; }
       else
 	start[len] = 0;
       
@@ -5618,6 +5665,13 @@ static void read_file(char *file, FILE *f, int hard_opt, int from_script)
 	}
 
     oops:
+      if (hard_opt == 0 && option >= LOPT_SNAP_CAPTURE && option <= LOPT_SNAP_MANAGED)
+        errmess = _("snapshot switches are command-line only");
+      if (hard_opt == 0 && conf_snapshot_mode() == CONF_SNAPSHOT_USE &&
+          (option == 'C' || option == '7' || option == LOPT_CONF_SCRIPT))
+        errmess = _("snapshot contains a forbidden expansion directive");
+      if (hard_opt == 0 && conf_snapshot_managed() && (option == 'd' || option == 'k'))
+        errmess = _("snapshot managed launch forbids foreground/no-daemon options");
       if (errmess)
 	strcpy(daemon->namebuff, errmess);
 	  
@@ -5626,7 +5680,7 @@ static void read_file(char *file, FILE *f, int hard_opt, int from_script)
 	  if (from_script)
 	    snprintf(daemon->namebuff + strlen(daemon->namebuff),
                      MAXDNAMESTR + 1 - strlen(daemon->namebuff),
-                     _(" in output from %s"), file);
+                     _(" in generated configuration (script %u)"), from_script_id);
 	  else
 	    snprintf(daemon->namebuff + strlen(daemon->namebuff),
                      MAXDNAMESTR + 1 - strlen(daemon->namebuff),
@@ -5637,6 +5691,13 @@ static void read_file(char *file, FILE *f, int hard_opt, int from_script)
 	  else
 	    die("%s", daemon->namebuff, EC_BADCONF);
 	}
+      if (snapshot_line && option != 'C' && option != '7' && option != LOPT_CONF_SCRIPT)
+        {
+          const char *snapshot_error;
+          if (!conf_snapshot_line(snapshot_line, &snapshot_error))
+            die("%s", (char *)snapshot_error, EC_BADCONF);
+        }
+      free(snapshot_line);
     }
 
   if (hard_opt == 0)
@@ -5667,6 +5728,8 @@ static int one_file(char *file, int hard_opt)
 {
   FILE *f;
   int nofile_ok = 0, do_popen = 0;
+  const char *input_file;
+  unsigned int parent_script = script_context;
   static struct fileread {
     dev_t dev;
     ino_t ino;
@@ -5685,6 +5748,7 @@ static int one_file(char *file, int hard_opt)
        hard_opt = 0;
        do_popen = 1;
      }
+   input_file = do_popen ? file : conf_snapshot_overlay(file);
    
    if (hard_opt == 0 && !do_popen && strcmp(file, "-") == 0)
     {
@@ -5695,7 +5759,7 @@ static int one_file(char *file, int hard_opt)
       /* ignore repeated files. */
       struct stat statbuf;
     
-      if (hard_opt == 0 && stat(file, &statbuf) == 0)
+      if (hard_opt == 0 && stat(input_file, &statbuf) == 0)
 	{
 	  struct fileread *r;
 	  
@@ -5713,8 +5777,12 @@ static int one_file(char *file, int hard_opt)
       if (do_popen)
 	{
 	  const char *error;
+          if (!conf_snapshot_script(script_budget.calls + 1, script_context,
+                                    script_budget.depth + 1, file, &error))
+            die("%s", (char *)error, EC_BADCONF);
 	  if (!(f = conf_script_open(file, &script_budget, &error)))
 	    die("%s", (char *)error, EC_BADCONF);
+          script_context = script_budget.calls;
 	}
 
       else if (hard_opt == 0 && strcmp(file, "/dev/null") == 0)
@@ -5724,7 +5792,7 @@ static int one_file(char *file, int hard_opt)
           int fd;
           if (++script_budget.files > CONF_CONFIG_MAX_FILES)
             die(_("configuration file count limit exceeded"), NULL, EC_BADCONF);
-          fd = open(file, O_RDONLY | O_NONBLOCK);
+          fd = open(input_file, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
           if (fd == -1)
             {
               if (errno == ENOENT && nofile_ok)
@@ -5760,7 +5828,20 @@ static int one_file(char *file, int hard_opt)
 	} 
     }
   
+   if (hard_opt == 0 && !do_popen)
+     {
+       const char *snapshot_error;
+       if (!conf_snapshot_input_begin(file, f, &snapshot_error))
+         die("%s", (char *)snapshot_error, EC_BADCONF);
+     }
    read_file(file, f, hard_opt, do_popen);
+   script_context = parent_script;
+   if (hard_opt == 0 && !do_popen)
+     {
+       const char *snapshot_error;
+       if (!conf_snapshot_input_end(f, &snapshot_error))
+         die("%s", (char *)snapshot_error, EC_BADCONF);
+     }
 
   if (do_popen)
     conf_script_close(f, &script_budget);
@@ -6050,6 +6131,14 @@ void read_opts(int argc, char **argv, char *compile_opts)
   
   /* See comment above make_servers(). Optimises server-read code. */
   mark_servers(0);
+  {
+    const char *snapshot_error;
+    int action = conf_snapshot_cli(argc, argv, &script_budget, &snapshot_error);
+    if (!action)
+      die("%s", (char *)snapshot_error, EC_BADCONF);
+    if (action == 2)
+      exit(0);
+  }
   
   while (1) 
     {
@@ -6089,6 +6178,8 @@ void read_opts(int argc, char **argv, char *compile_opts)
       /* command-line only stuff */
       if (option == LOPT_TEST)
 	testmode = 1;
+      else if (option >= LOPT_SNAP_CAPTURE && option <= LOPT_SNAP_MANAGED)
+        continue; /* Already checked as a strict CLI-only contract. */
       else if (option == 'w')
 	{
 #ifdef HAVE_DHCP
@@ -6137,7 +6228,9 @@ void read_opts(int argc, char **argv, char *compile_opts)
 
   free(argbuf);
 
-  if (conffile)
+  if (conf_snapshot_mode() == CONF_SNAPSHOT_USE)
+    read_file("sealed startup snapshot", conf_snapshot_stream(), 0, 0);
+  else if (conffile)
     {
       one_file(conffile, 0);
       free(conffile);
@@ -6374,6 +6467,11 @@ void read_opts(int argc, char **argv, char *compile_opts)
 
   if (!conf_script_check(&script_budget))
     die(_("conf-script total parsing time budget exceeded"), NULL, EC_BADCONF);
+  {
+    const char *snapshot_error;
+    if (!conf_snapshot_finish(&snapshot_error))
+      die("%s", (char *)snapshot_error, EC_BADCONF);
+  }
   memset(&script_budget, 0, sizeof(script_budget));
 
   if (testmode)

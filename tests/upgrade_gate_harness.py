@@ -37,6 +37,9 @@ def generate(root):
 #define FW_MTD_NAME "firmware"
 #define FW_UPGRADE_INHIBIT "firmware-upgrade-inhibit"
 #define FW_UPGRADE_MAX_BYTES 15925248UL
+#define HOOK_RUNNER_TIMEOUT_MS 30000U
+#define HOOK_RUNNER_TERM_MS 2000U
+#define HOOK_RUNNER_KILL_MS 1000U
 '''
     code += '#define FW_UPGRADE_PRIVATE ' + json.dumps(str(root / 'private')) + '\n'
     code += '#define FW_UPGRADE_WRITER ' + json.dumps(str(root / 'rom-writer')) + '\n'
@@ -83,7 +86,13 @@ static int fixture_pause(void){assert(0);return 0;}
 static int doSystem(const char *fmt,...){
  char command[512];va_list ap;va_start(ap,fmt);vsnprintf(command,sizeof(command),fmt,ap);va_end(ap);
  if(!strcmp(command,"/sbin/mtd_storage.sh save")){assert(saves<2);versions[saves]=revision;saves++;event("save");return saves==1?first_status:second_status;}
- assert(!strcmp(command,SCRIPT_SHUTDOWN " 0"));hooks++;revision++;event("hook");return hook_status;
+ assert(!"Shutdown hooks must use the bounded runner, not doSystem");return -1;
+}
+/* Integration control for hook outcomes. The actual process/deadline runner
+ * is compiled and exercised independently by test_hook_runner.py. */
+static int shutdown_hook_run(const char*path,int level,unsigned int timeout,unsigned int term,unsigned int hard){
+ assert(level==0&&timeout==30000U&&term==2000U&&hard==1000U);
+ assert(!strcmp(path,SCRIPT_SHUTDOWN));hooks++;revision++;event("hook");errno=hook_status<0?ETIMEDOUT:0;return hook_status;
 }
 static void storage_save_time(int t){assert(t==60);time_calls++;event("time");}
 static int check_if_file_exist(const char*p){assert(!strcmp(p,SCRIPT_SHUTDOWN));return hook_exists;}

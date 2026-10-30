@@ -569,11 +569,13 @@ start_dns_dhcpd(int is_ap_mode)
 		return EIO;
 	if (is_dns_used && fill_dnsmasq_servers() != 0)
 		return EIO;
+	if (is_dns_used || is_dhcp_used) {
+		if (doSystem("/usr/bin/dnsmasq.sh --launch") != 0)
+			return EINVAL;
+		return 0;
+	}
 	if (doSystem("/usr/bin/dnsmasq.sh") != 0)
 		return EINVAL;
-
-	if (is_dns_used || is_dhcp_used)
-		return eval("/usr/sbin/dnsmasq");
 
 	return 0;
 }

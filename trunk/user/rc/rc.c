@@ -45,6 +45,7 @@
 #endif
 
 #include "rc.h"
+#include "hook_runner.h"
 #include "gpio_pins.h"
 #include "switch.h"
 #include <ralink_priv.h>
@@ -811,9 +812,9 @@ flash_firmware(void)
 	/* Run the user hook while core services are still available, so its
 	 * failure cannot strand them stopped. Hooks must return 0 on success. */
 	if (check_if_file_exist(script_name)) {
-		status = doSystem("%s %d", script_name, 0);
+		status = shutdown_hook_run(script_name, 0, HOOK_RUNNER_TIMEOUT_MS, HOOK_RUNNER_TERM_MS, HOOK_RUNNER_KILL_MS);
 		if (status != 0) {
-			logmessage("firmware", "Shutdown hook failed (status %d); upgrade aborted", status);
+			logmessage("firmware", "Shutdown hook failed (status %d, runner error %d); upgrade aborted", status, errno);
 			return 0;
 		}
 		/* Preserve completed hook edits before stopping services. On failure
@@ -1165,14 +1166,18 @@ shutdown_router(int level)
 	int use_halt = (level == 1) ? 1 : 0;
 	int is_ap_mode = get_ap_mode();
 	const char *script_name = SCRIPT_SHUTDOWN;
+	int hook_status;
 
 	stop_misc();
 
 	if (level < 2)
 		stop_services(use_halt);
 
-	if (check_if_file_exist(script_name))
-		doSystem("%s %d", script_name, level);
+	if (check_if_file_exist(script_name)) {
+		hook_status = shutdown_hook_run(script_name, level, HOOK_RUNNER_TIMEOUT_MS, HOOK_RUNNER_TERM_MS, HOOK_RUNNER_KILL_MS);
+		if (hook_status != 0)
+			logmessage("shutdown", "Shutdown hook failed (status %d, runner error %d); continuing shutdown", hook_status, errno);
+	}
 
 #if defined (USE_STORAGE)
 	safe_remove_all_stor_devices(use_halt);
@@ -1213,6 +1218,18 @@ shutdown_router(int level)
 	LED_CONTROL(LED_LAN, LED_OFF);
 	LED_CONTROL(LED_PWR, LED_OFF);
 }
+
+#if defined(APP_SHADOWSOCKS)
+static void
+start_scheduled_dlink(void)
+{
+	char *args[] = { "/bin/sh", "/usr/bin/update_dlink.sh", "update", NULL };
+	pid_t child;
+	int result = _eval(args, NULL, 0, &child);
+	if (result != 0)
+		logmessage("SS", "Cannot launch scheduled subscription update (status %d)", result);
+}
+#endif
 
 void 
 handle_notifications(void)
@@ -1502,6 +1519,12 @@ handle_notifications(void)
 		}
 #endif
 #if defined(APP_SHADOWSOCKS)
+		else if (strcmp(entry->d_name, RCN_SCHEDULE_DLINK) == 0)
+		{
+			/* Fork and return to the queue; do not make the watchdog or
+			 * PID1 wait for remote subscription downloads. */
+			start_scheduled_dlink();
+		}
 		else if (strcmp(entry->d_name, RCN_RESTART_SHADOWSOCKS) == 0)
 		{
 			restart_ss();
@@ -1657,6 +1680,11 @@ handle_notifications(void)
 		{
 			if (get_ap_mode() || has_wan_ip4(0))
 				notify_run_detect_internet(2);
+		}
+		else if (strcmp(entry->d_name, RCN_RECOVER_DNSMASQ) == 0)
+		{
+			if (!get_ap_mode() && !is_dns_dhcpd_run())
+				start_dns_dhcpd(0);
 		}
 		else if (strcmp(entry->d_name, RCN_RESTART_DHCPD) == 0)
 		{

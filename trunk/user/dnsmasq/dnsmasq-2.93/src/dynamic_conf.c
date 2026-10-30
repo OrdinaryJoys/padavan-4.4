@@ -366,11 +366,15 @@ int conf_config_line(FILE *stream, char **buffer, size_t *capacity,
           if (ferror(stream))
             { *error = "configuration input read failed"; return -1; }
           if (used)
-            { (*buffer)[used] = 0; return 1; }
+            {
+              (*buffer)[used] = 0;
+              if (budget->input_bytes) budget->input_bytes(stream,*buffer,used);
+              return 1;
+            }
           free(*buffer); *buffer = NULL; *capacity = 0;
           return 0;
         }
-      if (++*file_bytes > CONF_CONFIG_MAX_BYTES ||
+      if (++*file_bytes > (budget->trusted_flat==stream?CONF_CONFIG_TOTAL_BYTES:CONF_CONFIG_MAX_BYTES) ||
           ++budget->parsed_bytes > CONF_CONFIG_TOTAL_BYTES)
         { *error = "configuration input byte budget exceeded"; return -1; }
       if (c == 0 || (c != '\n' && used == CONF_SCRIPT_LINE_BYTES))
@@ -388,7 +392,13 @@ int conf_config_line(FILE *stream, char **buffer, size_t *capacity,
         }
       (*buffer)[used] = 0;
       if (c == '\n')
-        return 1;
+        {
+          if (budget->input_bytes) {
+            budget->input_bytes(stream,*buffer,used);
+            budget->input_bytes(stream,"\n",1);
+          }
+          return 1;
+        }
       (*buffer)[used++] = (char)c;
     }
 }

@@ -31,6 +31,8 @@ struct conf_script_budget {
   size_t parsed_bytes;
   unsigned int files, parse_depth;
   unsigned int directory_entries, directory_files;
+  FILE *trusted_flat;
+  void (*input_bytes)(FILE *, const void *, size_t);
   char *buffers[CONF_SCRIPT_MAX_DEPTH];
 };
 

@@ -99,15 +99,34 @@ print('ssh-ed25519\nssh-rsa')
 if os.environ.get('DSA_SUPPORTED')=='1': print('ssh-dss')
 ''')
         self.stub('dnsmasq', common + r'''
-assert args[:2]==['--test','-C']
-p=pathlib.Path(args[2]); text=p.read_text()
+if '--snapshot-seal' in args:
+    emit('dns-seal'); sys.exit(0)
+if '--snapshot-use' in args:
+    cache=pathlib.Path(args[args.index('--snapshot-use')+1])
+    p=pathlib.Path(os.environ['MAIN_CONFIG']);text=p.read_text()
+    custom=(cache/'fixture-candidate').read_text()
+else:
+    assert args[:2]==['--test','-C']
+    p=pathlib.Path(args[2]); text=p.read_text()
+    includes=[line.split('=',1)[1] for line in text.splitlines() if line.startswith('conf-file=')]
+    if '--snapshot-capture' in args:
+        # This suite isolates publication policy. Real snapshot protocol and
+        # parser semantics are covered by test_dns_snapshot and target gates.
+        assert os.environ['DNS_CONFIG'] in includes
+        candidate=pathlib.Path(args[args.index('--snapshot-candidate')+1])
+        custom=candidate.read_text()
+        cache=pathlib.Path(args[args.index('--snapshot-capture')+1]);cache.mkdir(mode=0o700)
+        (cache/'manifest').write_text('inert policy-fixture marker')
+        (cache/'ticket').write_text('a'*32+'\n')
+        (cache/'fixture-candidate').write_text(custom)
+    else:
+        custom='\n'.join(pathlib.Path(name).read_text() for name in includes)
 if os.environ.get('VALIDATION_FLOOD')=='1':
     while True: os.write(2,b'X'*4096)
-includes=[line.split('=',1)[1] for line in text.splitlines() if line.startswith('conf-file=')]
-custom='\n'.join(pathlib.Path(name).read_text() for name in includes)
-emit('dns-test', path=str(p), config=custom)
+emit('dns-test', path=str(p), config=custom,
+     snapshot_dir=str(cache) if '--snapshot-capture' in args or '--snapshot-use' in args else '')
 if os.environ.get('CHANGE_CUSTOM_POLICY')=='1': pathlib.Path(os.environ['DNS_CONFIG']).write_text('dhcp-ignore=tag:new-restriction\n')
-if os.environ.get('CHANGE_INSTALLED_POLICY')=='1' and p==pathlib.Path(os.environ['MAIN_CONFIG']):
+if os.environ.get('CHANGE_INSTALLED_POLICY')=='1' and '--snapshot-use' in args:
     pathlib.Path(os.environ['DNS_CONFIG']).write_text('dhcp-ignore=tag:final-restriction\n')
 if os.environ.get('DNS_FAIL')=='1' or 'BadDirective' in text+custom or any(line.lstrip().startswith('gfwlist=') for line in custom.splitlines()):
     print('bad option in private fixture',file=sys.stderr); sys.exit(1)
@@ -397,7 +416,8 @@ class StartupCapacityPolicyTests(StartupPolicyFixture):
                 self.assertEqual(path.read_text(),payload);self.assertEqual(path.stat().st_ino,inode)
                 self.assertEqual(self.events('publish'),[])
                 tests=self.events('dns-test' if kind=='dns' else 'ssh-test')
-                self.assertTrue(any(str(self.work_root) in row['path'] for row in tests))
+                self.assertTrue(any(str(self.work_root) in row['path'] or
+                                    str(self.work_root) in row.get('snapshot_dir','') for row in tests))
                 self.assertFalse(list(self.storage.glob('*/.startup.*')))
 
     def test_large_migration_keeps_original_inode_in_private_backup(self):
