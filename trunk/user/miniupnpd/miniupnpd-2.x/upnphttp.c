@@ -21,6 +21,10 @@
 #include <syslog.h>
 #include <ctype.h>
 #include <errno.h>
+#include <time.h>
+#ifdef __linux__
+#include <sys/sysinfo.h>
+#endif
 #include "config.h"
 #ifdef ENABLE_HTTP_DATE
 #include <time.h>
@@ -37,6 +41,11 @@
  * process runs out of memory. Mirrors upstream (CONTENT_LENGTH_LIMIT). */
 #ifndef CONTENT_LENGTH_LIMIT
 #define CONTENT_LENGTH_LIMIT (1024*1024)
+#endif
+
+/* Content-Length is not available until all headers have arrived. */
+#ifndef HEADERS_LENGTH_LIMIT
+#define HEADERS_LENGTH_LIMIT (64*1024)
 #endif
 
 #ifdef ENABLE_HTTPS
@@ -126,19 +135,163 @@ void free_ssl(void)
 }
 #endif /* ENABLE_HTTPS */
 
+/* The event loop is single threaded. Capacities, rather than received bytes,
+ * account for all live request/response allocations, including failed retries. */
+static size_t http_buffer_bytes;
+static unsigned int http_connection_count;
+
+static time_t
+http_uptime(void)
+{
+#ifdef __linux__
+	struct sysinfo info;
+	/* No wall-clock/NTP jumps and no new librt link/runtime dependency. */
+	if (sysinfo(&info) == 0)
+		return info.uptime;
+#else
+	struct timespec now;
+	if (clock_gettime(CLOCK_MONOTONIC, &now) == 0)
+		return now.tv_sec;
+#endif
+	return (time_t)-1;
+}
+
+static int
+http_expired(const struct upnphttp *h, time_t now)
+{
+	return now < 0 || now < h->accepted_at || now < h->last_io_at ||
+	       now - h->accepted_at >= UPNPHTTP_REQUEST_TIMEOUT ||
+	       now - h->last_io_at >= UPNPHTTP_IDLE_TIMEOUT;
+}
+
+static int
+http_touch(struct upnphttp *h)
+{
+	time_t now = http_uptime();
+	if (now < 0) {
+		h->state = EToDelete;
+		return 0;
+	}
+	h->last_io_at = now;
+	return 1;
+}
+
+static int
+http_resize(struct upnphttp *h, int response, int capacity)
+{
+	char **buffer = response ? &h->res_buf : &h->req_buf;
+	int *allocated = response ? &h->res_buf_alloclen : &h->req_bufalloc;
+	char *replacement;
+	if (capacity <= 0 || *allocated < 0) {
+		h->state = EToDelete;
+		return 0;
+	}
+	if (*buffer && capacity <= *allocated)
+		return 1;
+	/* Reserve the full new allocation while the old one may still exist
+	 * inside realloc(), so even a moving realloc fits the shared budget. */
+	if (http_buffer_bytes > UPNPHTTP_BUFFER_LIMIT ||
+	    (size_t)capacity > UPNPHTTP_BUFFER_LIMIT - http_buffer_bytes) {
+		h->state = EToDelete;
+		return 0;
+	}
+	replacement = realloc(*buffer, (size_t)capacity);
+	if (!replacement) {
+		h->state = EToDelete;
+		return 0;
+	}
+	http_buffer_bytes += (size_t)capacity - (size_t)*allocated;
+	*buffer = replacement;
+	*allocated = capacity;
+	return 1;
+}
+
+void
+Check_upnphttp_connections(struct httplisthead *head, struct timeval *timeout)
+{
+	struct upnphttp *h = head->lh_first, *next;
+	time_t now = http_uptime();
+	while (h) {
+		time_t age_left, idle_left, left;
+		next = h->entries.le_next;
+		if (h->state >= EToDelete || http_expired(h, now)) {
+			LIST_REMOVE(h, entries);
+			Delete_upnphttp(h);
+		} else if (timeout) {
+			age_left = UPNPHTTP_REQUEST_TIMEOUT - (now - h->accepted_at);
+			idle_left = UPNPHTTP_IDLE_TIMEOUT - (now - h->last_io_at);
+			left = age_left < idle_left ? age_left : idle_left;
+			if (timeout->tv_sec >= left) {
+				timeout->tv_sec = left;
+				timeout->tv_usec = 0;
+			}
+		}
+		h = next;
+	}
+}
+
+/* The same list/select operations used by miniupnpd's main event loop. */
+int
+Prepare_upnphttp_fds(struct httplisthead *head, fd_set *reads, fd_set *writes,
+                    int *maxfd, struct timeval *timeout)
+{
+	struct upnphttp *h;
+	int count = 0;
+	Check_upnphttp_connections(head, timeout);
+	for (h = head->lh_first; h; h = h->entries.le_next) {
+		if (h->socket < 0) continue;
+		if (h->socket >= FD_SETSIZE) {
+			CloseSocket_upnphttp(h);
+			continue;
+		}
+		if (h->state <= EWaitingForHttpContent)
+			FD_SET(h->socket, reads);
+		else if (h->state == ESendingContinue || h->state == ESendingAndClosing)
+			FD_SET(h->socket, writes);
+		else
+			continue;
+		if (*maxfd < h->socket) *maxfd = h->socket;
+		count++;
+	}
+	return count;
+}
+
+void
+Process_upnphttp_fds(struct httplisthead *head, fd_set *reads, fd_set *writes)
+{
+	struct upnphttp *h;
+	/* select() may return exactly at the deadline, even with readable data. */
+	Check_upnphttp_connections(head, NULL);
+	for (h = head->lh_first; h; h = h->entries.le_next) {
+		if (h->socket >= FD_SETSIZE) {
+			CloseSocket_upnphttp(h);
+			continue;
+		}
+		if (h->socket >= 0 && (FD_ISSET(h->socket, reads) || FD_ISSET(h->socket, writes)))
+			Process_upnphttp(h);
+	}
+}
+
 struct upnphttp *
 New_upnphttp(int s)
 {
-	struct upnphttp * ret;
-	if(s<0)
+	struct upnphttp *ret;
+	time_t now;
+	if (s < 0 || s >= FD_SETSIZE || http_connection_count >= UPNPHTTP_MAX_CONNECTIONS) {
+		errno = ENOSPC;
 		return NULL;
-	ret = (struct upnphttp *)malloc(sizeof(struct upnphttp));
-	if(ret == NULL)
+	}
+	now = http_uptime();
+	if (now < 0 || !set_non_blocking(s))
 		return NULL;
-	memset(ret, 0, sizeof(struct upnphttp));
+	ret = malloc(sizeof(*ret));
+	if (!ret)
+		return NULL;
+	memset(ret, 0, sizeof(*ret));
 	ret->socket = s;
-	if(!set_non_blocking(s))
-		syslog(LOG_WARNING, "New_upnphttp::set_non_blocking(): %m");
+	ret->accepted_at = ret->last_io_at = now;
+	memcpy(ret->HttpVer, "HTTP/1.1", sizeof("HTTP/1.1"));
+	http_connection_count++;
 	return ret;
 }
 
@@ -176,7 +329,7 @@ void
 CloseSocket_upnphttp(struct upnphttp * h)
 {
 	/* SSL_shutdown() ? */
-	if(close(h->socket) < 0)
+	if(h->socket >= 0 && close(h->socket) < 0)
 	{
 		syslog(LOG_ERR, "CloseSocket_upnphttp: close(%d): %m", h->socket);
 	}
@@ -195,10 +348,15 @@ Delete_upnphttp(struct upnphttp * h)
 #endif
 		if(h->socket >= 0)
 			CloseSocket_upnphttp(h);
-		if(h->req_buf)
+		if(h->req_buf) {
+			http_buffer_bytes -= (size_t)h->req_bufalloc;
 			free(h->req_buf);
-		if(h->res_buf)
+		}
+		if(h->res_buf) {
+			http_buffer_bytes -= (size_t)h->res_buf_alloclen;
 			free(h->res_buf);
+		}
+		http_connection_count--;
 		free(h);
 	}
 }
@@ -513,15 +671,13 @@ ProcessHTTPPOST_upnphttp(struct upnphttp * h)
 	else if(h->respflags & FLAG_CONTINUE)
 	{
 		/* Sending the 100 Continue response */
-		if(!h->res_buf) {
-			h->res_buf = malloc(256);
-			h->res_buf_alloclen = 256;
-		}
+		if(!http_resize(h, 1, 256))
+			return;
 		h->res_buflen = snprintf(h->res_buf, h->res_buf_alloclen,
 		                         "%s 100 Continue\r\n\r\n", h->HttpVer);
 		h->res_sent = 0;
 		h->state = ESendingContinue;
-		if(SendResp_upnphttp(h))
+		if(SendResp_upnphttp(h) && h->state != EToDelete)
 			h->state = EWaitingForHttpContent;
 	}
 	else
@@ -897,15 +1053,47 @@ ProcessHttpQuery_upnphttp(struct upnphttp * h)
 }
 
 
+/* Grow geometrically instead of reallocating for every small TCP fragment.
+ * Keep a trailing NUL in both receive states, including allocation failures. */
+static int
+append_request(struct upnphttp * h, const char * buf, int n)
+{
+	int needed, capacity;
+	const int limit = HEADERS_LENGTH_LIMIT + CONTENT_LENGTH_LIMIT + 1;
+
+	if(n < 0 || h->req_buflen < 0 || h->req_buflen >= limit ||
+	   n > limit - h->req_buflen - 1) {
+		h->state = EToDelete;
+		return 0;
+	}
+	needed = h->req_buflen + n + 1;
+	if(needed > h->req_bufalloc) {
+		capacity = h->req_bufalloc ? h->req_bufalloc : 4096;
+		while(capacity < needed)
+			capacity = capacity > limit / 2 ? limit : capacity * 2;
+		if(!http_resize(h, 0, capacity)) {
+			syslog(LOG_WARNING, "Unable to allocate bounded HTTP request buffer");
+			return 0;
+		}
+	}
+	memcpy(h->req_buf + h->req_buflen, buf, n);
+	h->req_buflen += n;
+	h->req_buf[h->req_buflen] = '\0';
+	return 1;
+}
+
 void
 Process_upnphttp(struct upnphttp * h)
 {
-	char * h_tmp;
 	char buf[2048];
-	int n;
+	int n, remaining;
 
 	if(!h)
 		return;
+	if(http_expired(h, http_uptime())) {
+		CloseSocket_upnphttp(h);
+		return;
+	}
 	switch(h->state)
 	{
 	case EWaitingForHttpRequest:
@@ -953,23 +1141,19 @@ Process_upnphttp(struct upnphttp * h)
 		else
 		{
 			const char * endheaders;
-			/* if 1st arg of realloc() is null,
-			 * realloc behaves the same as malloc() */
-			h_tmp = (char *)realloc(h->req_buf, n + h->req_buflen + 1);
-			if (h_tmp == NULL)
-			{
-				syslog(LOG_WARNING, "Unable to allocate new memory for h->req_buf)");
-				h->state = EToDelete;
+			int scan_start = h->req_buflen > 3 ? h->req_buflen - 3 : 0;
+			if(!http_touch(h) || !append_request(h, buf, n))
+				return;
+			/* Only the last three old bytes can start a new delimiter. */
+			endheaders = findendheaders(h->req_buf + scan_start,
+			                             h->req_buflen - scan_start);
+			if((endheaders && endheaders - h->req_buf + 4 > HEADERS_LENGTH_LIMIT) ||
+			   (!endheaders && h->req_buflen >= HEADERS_LENGTH_LIMIT)) {
+				syslog(LOG_WARNING, "HTTP headers over limit");
+				BuildResp2_upnphttp(h, 400, "Bad Request", 0, 0);
+				SendRespAndClose_upnphttp(h);
+				return;
 			}
-			else
-			{
-				h->req_buf = h_tmp;
-				memcpy(h->req_buf + h->req_buflen, buf, n);
-				h->req_buflen += n;
-				h->req_buf[h->req_buflen] = '\0';
-			}
-			/* search for the string "\r\n\r\n" */
-			endheaders = findendheaders(h->req_buf, h->req_buflen);
 			if(endheaders)
 			{
 				/* at this point, the request buffer (h->req_buf)
@@ -980,14 +1164,21 @@ Process_upnphttp(struct upnphttp * h)
 		}
 		break;
 	case EWaitingForHttpContent:
+		remaining = h->req_contentlen - (h->req_buflen - h->req_contentoff);
+		if(remaining <= 0) {
+			ProcessHTTPPOST_upnphttp(h);
+			break;
+		}
+		if(remaining > (int)sizeof(buf))
+			remaining = sizeof(buf);
 #ifdef ENABLE_HTTPS
 		if(h->ssl) {
-			n = SSL_read(h->ssl, buf, sizeof(buf));
+			n = SSL_read(h->ssl, buf, remaining);
 		} else {
-			n = recv(h->socket, buf, sizeof(buf), 0);
+			n = recv(h->socket, buf, remaining, 0);
 		}
 #else
-		n = recv(h->socket, buf, sizeof(buf), 0);
+		n = recv(h->socket, buf, remaining, 0);
 #endif
 		if(n<0)
 		{
@@ -1023,26 +1214,16 @@ Process_upnphttp(struct upnphttp * h)
 		}
 		else
 		{
-			void * tmp = realloc(h->req_buf, n + h->req_buflen);
-			if(!tmp)
+			if(!http_touch(h) || !append_request(h, buf, n))
+				return;
+			if((h->req_buflen - h->req_contentoff) >= h->req_contentlen)
 			{
-				syslog(LOG_ERR, "memory allocation error %m");
-				h->state = EToDelete;
-			}
-			else
-			{
-				h->req_buf = tmp;
-				memcpy(h->req_buf + h->req_buflen, buf, n);
-				h->req_buflen += n;
-				if((h->req_buflen - h->req_contentoff) >= h->req_contentlen)
-				{
-					ProcessHTTPPOST_upnphttp(h);
-				}
+				ProcessHTTPPOST_upnphttp(h);
 			}
 		}
 		break;
 	case ESendingContinue:
-		if(SendResp_upnphttp(h))
+		if(SendResp_upnphttp(h) && h->state != EToDelete)
 			h->state = EWaitingForHttpContent;
 		break;
 	case ESendingAndClosing:
@@ -1079,17 +1260,15 @@ BuildHeader_upnphttp(struct upnphttp * h, int respcode,
                      int bodylen)
 {
 	int templen;
-	if(!h->res_buf ||
-	   h->res_buf_alloclen < ((int)sizeof(httpresphead) + 256 + bodylen)) {
-		if(h->res_buf)
-			free(h->res_buf);
-		templen = sizeof(httpresphead) + 256 + bodylen;
-		h->res_buf = (char *)malloc(templen);
-		if(!h->res_buf) {
-			syslog(LOG_ERR, "malloc error in BuildHeader_upnphttp()");
-			return -1;
-		}
-		h->res_buf_alloclen = templen;
+	if (bodylen < 0 || (size_t)bodylen > UPNPHTTP_BUFFER_LIMIT - sizeof(httpresphead) - 256) {
+		h->state = EToDelete;
+		h->res_buflen = 0;
+		return -1;
+	}
+	templen = sizeof(httpresphead) + 256 + bodylen;
+	if (!http_resize(h, 1, templen)) {
+		h->res_buflen = 0;
+		return -1;
 	}
 	h->res_sent = 0;
 	h->res_buflen = snprintf(h->res_buf, h->res_buf_alloclen,
@@ -1154,20 +1333,10 @@ BuildHeader_upnphttp(struct upnphttp * h, int respcode,
 	}
 	h->res_buf[h->res_buflen++] = '\r';
 	h->res_buf[h->res_buflen++] = '\n';
-	if(h->res_buf_alloclen < (h->res_buflen + bodylen))
-	{
-		char * tmp;
-		tmp = (char *)realloc(h->res_buf, (h->res_buflen + bodylen));
-		if(tmp)
-		{
-			h->res_buf = tmp;
-			h->res_buf_alloclen = h->res_buflen + bodylen;
-		}
-		else
-		{
-			syslog(LOG_ERR, "realloc error in BuildHeader_upnphttp()");
-			return -1;
-		}
+	if(h->res_buf_alloclen < (h->res_buflen + bodylen) &&
+	   !http_resize(h, 1, h->res_buflen + bodylen)) {
+		h->res_buflen = 0;
+		return -1;
 	}
 	return 0;
 }
@@ -1199,6 +1368,10 @@ SendResp_upnphttp(struct upnphttp * h)
 
 	while (h->res_sent < h->res_buflen)
 	{
+		if(http_expired(h, http_uptime())) {
+			CloseSocket_upnphttp(h);
+			return 1;
+		}
 #ifdef ENABLE_HTTPS
 		if(h->ssl) {
 			n = SSL_write(h->ssl, h->res_buf + h->res_sent,
@@ -1248,8 +1421,12 @@ SendResp_upnphttp(struct upnphttp * h)
 		else
 		{
 			h->res_sent += n;
+			if(!http_touch(h))
+				break;
 		}
 	}
+	if(h->res_sent < h->res_buflen)
+		CloseSocket_upnphttp(h);
 	return 1;	/* finished */
 }
 
@@ -1260,6 +1437,10 @@ SendRespAndClose_upnphttp(struct upnphttp * h)
 
 	while (h->res_sent < h->res_buflen)
 	{
+		if(http_expired(h, http_uptime())) {
+			CloseSocket_upnphttp(h);
+			return;
+		}
 #ifdef ENABLE_HTTPS
 		if(h->ssl) {
 			n = SSL_write(h->ssl, h->res_buf + h->res_sent,
@@ -1311,6 +1492,8 @@ SendRespAndClose_upnphttp(struct upnphttp * h)
 		else
 		{
 			h->res_sent += n;
+			if(!http_touch(h))
+				break;
 		}
 	}
 	CloseSocket_upnphttp(h);

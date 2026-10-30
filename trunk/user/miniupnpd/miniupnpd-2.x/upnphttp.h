@@ -11,6 +11,8 @@
 
 #include <netinet/in.h>
 #include <sys/queue.h>
+#include <sys/time.h>
+#include <time.h>
 
 #include "config.h"
 
@@ -46,8 +48,24 @@ enum httpCommands {
 	EUnSubscribe
 };
 
+/* HTTP object/buffer caps for the 124 MiB router, independent of body caps. */
+#ifndef UPNPHTTP_MAX_CONNECTIONS
+#define UPNPHTTP_MAX_CONNECTIONS 32U
+#endif
+#ifndef UPNPHTTP_BUFFER_LIMIT
+#define UPNPHTTP_BUFFER_LIMIT (4U * 1024U * 1024U)
+#endif
+#ifndef UPNPHTTP_REQUEST_TIMEOUT
+#define UPNPHTTP_REQUEST_TIMEOUT 30
+#endif
+#ifndef UPNPHTTP_IDLE_TIMEOUT
+#define UPNPHTTP_IDLE_TIMEOUT 10
+#endif
+
 struct upnphttp {
 	int socket;
+	time_t accepted_at;
+	time_t last_io_at;
 	struct in_addr clientaddr;	/* client address */
 #ifdef ENABLE_IPV6
 	int ipv6;
@@ -63,6 +81,7 @@ struct upnphttp {
 	char * req_buf;
 	char accept_language[8];
 	int req_buflen;
+	int req_bufalloc;
 	int req_contentlen;
 	int req_contentoff;     /* header length */
 	enum httpCommands req_command;
@@ -90,6 +109,17 @@ struct upnphttp {
 	int res_buf_alloclen;
 	LIST_ENTRY(upnphttp) entries;
 };
+
+LIST_HEAD(httplisthead, upnphttp);
+
+/* Reap expired/completed objects and cap select() to the next deadline.
+ * Passing NULL only reaps, for the post-select/pre-dispatch check. */
+void
+Check_upnphttp_connections(struct httplisthead *, struct timeval *);
+int
+Prepare_upnphttp_fds(struct httplisthead *, fd_set *, fd_set *, int *, struct timeval *);
+void
+Process_upnphttp_fds(struct httplisthead *, fd_set *, fd_set *);
 
 /* Include the "Timeout:" header in response */
 #define FLAG_TIMEOUT	0x01

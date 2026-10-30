@@ -505,7 +505,8 @@ ProcessIncomingHTTP(int shttpl, const char * protocol)
 			}
 			else
 			{
-				syslog(LOG_ERR, "New_upnphttp() failed");
+				if(errno != ENOSPC)
+					syslog(LOG_ERR, "New_upnphttp() failed");
 				close(shttp);
 			}
 		}
@@ -1800,7 +1801,7 @@ main(int argc, char * * argv)
 
 	int * snotify = NULL;
 	int addr_count;
-	LIST_HEAD(httplisthead, upnphttp) upnphttphead;
+	struct httplisthead upnphttphead;
 	struct upnphttp * e = 0;
 	struct upnphttp * next;
 	fd_set readset;	/* for select() */
@@ -2202,21 +2203,7 @@ main(int argc, char * * argv)
 		}
 #endif
 
-		i = 0;	/* active HTTP connections count */
-		for(e = upnphttphead.lh_first; e != NULL; e = e->entries.le_next)
-		{
-			if(e->socket >= 0)
-			{
-				if(e->state <= EWaitingForHttpContent)
-					FD_SET(e->socket, &readset);
-				else if(e->state == ESendingAndClosing)
-					FD_SET(e->socket, &writeset);
-				else
-					continue;
-				max_fd = MAX(max_fd, e->socket);
-				i++;
-			}
-		}
+		i = Prepare_upnphttp_fds(&upnphttphead, &readset, &writeset, &max_fd, &timeout);
 		/* for debug */
 #ifdef DEBUG
 		if(i > 1)
@@ -2488,19 +2475,8 @@ main(int argc, char * * argv)
 			ProcessInterfaceWatchNotify(sifacewatcher);
 #endif
 
-		/* process active HTTP connections */
-		/* LIST_FOREACH macro is not available under linux */
-		for(e = upnphttphead.lh_first; e != NULL; e = e->entries.le_next)
-		{
-			if(e->socket >= 0)
-			{
-				if(FD_ISSET(e->socket, &readset) ||
-				   FD_ISSET(e->socket, &writeset))
-				{
-					Process_upnphttp(e);
-				}
-			}
-		}
+		/* Recheck deadlines after select and before dispatching ready data. */
+		Process_upnphttp_fds(&upnphttphead, &readset, &writeset);
 		/* process incoming HTTP connections */
 		if(shttpl >= 0 && FD_ISSET(shttpl, &readset))
 		{
