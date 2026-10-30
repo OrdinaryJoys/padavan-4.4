@@ -737,7 +737,7 @@ firmware_upgrade_disable_watchdog(void)
 }
 
 struct firmware_upgrade_service {
-	const char *name;
+	char *name;
 	void (*stop)(void);
 	int (*start)(void);
 	int running;

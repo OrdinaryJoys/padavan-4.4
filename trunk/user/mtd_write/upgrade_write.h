@@ -302,7 +302,7 @@ static int firmware_upgrade_write(const char *image, const char *target, const c
 		close(imagefd); imagefd = fd;
 	}
 	if (imagefd < 0 || fstat(imagefd, &source) || !S_ISREG(source.st_mode) || source.st_uid != FWUP_OWNER ||
-	    source.st_nlink != 1 || (source.st_mode & 022) || source.st_size < 64 || source.st_size > FWUP_LIMIT) {
+	    source.st_nlink != 1 || (source.st_mode & 022) || source.st_size < 64 || source.st_size > (off_t)FWUP_LIMIT) {
 		message = "unsafe, empty or oversized image"; goto out;
 	}
 	device = FWUP_OPEN_DEVICE(&info, &reader);

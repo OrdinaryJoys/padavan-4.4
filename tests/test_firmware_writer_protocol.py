@@ -71,7 +71,8 @@ static void paused(void){
 }
 static int state_is_maybe(void){
  char data[256];int fd=open(getenv("WRITER_STATUS"),O_RDONLY);ssize_t n;
- if(fd<0)return 0;n=read(fd,data,sizeof(data)-1);close(fd);if(n<0)return 0;data[n]=0;
+ if(fd<0)return 0;
+ n=read(fd,data,sizeof(data)-1);close(fd);if(n<0)return 0;data[n]=0;
  return strstr(data,"\nstate=MAYBE_WRITTEN\n")!=NULL;
 }
 static int mock_open(struct mtd_info_user*info,int*reader){
@@ -132,7 +133,8 @@ static ssize_t image_read(int fd,void*p,size_t n){
  image_reads++;if(fault("image-read")){errno=EIO;return -1;}
  if(fault("image-eintr")&&image_reads==1){errno=EINTR;return -1;}
  if(fault("image-short")&&n>19)n=19;
- if(fault("image-eof"))return 0;return read(fd,p,n);
+ if(fault("image-eof"))return 0;
+ return read(fd,p,n);
 }
 static int image_close(int fd){int r=close(fd);if(fault("image-close")){errno=EIO;return -1;}return r;}
 static ssize_t state_write(int fd,const void*p,size_t n){
@@ -147,7 +149,8 @@ static ssize_t state_write(int fd,const void*p,size_t n){
 static int state_sync(int fd){struct stat st;fstat(fd,&st);
  if((stage==1&&fault("initial-sync"))||(stage==2&&fault("maybe-sync"))||(stage==3&&fault("verified-sync"))){errno=EIO;return -1;}
  if(S_ISDIR(st.st_mode)&&((stage==2&&fault("maybe-dir-sync"))||(stage==3&&fault("verified-dir-sync")))){errno=EIO;return -1;}
- if(stage==2&&fault("pause-maybe"))paused();return fsync(fd);
+ if(stage==2&&fault("pause-maybe"))paused();
+ return fsync(fd);
 }
 static int state_close(int fd){int r=close(fd);
  if((stage==1&&fault("initial-close"))||(stage==2&&fault("maybe-close"))||(stage==3&&fault("verified-close"))){errno=EIO;return -1;}return r;}
