@@ -1,9 +1,14 @@
 THISDIR = $(shell pwd)
-all:
+all: storage_validate
+
+storage_validate: storage_validate.c
+	$(CC) $(CFLAGS) -Wall -Wextra -o $@ $< $(LDFLAGS)
 
 clean:
+	rm -f storage_validate
 
-romfs:
+romfs: storage_validate
+	$(ROMFSINST) -p +x $(THISDIR)/storage_validate /sbin/storage_validate
 	$(ROMFSINST) $(THISDIR)/ca-certificates.crt /etc_ro/ca-certificates.crt
 	./makedevlinks $(ROMFSDIR)
 	$(ROMFSINST) /sbin/dev_init.sh

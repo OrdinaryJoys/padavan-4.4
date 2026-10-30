@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck shell=busybox
 
 result=0
 mtd_part_name="Storage"
@@ -6,29 +7,165 @@ mtd_part_dev="/dev/mtdblock5"
 mtd_part_size=65536
 dir_storage="/etc/storage"
 slk="/tmp/.storage_locked"
-tmp="/tmp/storage.tar"
-tbz="${tmp}.bz2"
+tbz="/tmp/storage.tar.bz2"
 hsh="/tmp/hashes/storage_md5"
+op_lock="/tmp/.storage_operation"
+work_dir=""
+restore_container=""
+lock_owned=0
+max_tar_size=8388608
 
 func_get_mtd()
 {
 	local mtd_part mtd_char mtd_idx mtd_hex
-	mtd_part=`cat /proc/mtd | grep \"$mtd_part_name\"`
-	mtd_char=`echo $mtd_part | cut -d':' -f1`
-	mtd_hex=`echo $mtd_part | cut -d' ' -f2`
-	mtd_idx=`echo $mtd_char | cut -c4-5`
-	if [ -n "$mtd_idx" ] && [ $mtd_idx -ge 4 ] ; then
+	mtd_part=$(grep "\"$mtd_part_name\"" /proc/mtd)
+	mtd_char=$(echo "$mtd_part" | cut -d':' -f1)
+	mtd_hex=$(echo "$mtd_part" | cut -d' ' -f2)
+	mtd_idx=$(echo "$mtd_char" | cut -c4-5)
+	if [ -n "$mtd_idx" ] && [ "$mtd_idx" -ge 4 ]; then
 		mtd_part_dev="/dev/mtdblock${mtd_idx}"
-		mtd_part_size=`echo $((0x$mtd_hex))`
+		mtd_part_size=$((0x$mtd_hex))
 	else
 		logger -t "Storage" "Cannot find MTD partition: $mtd_part_name"
 		exit 1
 	fi
 }
 
+func_cleanup()
+{
+	if [ -n "$restore_container" ] && [ -d "$restore_container" ]; then
+		if [ -e "$restore_container/previous" ]; then
+			logger -t "Storage" "Retained recovery copy: $restore_container/previous"
+		else
+			rm -rf "$restore_container"
+		fi
+	fi
+	if [ "$lock_owned" = 1 ]; then
+		rm -rf "$work_dir"
+		exec 9>&-
+	fi
+}
+
+func_begin()
+{
+	[ "$(id -u)" = 0 ] || return 1
+	umask 077
+	if ! mkdir -m 700 "$op_lock" 2>/dev/null; then
+		if [ -L "$op_lock" ] || [ ! -d "$op_lock" ] ||
+		   [ "$(stat -c %u "$op_lock" 2>/dev/null)" != 0 ]; then
+			logger -t "Storage" "Unsafe storage operation lock"
+			return 1
+		fi
+	fi
+	chmod 700 "$op_lock" || return 1
+	[ ! -L "$op_lock/lock" ] || return 1
+	exec 9> "$op_lock/lock" || return 1
+	if ! flock -n 9; then
+		exec 9>&-
+		logger -t "Storage" "Another storage operation is active"
+		return 1
+	fi
+	# No PID file: the kernel releases flock after all holders exit.
+	lock_owned=1
+	work_dir="$op_lock/work"
+	trap 'func_cleanup' EXIT
+	trap 'exit 1' HUP INT TERM
+	rm -rf "$work_dir" || return 1
+	mkdir -m 700 "$work_dir" || return 1
+	tmp="$work_dir/storage.tar"
+	func_recover_storage
+}
+
+# A killed restore may leave the old tree between the two directory renames.
+# Never create a new empty live tree before discovering that retained copy.
+func_empty_dir()
+{
+	local member
+	[ -d "$1" ] && [ ! -L "$1" ] || return 1
+	for member in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+		if [ -e "$member" ] || [ -L "$member" ]; then return 1; fi
+	done
+	return 0
+}
+
+func_check_recovery_container()
+{
+	local candidate member leaf
+	candidate=$1
+	leaf=${candidate##*.}
+	case "$leaf" in ''|*[!0-9]*) return 1;; esac
+	[ -d "$candidate" ] && [ ! -L "$candidate" ] &&
+		[ "$(stat -c %u "$candidate" 2>/dev/null)" = 0 ] &&
+		[ "$(stat -c %a "$candidate" 2>/dev/null)" = 700 ] || return 1
+	for member in "$candidate"/* "$candidate"/.[!.]* "$candidate"/..?*; do
+		[ -e "$member" ] || [ -L "$member" ] || continue
+		case "${member##*/}" in
+		storage|previous)
+			[ -d "$member" ] && [ ! -L "$member" ] &&
+				[ "$(stat -c %u "$member" 2>/dev/null)" = 0 ] || return 1
+			;;
+		*) return 1;;
+		esac
+	done
+	if [ -d "$candidate/previous" ]; then
+		[ -f "$candidate/previous/start_script.sh" ] &&
+			[ ! -L "$candidate/previous/start_script.sh" ] || return 1
+	fi
+}
+
+func_recover_storage()
+{
+	local candidate parent previous_count selected
+	parent=${dir_storage%/*}
+	previous_count=0
+	selected=""
+	# Inspect every candidate before changing any of them. Multiple retained
+	# originals or an untrusted container require an explicit operator choice.
+	for candidate in "$parent"/.storage-restore.*; do
+		[ -e "$candidate" ] || [ -L "$candidate" ] || continue
+		if ! func_check_recovery_container "$candidate"; then
+			logger -t "Storage recovery" "Unsafe recovery container retained: $candidate"
+			return 1
+		fi
+		if [ -d "$candidate/previous" ]; then
+			previous_count=$((previous_count + 1))
+			selected=$candidate
+		fi
+	done
+	if [ "$previous_count" -gt 1 ]; then
+		logger -t "Storage recovery" "Multiple recovery copies retained; refusing to choose"
+		return 1
+	fi
+	if [ "$previous_count" = 1 ]; then
+		if [ -e "$dir_storage" ] || [ -L "$dir_storage" ]; then
+			if ! func_empty_dir "$dir_storage"; then
+				logger -t "Storage recovery" "Live tree conflicts with retained copy: $selected/previous"
+				return 1
+			fi
+		fi
+		/sbin/storage_validate --rename-directory "$selected/previous" "$dir_storage" || return 1
+		logger -t "Storage recovery" "Recovered retained original from $selected/previous"
+		rm -rf "$selected" || return 1
+	fi
+	# No previous tree means publication never moved the original (or old
+	# cleanup already finished). Discard only private staging, with live data
+	# still present. A missing/unsafe live tree is never silently manufactured.
+	for candidate in "$parent"/.storage-restore.*; do
+		[ -e "$candidate" ] || [ -L "$candidate" ] || continue
+		if [ ! -d "$dir_storage" ] || [ -L "$dir_storage" ]; then
+			logger -t "Storage recovery" "Staging retained because live storage is missing: $candidate"
+			return 1
+		fi
+		rm -rf "$candidate" || return 1
+	done
+}
+
 func_mdir()
 {
-	[ ! -d "$dir_storage" ] && mkdir -p -m 755 $dir_storage
+	[ ! -L "$dir_storage" ] || return 1
+	if [ ! -d "$dir_storage" ]; then
+		mkdir -p "$dir_storage" && chmod 755 "$dir_storage" || return 1
+	fi
 }
 
 func_stop_apps()
@@ -39,129 +176,166 @@ func_stop_apps()
 
 func_start_apps()
 {
-	/sbin/rstats
+	/sbin/rstats 9>&-
+}
+
+func_unpack()
+{
+	local fsz
+	# A corrupt stream must not publish its partially decompressed output.
+	# POSIX file-size blocks are 512 bytes; stat also enforces the exact cap.
+	if ! (ulimit -f 16384 && bzcat "$1" > "$tmp") 2>/dev/null; then
+		logger -t "Storage" "Cannot decompress storage, or expanded size limit exceeded"
+		return 1
+	fi
+	fsz=$(stat -c %s "$tmp" 2>/dev/null)
+	case "$fsz" in ''|*[!0-9]*) return 1;; esac
+	[ "$fsz" -le "$max_tar_size" ] && [ "$fsz" -ge 1024 ]
+}
+
+func_record_hash()
+{
+	local digest _ignored
+	md5sum "$tmp" > "$work_dir/hash.pending" || return 1
+	read -r digest _ignored < "$work_dir/hash.pending"
+	case "$digest" in ''|*[!0-9a-f]*) return 1;; esac
+	[ "${#digest}" = 32 ] || return 1
+	printf '%s  /tmp/storage.tar\n' "$digest" > "$work_dir/hash.commit" || return 1
+	/sbin/storage_validate --replace-file "$work_dir/hash.commit" "$hsh"
+}
+
+func_install_tar()
+{
+	local parent available budget old_storage
+	parent=${dir_storage%/*}
+	available=$(df -Pk "$parent" 2>/dev/null | awk 'NR == 2 {print $4}')
+	case "$available" in ''|*[!0-9]*) return 1;; esac
+	# The old tree is still present: df free is the budget for the new tree.
+	# Reserve 64 KiB for the exchange directory and unrelated small writes.
+	[ "$available" -gt 64 ] || return 1
+	budget=$((available * 1024 - 65536))
+	/sbin/storage_validate "$tmp" "$budget" || return 1
+	restore_container="$parent/.storage-restore.$$"
+	mkdir -m 700 "$restore_container" || return 1
+	mkdir -m 700 "$restore_container/storage" || return 1
+	# A private parent keeps archive-supplied directory modes inaccessible
+	# while extraction is in progress. -o never restores archive ownership.
+	if ! tar xof "$tmp" -C "$restore_container/storage" 2>/dev/null; then
+		logger -t "Storage restore" "Cannot extract complete validated storage"
+		return 1
+	fi
+	[ -f "$restore_container/storage/start_script.sh" ] &&
+		[ ! -L "$restore_container/storage/start_script.sh" ] || return 1
+	# Restored configuration must not become replaceable by other users.
+	chmod -R go-w "$restore_container/storage" || return 1
+	chmod 755 "$restore_container/storage" || return 1
+	old_storage="$restore_container/previous"
+	if [ -e "$dir_storage" ]; then
+		[ ! -L "$dir_storage" ] || return 1
+		/sbin/storage_validate --rename-directory "$dir_storage" "$old_storage" || return 1
+	fi
+	if ! /sbin/storage_validate --rename-directory "$restore_container/storage" "$dir_storage"; then
+		if [ -e "$old_storage" ]; then
+			/sbin/storage_validate --rename-directory "$old_storage" "$dir_storage" ||
+				logger -t "Storage restore" "Rollback failed; original retained at $old_storage"
+		fi
+		return 1
+	fi
+	rm -rf "$old_storage"
 }
 
 func_load()
 {
-	local fsz
-
-	bzcat $mtd_part_dev > $tmp 2>/dev/null
-	fsz=`stat -c %s $tmp 2>/dev/null`
-	if [ -n "$fsz" ] && [ $fsz -gt 0 ] ; then
-		md5sum $tmp > $hsh
-		tar xf $tmp -C $dir_storage 2>/dev/null
+	if func_unpack "$mtd_part_dev" && func_install_tar && func_record_hash; then
+		rm -f "$slk"
 	else
 		result=1
-		rm -f $hsh
-		logger -t "Storage load" "Invalid storage data in MTD partition: $mtd_part_dev"
+		logger -t "Storage load" "Invalid or incomplete storage data: $mtd_part_dev"
 	fi
-	rm -f $tmp
-	rm -f $slk
 }
 
 func_tarb()
 {
-	rm -f $tmp
-	cd $dir_storage
-	find * -print0 | xargs -0 touch -c -h -t 201001010000.00
-	find * ! -type d -print0 | sort -z | xargs -0 tar -cf $tmp 2>/dev/null
-	cd - >>/dev/null
-	if [ ! -f "$tmp" ] ; then
-		logger -t "Storage" "Cannot create tarball file: $tmp"
-		exit 1
+	# One recursive invocation includes dotfiles and empty directories, and
+	# cannot lose earlier members when an xargs argument batch is exceeded.
+	if ! (cd "$dir_storage" &&
+		find . -print0 | xargs -0 touch -c -h -t 201001010000.00 &&
+		tar -cf "$tmp" .); then
+		logger -t "Storage" "Cannot create complete storage tarball"
+		return 1
 	fi
+	/sbin/storage_validate "$tmp" "$max_tar_size"
 }
 
 func_save()
 {
-	local fsz
-
-	logger -t "Storage save" "Save storage files to MTD partition \"$mtd_part_dev\""
-	echo "Save storage files to MTD partition \"$mtd_part_dev\""
-	rm -f $tbz
-	md5sum -c -s $hsh 2>/dev/null
-	if [ $? -eq 0 ] ; then
+	local fsz digest previous _ignored archive
+	archive="$work_dir/storage.tar.bz2"
+	md5sum "$tmp" > "$work_dir/hash.pending" || return 1
+	read -r digest _ignored < "$work_dir/hash.pending"
+	previous=$(cut -d' ' -f1 "$hsh" 2>/dev/null)
+	if [ -n "$digest" ] && [ "$digest" = "$previous" ]; then
 		echo "Storage hash is not changed, skip write to MTD partition. Exit."
-		rm -f $tmp
 		return 0
 	fi
-	md5sum $tmp > $hsh
-	bzip2 -9 $tmp 2>/dev/null
-	fsz=`stat -c %s $tbz 2>/dev/null`
-	if [ -n "$fsz" ] && [ $fsz -ge 16 ] && [ $fsz -le $mtd_part_size ] ; then
-		mtd_write write $tbz $mtd_part_name
-		if [ $? -eq 0 ] ; then
-			echo "Done."
-			logger -t "Storage save" "Done."
-		else
-			result=1
-			echo "Error! MTD write FAILED"
-			logger -t "Storage save" "Error write to MTD partition: $mtd_part_dev"
-		fi
-	else
-		result=1
-		echo "Error! Invalid storage final data size: $fsz"
-		logger -t "Storage save" "Invalid storage final data size: $fsz"
+	if ! bzip2 -c -9 "$tmp" > "$archive"; then
+		logger -t "Storage save" "Cannot compress complete storage tarball"
+		return 1
 	fi
-	rm -f $tmp
-	rm -f $tbz
+	fsz=$(stat -c %s "$archive" 2>/dev/null)
+	case "$fsz" in ''|*[!0-9]*) return 1;; esac
+	if [ "$fsz" -lt 16 ] || [ "$fsz" -gt "$mtd_part_size" ]; then
+		logger -t "Storage save" "Invalid storage final data size: $fsz"
+		return 1
+	fi
+	if ! mtd_write write "$archive" "$mtd_part_name"; then
+		logger -t "Storage save" "Error writing storage MTD; previous hash retained"
+		return 1
+	fi
+	# Commit the hash only after the flash operation succeeds.
+	func_record_hash
 }
 
 func_backup()
 {
-	rm -f $tbz
-	bzip2 -9 $tmp 2>/dev/null
-	if [ $? -ne 0 ] ; then
-		result=1
-		logger -t "Storage backup" "Cannot create BZ2 file!"
+	if ! bzip2 -c -9 "$tmp" > "$work_dir/backup.bz2"; then
+		logger -t "Storage backup" "Cannot create complete BZ2 file"
+		return 1
 	fi
-	rm -f $tmp
+	/sbin/storage_validate --publish-backup "$work_dir/backup.bz2" "$tbz"
 }
 
 func_restore()
 {
-	local fsz tmp_storage
-
-	[ ! -f "$tbz" ] && exit 1
-
-	fsz=`stat -c %s $tbz 2>/dev/null`
-	if [ -z "$fsz" ] || [ $fsz -lt 16 ] || [ $fsz -gt $mtd_part_size ] ; then
-		result=1
-		rm -f $tbz
+	local fsz
+	[ -f "$tbz" ] && [ ! -L "$tbz" ] || return 1
+	[ "$(stat -c %u "$tbz" 2>/dev/null)" = 0 ] || return 1
+	fsz=$(stat -c %s "$tbz" 2>/dev/null)
+	case "$fsz" in ''|*[!0-9]*) return 1;; esac
+	if [ "$fsz" -lt 16 ] || [ "$fsz" -gt "$mtd_part_size" ]; then
 		logger -t "Storage restore" "Invalid BZ2 file size: $fsz"
 		return 1
 	fi
-
-	tmp_storage="/tmp/storage"
-	rm -rf $tmp_storage
-	mkdir -p -m 755 $tmp_storage
-	tar xjf $tbz -C $tmp_storage 2>/dev/null
-	if [ $? -ne 0 ] ; then
-		result=1
-		rm -f $tbz
-		rm -rf $tmp_storage
-		logger -t "Storage restore" "Unable to extract BZ2 file: $tbz"
-		return 1
-	fi
-	if [ ! -f "$tmp_storage/start_script.sh" ] ; then
-		result=1
-		rm -f $tbz
-		rm -rf $tmp_storage
-		logger -t "Storage restore" "Invalid content of BZ2 file: $tbz"
-		return 1
-	fi
-
+	# Snapshot the root-owned upload in a private directory before parsing.
+	cp "$tbz" "$work_dir/input.bz2" || return 1
+	func_unpack "$work_dir/input.bz2" || return 1
+	# Validate before stopping apps or changing any current storage files.
+	local available parent budget
+	parent=${dir_storage%/*}
+	available=$(df -Pk "$parent" 2>/dev/null | awk 'NR == 2 {print $4}')
+	case "$available" in ''|*[!0-9]*) return 1;; esac
+	[ "$available" -gt 64 ] || return 1
+	budget=$((available * 1024 - 65536))
+	/sbin/storage_validate "$tmp" "$budget" || return 1
 	func_stop_apps
-
-	rm -f $slk
-	rm -f $tbz
-	rm -rf $dir_storage
-	mkdir -p -m 755 $dir_storage
-	cp -rf $tmp_storage /etc
-	rm -rf $tmp_storage
-
+	if func_install_tar; then
+		rm -f "$slk" "$tbz"
+		result=0
+	else
+		result=1
+	fi
 	func_start_apps
+	return "$result"
 }
 
 func_erase()
@@ -516,7 +690,7 @@ EOF
 EOF
 	fi
 
-	if [ -d $dir_gfwlist ]; then
+	if [ -d "${dir_gfwlist:-}" ]; then
 		cat >> "$user_dnsmasq_conf" <<EOF
 ### gfwlist related (resolve by port 5353)
 #min-cache-ttl=3600
@@ -679,27 +853,25 @@ EOF
 	fi
 }
 
+func_begin || exit 1
+
 case "$1" in
 load)
 	func_get_mtd
-	func_mdir
+	func_mdir || exit 1
 	func_load
 	;;
 save)
 	[ -f "$slk" ] && exit 1
 	func_get_mtd
-	func_mdir
-	func_tarb
-	func_save
+	func_mdir && func_tarb && func_save || result=1
 	;;
 backup)
-	func_mdir
-	func_tarb
-	func_backup
+	func_mdir && func_tarb && func_backup || result=1
 	;;
 restore)
 	func_get_mtd
-	func_restore
+	func_restore || result=1
 	;;
 erase)
 	func_get_mtd
@@ -712,7 +884,7 @@ reset)
 	func_start_apps
 	;;
 fill)
-	func_mdir
+	func_mdir || exit 1
 	func_fill
 	;;
 *)
