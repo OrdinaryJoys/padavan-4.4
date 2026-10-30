@@ -29,6 +29,7 @@
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 #include <sys/reboot.h>
 
 #include <image.h>
@@ -51,17 +52,42 @@ typedef int (*check_header_t)(const char *, long *);
 static void
 fwlog(const char *fmt, ...)
 {
-	FILE *lf;
+	struct stat st;
+	char line[512];
+	int fd, length;
+	size_t done = 0;
+	ssize_t count;
 	va_list ap;
 
-	lf = fopen("/tmp/fwcheck.log", "a");
-	if (!lf)
+	/* This predictable diagnostic name is in shared /tmp. Never follow a
+	 * pre-existing alias or write somebody else's inode as the web daemon. */
+	fd = open("/tmp/fwcheck.log", O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0600);
+	if (fd < 0)
 		return;
+	if (flock(fd, LOCK_EX | LOCK_NB) != 0 ||
+	    fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid() ||
+	    st.st_nlink != 1 || (st.st_mode & 07777) != 0600 || st.st_size < 0)
+		goto out;
 	va_start(ap, fmt);
-	vfprintf(lf, fmt, ap);
+	length = vsnprintf(line, sizeof(line) - 1, fmt, ap);
 	va_end(ap);
-	fputc('\n', lf);
-	fclose(lf);
+	if (length < 0)
+		goto out;
+	if (length > (int)sizeof(line) - 2)
+		length = sizeof(line) - 2;
+	line[length++] = '\n';
+	if (st.st_size > 65536 - length)
+		goto out;
+	while (done < (size_t)length) {
+		count = write(fd, line + done, length - done);
+		if (count < 0 && errno == EINTR)
+			continue;
+		if (count <= 0)
+			break;
+		done += count;
+	}
+out:
+	close(fd);
 }
 
 static int
@@ -386,8 +412,8 @@ do_upgrade_fw_post(const char *url, FILE *stream, int clen, char *boundary)
 	doSystem("rm -rf %s", "/tmp/xupnpd-cache");
 	doSystem("rm -rf %s", "/tmp/xupnpd-feeds");
 
-	/* copy mtd_write to RAM */
-	doSystem("cp -f %s %s", "/bin/mtd_write", "/tmp");
+	/* rc creates its own exclusive private RAM writer after save preflight.
+	 * Never copy an executable through the shared /tmp/mtd_write pathname. */
 
 	/* reclaim RAM from caches */
 	fput_int("/proc/sys/vm/drop_caches", 1);

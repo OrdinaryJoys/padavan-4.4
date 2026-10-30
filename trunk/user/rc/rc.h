@@ -150,6 +150,7 @@ void handle_notifications(void);
 void LED_CONTROL(int gpio_led, int flag);
 void storage_save_time(time_t delta);
 int write_storage_to_mtd(void);
+int firmware_upgrade_inhibited(void);
 void erase_storage(void);
 void erase_nvram(void);
 

@@ -567,7 +567,11 @@ resume:
 					continue;
 				else {
 					perror("read");
-					break;
+					/* Never pad/write a partial buffer after an input error or
+					 * report a successful Storage save to the caller. */
+					close(fd);
+					free(str);
+					return -1;
 				}
 			}
 
@@ -712,9 +716,14 @@ resume:
 	}
 #endif
 
-	close(fd);
+	if (close(fd) != 0) {
+		perror("close");
+		return -1;
+	}
 	return 0;
 }
+
+#include "upgrade_write.h"
 
 static void usage(void)
 {
@@ -808,6 +817,12 @@ int main (int argc, char **argv)
 		CMD_DUMP,
 		CMD_RESETBC,
 	} cmd = -1;
+	/* The dedicated protocol never reaches legacy exit()/erase/reboot paths. */
+	if (argc > 1 && !strcmp(argv[1], "--upgrade-write")) {
+		if (argc != 5)
+			return fwup_error("usage: --upgrade-write IMAGE firmware STATUS", FWUP_UNKNOWN);
+		return firmware_upgrade_write(argv[2], argv[3], argv[4]);
+	}
 
 	erase[0] = NULL;
 	boot = 0;
@@ -996,7 +1011,8 @@ int main (int argc, char **argv)
 		case CMD_WRITE:
 			if (!unlocked)
 				mtd_unlock(device);
-			mtd_write(imagefd, device, fis_layout, part_offset);
+			if (mtd_write(imagefd, device, fis_layout, part_offset) != 0)
+				return 1;
 			break;
 		case CMD_JFFS2WRITE:
 			if (!unlocked)

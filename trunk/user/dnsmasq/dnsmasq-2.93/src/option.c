@@ -18,10 +18,12 @@
 #define SYSLOG_NAMES
 #include "dnsmasq.h"
 #include <setjmp.h>
+#include "dynamic_conf.h"
 
 static volatile int mem_recover = 0;
 static jmp_buf mem_jmp;
 static int one_file(char *file, int hard_opt);
+static struct conf_script_budget script_budget;
 
 static void *opt_malloc_real(const char *func, unsigned int line, size_t size);
 #define opt_malloc(x) opt_malloc_real(__func__, __LINE__, (x))
@@ -953,6 +955,8 @@ char *parse_server(char *arg, struct server_details *sdetails)
     {
       /* if the argument is neither an IPv4 not an IPv6 address, it might be a
 	 hostname and we should try to resolve it to a suitable address. */
+      if (script_budget.deadline)
+        return _("hostname upstream is not supported after conf-script; use a numeric address");
       memset(&hints, 0, sizeof(hints));
       /* The AI_ADDRCONFIG flag ensures that then IPv4 addresses are returned in
          the result only if the local system has at least one IPv4 address
@@ -2128,6 +2132,11 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 	  {
 	    size_t len = strlen(ent->d_name);
 	    struct stat buf;
+
+            if (++script_budget.directory_entries > CONF_CONFIG_MAX_DIR_ENTRIES)
+              die(_("configuration directory entry budget exceeded"), NULL, EC_BADCONF);
+            if (!conf_script_check(&script_budget))
+              die(_("conf-script total directory parsing time budget exceeded"), NULL, EC_BADCONF);
 	    
 	    /* ignore emacs backups and dotfiles */
 	    if (len == 0 ||
@@ -2174,7 +2183,10 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 	    if (S_ISREG(buf.st_mode))
 	      {
 		/* sort files into order. */
-		struct list **up, *new = opt_malloc(sizeof(struct list));
+		struct list **up, *new;
+                if (++script_budget.directory_files > CONF_CONFIG_MAX_FILES)
+                  die(_("configuration directory file budget exceeded"), NULL, EC_BADCONF);
+                new = opt_malloc(sizeof(struct list));
 		new->name = path;
 		
 		for (up = &files, li = files; li; up = &li->next, li = li->next)
@@ -5475,6 +5487,9 @@ static void read_file(char *file, FILE *f, int hard_opt, int from_script)
   volatile int lineno = 0;
   char *buff;
   size_t buffsz;
+  size_t file_bytes = 0;
+  int line_status;
+  const char *line_error = NULL;
 
   /* Memory allocation failure longjmps here if mem_recover == 1 */ 
   if (hard_opt != 0)
@@ -5486,12 +5501,20 @@ static void read_file(char *file, FILE *f, int hard_opt, int from_script)
   buff = NULL;
   buffsz = 0;
 
-  while (get_line_alloc(f, &buff, &buffsz))
+  if (hard_opt == 0 && ++script_budget.parse_depth > CONF_CONFIG_MAX_DEPTH)
+    die(_("configuration include nesting limit exceeded"), NULL, EC_BADCONF);
+
+  while ((line_status = hard_opt == 0 ?
+          conf_config_line(f, &buff, &buffsz, &file_bytes, &script_budget, &line_error) :
+          get_line_alloc(f, &buff, &buffsz)) > 0)
     {
       int white, i;
       volatile int option;
       char *errmess, *p, *arg, *start;
       size_t len;
+
+      if (hard_opt == 0 && !conf_script_check(&script_budget))
+        die(_("conf-script total parsing time budget exceeded"), NULL, EC_BADCONF);
 
       option = (hard_opt == LOPT_REV_SERV) ? 0 : hard_opt;
       
@@ -5601,15 +5624,26 @@ static void read_file(char *file, FILE *f, int hard_opt, int from_script)
       if (errmess || !one_opt(option, arg, daemon->namebuff, _("error"), 0, hard_opt == LOPT_REV_SERV))
 	{
 	  if (from_script)
-	    sprintf(daemon->namebuff + strlen(daemon->namebuff), _(" in output from %s"), file);
+	    snprintf(daemon->namebuff + strlen(daemon->namebuff),
+                     MAXDNAMESTR + 1 - strlen(daemon->namebuff),
+                     _(" in output from %s"), file);
 	  else
-	    sprintf(daemon->namebuff + strlen(daemon->namebuff), _(" at line %d of %s"), lineno, file);
+	    snprintf(daemon->namebuff + strlen(daemon->namebuff),
+                     MAXDNAMESTR + 1 - strlen(daemon->namebuff),
+                     _(" at line %d of %s"), lineno, file);
 	  
 	  if (hard_opt != 0)
 	    my_syslog(LOG_ERR, "%s", daemon->namebuff);
 	  else
 	    die("%s", daemon->namebuff, EC_BADCONF);
 	}
+    }
+
+  if (hard_opt == 0)
+    {
+      if (line_status < 0)
+        die("%s", (char *)line_error, EC_BADCONF);
+      script_budget.parse_depth--;
     }
 
   mem_recover = 0;
@@ -5633,7 +5667,6 @@ static int one_file(char *file, int hard_opt)
 {
   FILE *f;
   int nofile_ok = 0, do_popen = 0;
-  static int read_stdin = 0;
   static struct fileread {
     dev_t dev;
     ino_t ino;
@@ -5655,11 +5688,7 @@ static int one_file(char *file, int hard_opt)
    
    if (hard_opt == 0 && !do_popen && strcmp(file, "-") == 0)
     {
-      if (read_stdin == 1)
-	return 1;
-      read_stdin = 1;
-      file = "stdin";
-      f = stdin;
+      die(_("stdin configuration is not supported by bounded startup parsing"), NULL, EC_BADCONF);
     }
   else
     {
@@ -5683,8 +5712,35 @@ static int one_file(char *file, int hard_opt)
 
       if (do_popen)
 	{
-	  if (!(f = popen(file, "r")))
-	    die(_("cannot execute %s: %s"), file, EC_FILE);
+	  const char *error;
+	  if (!(f = conf_script_open(file, &script_budget, &error)))
+	    die("%s", (char *)error, EC_BADCONF);
+	}
+
+      else if (hard_opt == 0 && strcmp(file, "/dev/null") == 0)
+        return 1; /* Preserve the conventional explicit empty configuration. */
+      else if (hard_opt == 0)
+	{
+          int fd;
+          if (++script_budget.files > CONF_CONFIG_MAX_FILES)
+            die(_("configuration file count limit exceeded"), NULL, EC_BADCONF);
+          fd = open(file, O_RDONLY | O_NONBLOCK);
+          if (fd == -1)
+            {
+              if (errno == ENOENT && nofile_ok)
+                return 1;
+              die(_("cannot read %s: %s"), file, EC_FILE);
+            }
+          if (fstat(fd, &statbuf) == -1 || !S_ISREG(statbuf.st_mode))
+            {
+              close(fd);
+              die(_("configuration input is not a regular file: %s"), file, EC_BADCONF);
+            }
+          if (!(f = fdopen(fd, "r")))
+            {
+              close(fd);
+              die(_("cannot read %s: %s"), file, EC_FILE);
+            }
 	}
       else if (!(f = fopen(file, "r")))
 	{   
@@ -5707,15 +5763,7 @@ static int one_file(char *file, int hard_opt)
    read_file(file, f, hard_opt, do_popen);
 
   if (do_popen)
-    {
-      int rc;
-
-      if ((rc = pclose(f)) == -1)
-	die(_("error executing %s: %s"), file, EC_MISC);
-
-      if (rc != 0)
-	die(_("%s returns non-zero error code"), file, rc+10);
-    }
+    conf_script_close(f, &script_budget);
   else
     fclose(f);
 	
@@ -5957,6 +6005,8 @@ void read_opts(int argc, char **argv, char *compile_opts)
   char *argbuf = safe_malloc(argbuf_size);
   int option, testmode = 0;
   char *arg, *conffile = NULL;
+
+  memset(&script_budget, 0, sizeof(script_budget));
   
   opterr = 0;
   
@@ -6321,6 +6371,10 @@ void read_opts(int argc, char **argv, char *compile_opts)
       if_names_add(NULL);
       set_option_bool(OPT_NOWILD);
     }
+
+  if (!conf_script_check(&script_budget))
+    die(_("conf-script total parsing time budget exceeded"), NULL, EC_BADCONF);
+  memset(&script_budget, 0, sizeof(script_budget));
 
   if (testmode)
     {

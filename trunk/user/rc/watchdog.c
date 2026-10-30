@@ -663,6 +663,8 @@ catch_sig_watchdog(int sig)
 int
 start_watchdog(void)
 {
+	if (firmware_upgrade_inhibited())
+		return EPERM;
 	if (pids("watchdog"))
 		return 0;
 
@@ -672,6 +674,8 @@ start_watchdog(void)
 void
 notify_watchdog_time(void)
 {
+	if (firmware_upgrade_inhibited())
+		return;
 	if (pids("watchdog"))
 		kill_pidfile_s(WD_PID_FILE, SIGHUP);
 	else
@@ -693,6 +697,8 @@ watchdog_main(int argc, char *argv[])
 	FILE *fp;
 	pid_t pid;
 	struct sigaction sa;
+	if (firmware_upgrade_inhibited())
+		return EPERM;
 
 	memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = catch_sig_watchdog;
@@ -729,6 +735,10 @@ watchdog_main(int argc, char *argv[])
 	nvram_set_int_temp("wd_notify_id", 0);
 
 	/* arm the hardware watchdog; the 10s service timer feeds it */
+	if (firmware_upgrade_inhibited()) {
+		remove(WD_PID_FILE);
+		return EPERM;
+	}
 	hw_watchdog_init();
 
 	/* set timer */

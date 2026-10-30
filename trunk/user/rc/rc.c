@@ -31,8 +31,10 @@
 #include <sys/klog.h>
 #include <sys/types.h>
 #include <sys/mount.h>
+#include <sys/mman.h>
 #include <sys/reboot.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <dirent.h>
@@ -474,18 +476,327 @@ erase_nvram(void)
 	nvram_commit();
 }
 
-/* Return 1 only after the service-stop/write phase has been entered. */
+#define FW_UPGRADE_PRIVATE "/var/private"
+#define FW_UPGRADE_INHIBIT "firmware-upgrade-inhibit"
+#define FW_UPGRADE_WRITER "/bin/mtd_write"
+#define FW_UPGRADE_MAX_BYTES 15925248UL
+
+/* A marker in the boot-created private directory also stops WAN callbacks
+ * from rearming the watchdog after an indeterminate firmware write. An
+ * unsafe/inaccessible private directory or marker must fail closed. */
+int
+firmware_upgrade_inhibited(void)
+{
+	struct stat st;
+	int fd, result;
+
+	fd = open(FW_UPGRADE_PRIVATE, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+	if (fd < 0)
+		return errno != ENOENT;
+	if (fstat(fd, &st) != 0 || st.st_uid != 0 || (st.st_mode & 07777) != 0700) {
+		close(fd);
+		return 1;
+	}
+	result = fstatat(fd, FW_UPGRADE_INHIBIT, &st, AT_SYMLINK_NOFOLLOW);
+	if (result == 0)
+		result = 1; /* Even a malformed existing marker is not permission to reboot. */
+	else
+		result = errno != ENOENT;
+	close(fd);
+	return result;
+}
+
+static int
+firmware_upgrade_inhibit(int enable)
+{
+	struct stat st;
+	int fd, marker = -1, created = 0, result = -1;
+
+	fd = open(FW_UPGRADE_PRIVATE, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	if (fstat(fd, &st) != 0 || st.st_uid != 0 || (st.st_mode & 07777) != 0700)
+		goto out;
+	if (enable) {
+		marker = openat(fd, FW_UPGRADE_INHIBIT, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+		if (marker < 0)
+			goto out;
+		created = 1;
+		if (fchmod(marker, 0600) != 0 || fsync(marker) != 0)
+			goto out;
+		if (close(marker) != 0) {
+			marker = -1;
+			goto out;
+		}
+		marker = -1;
+		result = 0;
+	} else if (fstatat(fd, FW_UPGRADE_INHIBIT, &st, AT_SYMLINK_NOFOLLOW) == 0 &&
+	           S_ISREG(st.st_mode) && st.st_uid == 0 && st.st_nlink == 1 &&
+	           (st.st_mode & 07777) == 0600 && st.st_size == 0) {
+		result = unlinkat(fd, FW_UPGRADE_INHIBIT, 0);
+	}
+out:
+	if (marker >= 0)
+		close(marker);
+	if (enable && created && result != 0)
+		unlinkat(fd, FW_UPGRADE_INHIBIT, 0);
+	close(fd);
+	return result;
+}
+
+/* Copy only the trusted ROMfs regular file, never the public /tmp helper.
+ * Keep the complete copied bytes private and compare before executing them. */
+static int
+firmware_upgrade_stage_writer(const char *path)
+{
+	struct stat before, after;
+	char input[4096], copied[4096];
+	ssize_t count, got, written;
+	off_t total = 0;
+	int source = -1, target = -1, created = 0, result = -1;
+
+	source = open(FW_UPGRADE_WRITER, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+	if (source < 0 || fstat(source, &before) != 0 || !S_ISREG(before.st_mode) ||
+	    before.st_uid != 0 || (before.st_mode & 07022) || !(before.st_mode & 0111) ||
+	    before.st_size <= 0 || before.st_size > 1024 * 1024)
+		goto out;
+	target = open(path, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+	if (target < 0)
+		goto out;
+	created = 1;
+	while (total < before.st_size) {
+		do count = read(source, input, sizeof(input)); while (count < 0 && errno == EINTR);
+		if (count <= 0 || count > before.st_size - total)
+			goto out;
+		for (written = 0; written < count; written += got) {
+			do got = write(target, input + written, count - written); while (got < 0 && errno == EINTR);
+			if (got <= 0)
+				goto out;
+		}
+		total += count;
+	}
+	if (fstat(source, &after) != 0 || before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
+	    before.st_size != after.st_size || before.st_mtime != after.st_mtime ||
+	    fsync(target) != 0 || lseek(source, 0, SEEK_SET) != 0 || lseek(target, 0, SEEK_SET) != 0)
+		goto out;
+	for (total = 0; total < before.st_size; total += count) {
+		do count = read(source, input, sizeof(input)); while (count < 0 && errno == EINTR);
+		if (count <= 0 || count > before.st_size - total)
+			goto out;
+		for (written = 0; written < count; written += got) {
+			do got = read(target, copied + written, count - written); while (got < 0 && errno == EINTR);
+			if (got <= 0)
+				goto out;
+		}
+		if (memcmp(input, copied, count))
+			goto out;
+	}
+	if (fstat(target, &after) != 0 || after.st_size != before.st_size || after.st_uid != 0 ||
+	    after.st_nlink != 1 || !S_ISREG(after.st_mode) || fchmod(target, 0700) != 0 || fsync(target) != 0)
+		goto out;
+	result = 0;
+out:
+	if (source >= 0 && close(source) != 0)
+		result = -1;
+	if (target >= 0 && close(target) != 0)
+		result = -1;
+	if (result != 0 && created)
+		unlink(path);
+	return result;
+}
+
+static int
+firmware_upgrade_number(const char **cursor, const char *prefix, unsigned long maximum, unsigned long *value)
+{
+	const char *p = *cursor;
+	unsigned long n = 0;
+	if (strncmp(p, prefix, strlen(prefix)))
+		return -1;
+	p += strlen(prefix);
+	if (*p < '0' || *p > '9' || (*p == '0' && p[1] != '\n'))
+		return -1;
+	for (; *p >= '0' && *p <= '9'; p++) {
+		if (n > (maximum - (unsigned long)(*p - '0')) / 10)
+			return -1;
+		n = n * 10 + (unsigned long)(*p - '0');
+	}
+	if (*p++ != '\n')
+		return -1;
+	*cursor = p;
+	*value = n;
+	return 0;
+}
+
+/* 1: a normal, explicitly rejected prewrite; 2: verified complete write;
+ * 0: any missing, unsafe, malformed, interrupted or indeterminate result. */
+static int
+firmware_upgrade_result(const char *path, int status, pid_t child)
+{
+	struct stat st;
+	char record[257];
+	const char *p;
+	ssize_t count, total = 0;
+	unsigned long pid, image, verified;
+	int fd, state = 0;
+
+	if (child <= 1 || status < 0 || !WIFEXITED(status))
+		return 0;
+	fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+	if (fd < 0)
+		return 0;
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != 0 || st.st_nlink != 1 ||
+	    (st.st_mode & 07777) != 0600 || st.st_size <= 0 || st.st_size > 256)
+		goto out;
+	do {
+		do count = read(fd, record + total, sizeof(record) - 1 - total); while (count < 0 && errno == EINTR);
+		if (count < 0)
+			goto out;
+		total += count;
+	} while (count > 0 && total < (ssize_t)sizeof(record) - 1);
+	if (total != st.st_size || memchr(record, 0, total))
+		goto out;
+	record[total] = 0;
+	if (!strncmp(record, "K2P_FWUP_V1\nstate=PREWRITE\n", sizeof("K2P_FWUP_V1\nstate=PREWRITE\n") - 1)) {
+		state = 1;
+		p = record + sizeof("K2P_FWUP_V1\nstate=PREWRITE\n") - 1;
+	} else if (!strncmp(record, "K2P_FWUP_V1\nstate=VERIFIED\n", sizeof("K2P_FWUP_V1\nstate=VERIFIED\n") - 1)) {
+		state = 2;
+		p = record + sizeof("K2P_FWUP_V1\nstate=VERIFIED\n") - 1;
+	} else
+		goto out;
+	if (firmware_upgrade_number(&p, "pid=", INT_MAX, &pid) != 0 || pid != (unsigned long)child ||
+	    strncmp(p, "target=firmware\n", 16)) {
+		state = 0;
+		goto out;
+	}
+	p += 16;
+	if (firmware_upgrade_number(&p, "image_bytes=", FW_UPGRADE_MAX_BYTES, &image) != 0 ||
+	    firmware_upgrade_number(&p, "verified_bytes=", FW_UPGRADE_MAX_BYTES, &verified) != 0 || *p ||
+	    (state == 1 && (WEXITSTATUS(status) != 20 || image || verified)) ||
+	    (state == 2 && (WEXITSTATUS(status) != 0 || !image || verified != image)))
+		state = 0;
+out:
+	if (close(fd) != 0)
+		state = 0;
+	return state;
+}
+
+static int
+firmware_upgrade_run(const char *writer, const char *record, pid_t *child)
+{
+	char *args[] = { (char *)writer, "--upgrade-write", FW_IMG_NAME, FW_MTD_NAME, (char *)record, NULL };
+	sigset_t block, previous;
+	pid_t waited;
+	int status = -1;
+
+	*child = -1;
+	sigemptyset(&block);
+	sigaddset(&block, SIGCHLD);
+	if (sigprocmask(SIG_BLOCK, &block, &previous) != 0)
+		return -1;
+	if (_eval(args, NULL, 0, child) == 0) {
+		do waited = waitpid(*child, &status, 0); while (waited < 0 && errno == EINTR);
+		if (waited != *child)
+			status = -1;
+	}
+	if (sigprocmask(SIG_SETMASK, &previous, NULL) != 0)
+		status = -1;
+	return status;
+}
+
+static int firmware_upgrade_start_networkmap(void) { return start_networkmap(0); }
+static int firmware_upgrade_start_detect(void) { return start_detect_internet(0); }
+static void firmware_upgrade_stop_watchdog(void)
+{
+	char *services[] = { "watchdog", NULL };
+	kill_services(services, 3, 1);
+}
+
+/* PID disappearance alone does not prove the hardware timer is disabled.
+ * Opening is exclusive with any remaining feeder; accept only the actual
+ * driver's successful disable and a checked close, never a timeout guess. */
+static int
+firmware_upgrade_disable_watchdog(void)
+{
+	struct stat st;
+	int fd, options = 1, result = -1;
+
+	fd = open("/dev/watchdog", O_WRONLY | O_NOFOLLOW | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+	if (fstat(fd, &st) == 0 && S_ISCHR(st.st_mode) && st.st_uid == 0 &&
+	    ioctl(fd, _IOR('W', 4, int), &options) == 0)
+		result = 0;
+	/* On rejection, give the restored software daemon as much time as the
+	 * driver permits. A failed keepalive still cannot allow firmware write. */
+	if (result != 0)
+		ioctl(fd, _IOR('W', 5, int), 0);
+	if (close(fd) != 0)
+		result = -1;
+	return result;
+}
+
+struct firmware_upgrade_service {
+	const char *name;
+	void (*stop)(void);
+	int (*start)(void);
+	int running;
+};
+
+/* No WAN/LAN reset, optional script restart, USB detach or bulk service stop.
+ * Only these known daemons are stopped; disabled/absent ones stay absent. */
+static int
+firmware_upgrade_services(struct firmware_upgrade_service *services, int count, int restore)
+{
+	int i, retry, failed = 0;
+	for (i = 0; i < count; i++) {
+		struct firmware_upgrade_service *s = &services[restore ? count - i - 1 : i];
+		/* Also kill an in-flight watchdog launch when the initial snapshot
+		 * did not see it. Never restore an originally absent watchdog. */
+		if (!s->running && (restore || strcmp(s->name, "watchdog")))
+			continue;
+		if (!restore)
+			s->stop();
+		else if (!pids(s->name))
+			s->start();
+		for (retry = 0; retry < 10; retry++) {
+			if (!!pids(s->name) == !!restore)
+				break;
+			usleep(100000);
+		}
+		if (retry == 10) {
+			failed = 1;
+			logmessage("firmware", "Upgrade service %s failed to %s", s->name, restore ? "recover" : "stop");
+		}
+	}
+	return failed ? -1 : 0;
+}
+
+/* 0 resumes normal notification dispatch after a safe abort. 1 preserves the
+ * inhibit after a possible write or while a verified reboot is requested. */
 static int
 flash_firmware(void)
 {
 	const char *script_name = SCRIPT_SHUTDOWN;
-	int status;
-	char* svcs[] = { "l2tpd",
-			 "xl2tpd",
-			 "pppd",
-			 "wpa_cli",
-			 "wpa_supplicant",
-			 NULL };
+	char attempt[] = FW_UPGRADE_PRIVATE "/fwupgrade.XXXXXX";
+	char writer[sizeof(attempt) + 16], record[sizeof(attempt) + 16];
+	pid_t child;
+	int status, result, i, resident = 0;
+	struct firmware_upgrade_service services[] = {
+		{ "watchdog", firmware_upgrade_stop_watchdog, start_watchdog, 0 },
+		{ "rstats", stop_rstats, start_rstats, 0 },
+		{ "detect_internet", stop_detect_internet, firmware_upgrade_start_detect, 0 },
+		{ "networkmap", stop_networkmap, firmware_upgrade_start_networkmap, 0 },
+		{ "lld2d", stop_lltd, start_lltd, 0 },
+		{ "infosvr", stop_infosvr, start_infosvr, 0 },
+		{ "crond", stop_crond, start_crond, 0 }
+	};
+	int service_count = sizeof(services) / sizeof(services[0]);
+
+	if (firmware_upgrade_inhibited()) {
+		logmessage("firmware", "Previous upgrade state is unresolved; queued upgrade/reboot and watchdog rearm inhibited");
+		return 1;
+	}
 
 	/* Fail while management services and the watchdog are still running.
 	 * This is a validated save snapshot, not a lock on non-cooperating
@@ -515,26 +826,74 @@ flash_firmware(void)
 		}
 	}
 
-	stop_misc();
-	stop_services(0); // don't stop httpd/telnetd/sshd/vpn
-
-#if defined (USE_STORAGE)
-	safe_remove_all_stor_devices(0);
-#endif
-#if defined (USE_USB_SUPPORT)
-	stop_usb_printer_spoolers();
-#endif
-	stop_igmpproxy(NULL);
-
-	kill_services(svcs, 6, 1);
-
+	if (!mkdtemp(attempt)) {
+		logmessage("firmware", "Cannot create private upgrade attempt; upgrade aborted");
+		return 0;
+	}
+	snprintf(writer, sizeof(writer), "%s/writer", attempt);
+	snprintf(record, sizeof(record), "%s/status", attempt);
+	if (firmware_upgrade_stage_writer(writer) != 0) {
+		logmessage("firmware", "Cannot stage trusted upgrade writer; upgrade aborted");
+		goto safe_cleanup;
+	}
+	for (i = 0; i < service_count; i++)
+		services[i].running = !!pids(services[i].name);
+	if (!services[0].running) {
+		logmessage("firmware", "No running watchdog for checked upgrade handoff; upgrade aborted before quiesce");
+		goto safe_cleanup;
+	}
+	/* Request locked mappings before replacing the backing rootfs. This is
+	 * a checked syscall guard: Linux 4.4 can ignore some population errors,
+	 * so neither complete residency under pressure nor the survival of
+	 * other management processes is established by a successful return. */
+	if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
+		logmessage("firmware", "Cannot request resident upgrade control memory (%s); upgrade aborted before quiesce", strerror(errno));
+		goto safe_cleanup;
+	}
+	resident = 1;
+	if (firmware_upgrade_inhibit(1) != 0) {
+		logmessage("firmware", "Cannot inhibit automatic reboot safely; upgrade aborted");
+		goto safe_cleanup;
+	}
+	if (firmware_upgrade_services(services, service_count, 0) != 0) {
+		logmessage("firmware", "Upgrade quiesce failed before writer; recovering stopped services");
+		goto safe_recover;
+	}
+	if (firmware_upgrade_disable_watchdog() != 0) {
+		logmessage("firmware", "Hardware watchdog disable was not confirmed; no firmware write, recovering services");
+		goto safe_recover;
+	}
 	sync();
-	sleep(1);
-
-	if (eval("/tmp/mtd_write", "-r", "write", FW_IMG_NAME, FW_MTD_NAME) != 0) {
-		start_watchdog();
+	status = firmware_upgrade_run(writer, record, &child);
+	result = firmware_upgrade_result(record, status, child);
+	if (result == 1) {
+		logmessage("firmware", "Writer rejected upgrade before erase/write; recovering stopped services");
+		goto safe_recover;
+	}
+	if (result == 2) {
+		logmessage("firmware", "Firmware readback verified; requesting reboot");
+		sync();
+		reboot(RB_AUTOBOOT);
+		logmessage("firmware", "CRITICAL: verified firmware reboot returned; queued reboot/watchdog rearm remain inhibited");
+	} else {
+		logmessage("firmware", "CRITICAL: firmware may be partially written (wait status %d); no rollback; automatic watchdog/queued retry/reboot inhibited; manual recovery required", status);
 	}
 	return 1;
+
+safe_recover:
+	if (firmware_upgrade_inhibit(0) != 0) {
+		logmessage("firmware", "CRITICAL: cannot clear upgrade inhibit after safe abort; manual recovery required");
+		return 1;
+	}
+	if (firmware_upgrade_services(services, service_count, 1) != 0)
+		logmessage("firmware", "CRITICAL: upgrade aborted without firmware write; some previous services failed to recover");
+safe_cleanup:
+	unlink(record);
+	unlink(writer);
+	rmdir(attempt);
+	if (resident && munlockall() != 0)
+		logmessage("firmware", "CRITICAL: safe upgrade abort could not release resident memory locks");
+	return firmware_upgrade_inhibited() ? 1 : 0;
 }
 
 static void
@@ -861,6 +1220,11 @@ handle_notifications(void)
 	int i, stop_handle = 0, queue_fd;
 	char notify_name[300];
 	DIR *directory;
+	/* Do not execute queued reboots/retries or restart services from a rootfs
+	 * which a failed writer may already have replaced. Keep markers for
+	 * diagnosis; existing WAN, DNS and management processes were preserved. */
+	if (firmware_upgrade_inhibited())
+		return;
 
 	queue_fd = rc_notification_open_dir(DIR_RC_NOTIFY);
 	if (queue_fd < 0)
