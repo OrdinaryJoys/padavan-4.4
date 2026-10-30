@@ -97,6 +97,8 @@
 
 extern void notify_rc(const char *event_name);
 extern void notify_rc_and_wait(const char *event_name, int wait_sec);
+extern int rc_notification_open_dir(const char *path);
+extern int rc_notification_valid_marker(int fd, const char *event_name);
 
 
 #endif /* NOTIFY_RC_H */

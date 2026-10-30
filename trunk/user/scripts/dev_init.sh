@@ -8,13 +8,13 @@ size_tmp="24M"
 size_var="4M"
 size_etc="6M"
 
-if [ "$1" == "-l" ] ; then
+if [ "$1" = "-l" ] ; then
 	size_tmp="8M"
 	size_var="1M"
 fi
 
 mount -t tmpfs tmpfs /dev   -o size=8K
-mount -t tmpfs tmpfs /etc   -o size=$size_etc,noatime
+mount -t tmpfs tmpfs /etc   -o size=$size_etc,noatime,mode=0755
 mount -t tmpfs tmpfs /home  -o size=1M
 mount -t tmpfs tmpfs /media -o size=8K
 mount -t tmpfs tmpfs /mnt   -o size=8K
@@ -32,11 +32,11 @@ mdev -s
 # create dirs
 mkdir -p -m 777 /var/lock
 mkdir -p -m 777 /var/locks
-mkdir -p -m 777 /var/private
+mkdir -p -m 700 /var/private
 mkdir -p -m 700 /var/empty
 mkdir -p -m 777 /var/lib
 mkdir -p -m 777 /var/log
-mkdir -p -m 777 /var/run
+mkdir -p -m 755 /var/run
 mkdir -p -m 777 /var/tmp
 mkdir -p -m 777 /var/spool
 mkdir -p -m 777 /var/lib/misc
@@ -44,10 +44,10 @@ mkdir -p -m 777 /var/state
 mkdir -p -m 777 /var/state/parport
 mkdir -p -m 777 /var/state/parport/svr_statue
 mkdir -p -m 777 /tmp/var
-mkdir -p -m 777 /tmp/hashes
+mkdir -p -m 700 /tmp/hashes
 mkdir -p -m 777 /tmp/modem
-mkdir -p -m 777 /tmp/rc_notification
-mkdir -p -m 777 /tmp/rc_action_incomplete
+mkdir -p -m 700 /tmp/rc_notification
+mkdir -p -m 700 /tmp/rc_action_incomplete
 mkdir -p -m 700 /home/root
 mkdir -p -m 700 /home/root/.ssh
 mkdir -p -m 755 /etc/storage

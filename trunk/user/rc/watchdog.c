@@ -15,6 +15,10 @@
  * MA 02111-1307 USA
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <stdio.h>
 #include <signal.h>
 #include <time.h>
@@ -32,44 +36,79 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <sys/ioctl.h>
+#include "rc.h"
+
 #ifndef WDIOC_SETTIMEOUT
-#define WDIOC_SETTIMEOUT	_IOWR('W', 6, int)
+#define WDIOC_SETTIMEOUT _IOWR('W', 6, int)
+#endif
+#ifndef WDIOC_GETTIMEOUT
+#define WDIOC_GETTIMEOUT _IOR('W', 7, int)
+#endif
+#ifndef WDIOC_GETBOOTSTATUS
+#define WDIOC_GETBOOTSTATUS _IOR('W', 2, int)
 #endif
 #ifndef WDIOC_KEEPALIVE
-#define WDIOC_KEEPALIVE		_IOR('W', 5, int)
+#define WDIOC_KEEPALIVE _IOR('W', 5, int)
 #endif
-#define HW_WD_TIMEOUT		60	/* seconds; the timer feeds every 10s */
+#ifndef WDIOC_SETOPTIONS
+#define WDIOC_SETOPTIONS _IOR('W', 4, int)
+#endif
+#ifndef WDIOS_DISABLECARD
+#define WDIOS_DISABLECARD 0x0001
+#endif
+#define HW_WD_TIMEOUT 60 /* seconds; the timer feeds every 10s */
 static int hw_wd_fd = -1;
 
 static void
 hw_watchdog_init(void)
 {
-	int timeout = HW_WD_TIMEOUT;
+	int timeout = HW_WD_TIMEOUT, bootstatus;
 
-	hw_wd_fd = open("/dev/watchdog", O_WRONLY);
+	hw_wd_fd = open("/dev/watchdog", O_WRONLY|O_CLOEXEC);
 	if (hw_wd_fd < 0) {
 		logmessage("watchdog", "hardware watchdog not available: %s", strerror(errno));
 		return;
 	}
-	if (ioctl(hw_wd_fd, WDIOC_SETTIMEOUT, &timeout) != 0)
-		timeout = HW_WD_TIMEOUT;
-	ioctl(hw_wd_fd, WDIOC_KEEPALIVE, 0);
+	if (ioctl(hw_wd_fd, WDIOC_SETTIMEOUT, &timeout) != 0) {
+		logmessage("watchdog", "cannot set hardware watchdog timeout: %s", strerror(errno));
+		if (ioctl(hw_wd_fd, WDIOC_GETTIMEOUT, &timeout) != 0)
+			timeout = -1;
+	}
+	if (ioctl(hw_wd_fd, WDIOC_KEEPALIVE, 0) != 0)
+		logmessage("watchdog", "initial hardware watchdog ping failed: %s", strerror(errno));
+	if (ioctl(hw_wd_fd, WDIOC_GETBOOTSTATUS, &bootstatus) == 0)
+		logmessage("watchdog", "hardware watchdog boot status: 0x%x", bootstatus);
 	logmessage("watchdog", "hardware watchdog enabled, timeout %d s", timeout);
 }
 
 static void
 hw_watchdog_feed(void)
 {
+	ssize_t written;
+
 	if (hw_wd_fd < 0)
 		return;
-	if (write(hw_wd_fd, "\0", 1) != 1) {
-		logmessage("watchdog", "hardware watchdog feed failed: %s", strerror(errno));
-		close(hw_wd_fd);
-		hw_wd_fd = -1;
-	}
+	do {
+		written = write(hw_wd_fd, "\0", 1);
+	} while (written < 0 && errno == EINTR);
+	if (written != 1)
+		logmessage("watchdog", "hardware watchdog feed failed, will retry: %s", strerror(errno));
 }
 
-#include "rc.h"
+static void
+hw_watchdog_stop(void)
+{
+	int options = WDIOS_DISABLECARD;
+
+	if (hw_wd_fd < 0)
+		return;
+	/* A normal stop precedes firmware writes and configuration restores.
+	 * Closing without disabling leaves MAGICCLOSE watchdogs armed. */
+	if (ioctl(hw_wd_fd, WDIOC_SETOPTIONS, &options) != 0)
+		logmessage("watchdog", "cannot disable hardware watchdog; it remains armed: %s", strerror(errno));
+	close(hw_wd_fd);
+	hw_wd_fd = -1;
+}
 
 #define WD_NORMAL_PERIOD	10		/* 10s */
 
@@ -615,6 +654,7 @@ catch_sig_watchdog(int sig)
 	case SIGTERM:
 		remove(WD_PID_FILE);
 		wd_alarmtimer(0, 0);
+		hw_watchdog_stop();
 		exit(0);
 		break;
 	}

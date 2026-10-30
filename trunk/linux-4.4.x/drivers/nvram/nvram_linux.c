@@ -15,6 +15,7 @@
 
 #include <linux/init.h>
 #include <linux/module.h>
+#include <linux/capability.h>
 #include <linux/kernel.h>
 #include <linux/string.h>
 #include <linux/spinlock.h>
@@ -478,6 +479,12 @@ user_nvram_get(anvram_ioctl_t __user *nvr)
 static long
 dev_nvram_ioctl(struct file *file, unsigned int req, unsigned long arg)
 {
+	/* NVRAM includes administrator credentials and boot configuration.
+	 * Check every operation, including GET, even on an inherited descriptor
+	 * or one opened read-only before device permissions were tightened. */
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
 	switch(req)
 	{
 	case NVRAM_IOCTL_COMMIT:
@@ -548,6 +555,9 @@ static const struct file_operations nvram_ver_seq_fops = {
 static int
 dev_nvram_open(struct inode *inode, struct file * file)
 {
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+
 	try_module_get(THIS_MODULE);
 	return 0;
 }

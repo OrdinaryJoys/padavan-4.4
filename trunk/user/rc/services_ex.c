@@ -15,6 +15,9 @@
  * MA 02111-1307 USA
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -41,6 +44,37 @@
 #define DHCPD_LEASE_FILE	"/tmp/dnsmasq.leases"
 #define UPNPD_LEASE_FILE	"/tmp/miniupnpd.leases"
 #define INADYN_USER_DIR		"/etc/storage/inadyn"
+
+/* Generated DNS files must stay readable after dnsmasq drops privileges,
+ * but must never be writable by that uid.  Do not truncate a symlink,
+ * hardlink, special file, or a file owned by another uid. */
+static FILE *
+open_dns_config(const char *path, int truncate_file)
+{
+	FILE *fp;
+	struct stat st;
+	int fd, saved_errno;
+
+	fd = open(path, O_WRONLY|O_CREAT|O_NOFOLLOW|O_NONBLOCK, 0644);
+	if (fd < 0)
+		return NULL;
+	if (fstat(fd, &st) != 0)
+		goto fail;
+	if (!S_ISREG(st.st_mode) || st.st_nlink != 1 || st.st_uid != geteuid()) {
+		errno = EPERM;
+		goto fail;
+	}
+	if (fchmod(fd, 0644) != 0 || (truncate_file && ftruncate(fd, 0) != 0))
+		goto fail;
+	fp = fdopen(fd, "w");
+	if (fp)
+		return fp;
+fail:
+	saved_errno = errno;
+	close(fd);
+	errno = saved_errno;
+	return NULL;
+}
 
 static void
 simple_dhcp_range(const char *ip, char *dip1, char *dip2, const char *mask)
@@ -101,13 +135,13 @@ struct ip4_items_t {
 	char *mac[DHCPD_MULTIMAC_MAX];
 };
 
-static void
+static int
 fill_static_ethers(const char *lan_ip, const char *lan_mask)
 {
 	FILE *fp[3];
 	in_addr_t ip4, ip4_lan;
 	struct ip4_items_t ip4_list[DHCPD_STATIC_MAX];
-	int i, j, i_max_items, i_arp_bind;
+	int i, j, i_max_items, i_arp_bind, failed = 0;
 	char dh_fn[64], nvram_key[32], *smac, *sip4, *shname;
 
 	memset(ip4_list, 0, sizeof(ip4_list));
@@ -115,9 +149,13 @@ fill_static_ethers(const char *lan_ip, const char *lan_mask)
 	mkdir_if_none(DHCPD_HOSTS_DIR, "755");
 	snprintf(dh_fn, sizeof(dh_fn), "%s/dhcp-hosts.rc", DHCPD_HOSTS_DIR);
 
-	fp[0] = fopen(dh_fn, "w+");
-	fp[1] = fopen("/etc/ethers", "w+");
-	fp[2] = fopen("/tmp/hosts.static", "w+");
+	fp[0] = open_dns_config(dh_fn, 1);
+	fp[1] = open_dns_config("/etc/ethers", 1);
+	fp[2] = open_dns_config("/tmp/hosts.static", 1);
+	if (!fp[0] || !fp[1] || !fp[2]) {
+		failed = 1;
+		goto close_files;
+	}
 
 	if (nvram_get_int("dhcp_static_x") == 1) {
 		ip4_lan = inet_addr_safe(lan_ip);
@@ -216,10 +254,16 @@ fill_static_ethers(const char *lan_ip, const char *lan_mask)
 		}
 	}
 
+close_files:
 	for (i = 0; i < ARRAY_SIZE(fp); i++) {
-		if (fp[i])
-			fclose(fp[i]);
+		if (fp[i]) {
+			if (ferror(fp[i]))
+				failed = 1;
+			if (fclose(fp[i]) != 0)
+				failed = 1;
+		}
 	}
+	return failed ? -1 : 0;
 }
 
 int
@@ -232,7 +276,7 @@ fill_dnsmasq_servers(void)
 
 	lock = file_lock("dservers");
 
-	fp = fopen(DNS_SERVERS_FILE, "w");
+	fp = open_dns_config(DNS_SERVERS_FILE, 1);
 	if (!fp) {
 		file_unlock(lock);
 		return -1;
@@ -263,7 +307,15 @@ fill_dnsmasq_servers(void)
 	/* fill from user dnsmasq.servers */
 	//load_user_config(fp, storage_dir, "dnsmasq.servers", NULL);
 
-	fclose(fp);
+	if (ferror(fp)) {
+		fclose(fp);
+		file_unlock(lock);
+		return -1;
+	}
+	if (fclose(fp) != 0) {
+		file_unlock(lock);
+		return -1;
+	}
 
 	file_unlock(lock);
 
@@ -293,7 +345,7 @@ int
 start_dns_dhcpd(int is_ap_mode)
 {
 	FILE *fp;
-	int i_verbose, i_dhcp_enable, is_dhcp_used, is_dns_used,filter_aaaa;
+	int i_verbose, i_dhcp_enable, is_dhcp_used, is_dns_used;
 	char dhcp_start[32], dhcp_end[32], dns_all[64], dnsv6[40];
 	char *ipaddr, *netmask, *gw, *dns1, *dns2, *dns3, *wins, *domain, *dns6;
 	const char *storage_dir = "/etc/storage/dnsmasq";
@@ -305,22 +357,32 @@ start_dns_dhcpd(int is_ap_mode)
 	netmask = nvram_safe_get("lan_netmask");
 	domain  = nvram_safe_get("lan_domain");
 
-	/* touch dnsmasq.leases if not exist */
-	create_file(DHCPD_LEASE_FILE);
+	/* Keep lease data, repairing the mode left by older rc umask(0000).
+	 * dnsmasq opens its lease stream as root before dropping privileges. */
+	fp = open_dns_config(DHCPD_LEASE_FILE, 0);
+	if (!fp)
+		return errno;
+	if (fclose(fp) != 0)
+		return EIO;
 
 	/* create /etc/ethers */
-	fill_static_ethers(ipaddr, netmask);
+	if (fill_static_ethers(ipaddr, netmask) != 0)
+		return EIO;
 
 	if (!is_ap_mode) {
 		/* create /etc/hosts (run after fill_static_ethers!) */
 		update_hosts_router(ipaddr);
 		
 		/* touch resolv.conf if not exist */
-		create_file(DNS_RESOLV_CONF);
+		fp = open_dns_config(DNS_RESOLV_CONF, 0);
+		if (!fp)
+			return errno;
+		if (fclose(fp) != 0)
+			return EIO;
 	}
 
 	/* create /etc/dnsmasq.conf */
-	if (!(fp = fopen("/etc/dnsmasq.conf", "w")))
+	if (!(fp = open_dns_config("/etc/dnsmasq.conf", 1)))
 		return errno;
 
 	fprintf(fp, "user=%s\n"
@@ -499,10 +561,16 @@ start_dns_dhcpd(int is_ap_mode)
 #endif
 
 	fprintf(fp, "conf-file=%s/dnsmasq.conf\n", storage_dir);
-	fclose(fp);
-	doSystem("/usr/bin/dnsmasq.sh");
-	if (is_dns_used)
-		fill_dnsmasq_servers();
+	if (ferror(fp)) {
+		fclose(fp);
+		return EIO;
+	}
+	if (fclose(fp) != 0)
+		return EIO;
+	if (is_dns_used && fill_dnsmasq_servers() != 0)
+		return EIO;
+	if (doSystem("/usr/bin/dnsmasq.sh") != 0)
+		return EINVAL;
 
 	if (is_dns_used || is_dhcp_used)
 		return eval("/usr/sbin/dnsmasq");
@@ -961,10 +1029,30 @@ get_inadyn_system(const char *alias)
 	return system;
 }
 
+/* Set owner-only access before truncating or writing any credential bytes. */
+static FILE *
+open_private_config(const char *path)
+{
+	FILE *fp;
+	int fd = open(path, O_WRONLY|O_CREAT|O_NOFOLLOW, 0600);
+
+	if (fd < 0)
+		return NULL;
+	if (fchmod(fd, 0600) != 0 || ftruncate(fd, 0) != 0) {
+		close(fd);
+		return NULL;
+	}
+	fp = fdopen(fd, "w");
+	if (!fp)
+		close(fd);
+	return fp;
+}
+
 static int
 write_inadyn_conf(const char *conf_file)
 {
 	FILE *fp;
+	int failed;
 	int i_max, i_ddns_source, i_ddns_period, i_ddns_forced, i_ddns_ipv6;
 	int i_ddns1_ssl, i_ddns1_checkip;
 	int i_ddns2_ssl, i_ddns2_checkip;
@@ -1022,7 +1110,7 @@ write_inadyn_conf(const char *conf_file)
 	ddns2_user  = nvram_safe_get("ddns2_user");
 	ddns2_pass  = nvram_safe_get("ddns2_pass");
 
-	fp = fopen(conf_file, "w");
+	fp = open_private_config(conf_file);
 	if (fp) {
 		if (strlen(wan_ifname) > 0)
 			fprintf(fp, "iface = %s\n", wan_ifname);
@@ -1082,13 +1170,10 @@ write_inadyn_conf(const char *conf_file)
 
 		load_user_config(fp, INADYN_USER_DIR, "inadyn.conf", NULL);
 		
-		fclose(fp);
-		/* The generated file carries the DDNS password in clear text; the
-		 * umask-0 fopen leaves it 0666, i.e. readable and writable by every
-		 * local user. Keep it owner-only. */
-		chmod("/etc/inadyn.conf", 0600);
-		
-		return 1;
+		failed = ferror(fp);
+		if (fclose(fp) != 0)
+			failed = 1;
+		return !failed;
 	}
 
 	return 0;
@@ -1114,7 +1199,10 @@ start_ddns(int clear_cache)
 
 	mkdir(DDNS_CACHE_DIR, 0777);
 
-	write_inadyn_conf(DDNS_CONF_FILE);
+	if (!write_inadyn_conf(DDNS_CONF_FILE)) {
+		logmessage("inadyn", "cannot write private configuration");
+		return -1;
+	}
 
 	startup_delay = (!is_ntpc_updated()) ? "30" : "3";
 
@@ -1132,7 +1220,10 @@ int
 notify_ddns_update(void)
 {
 	if (pids("inadyn")) {
-		write_inadyn_conf(DDNS_CONF_FILE);
+		if (!write_inadyn_conf(DDNS_CONF_FILE)) {
+			logmessage("inadyn", "configuration update failed; reload skipped");
+			return -1;
+		}
 		return doSystem("killall %s %s", "-SIGHUP", "inadyn");
 	}
 

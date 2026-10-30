@@ -3,6 +3,10 @@ name: CI
 # Controls when the action will run. 
 on: 
   push:
+    # Maintenance candidates are built by Padavan-build's locked K2P matrix.
+    # Do not run this legacy multi-board/third-party-upload job on those refs.
+    branches-ignore:
+      - 'codex/**'
   pull_request:
   workflow_dispatch:
   release:

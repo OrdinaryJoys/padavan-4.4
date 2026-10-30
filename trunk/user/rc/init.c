@@ -355,9 +355,11 @@ init_time(void)
 static void
 init_nodes(void)
 {
-	mknod("/dev/nvram",  S_IFCHR | 0666, makedev(228, 0));
+	mknod("/dev/nvram",  S_IFCHR | 0600, makedev(228, 0));
+	chmod("/dev/nvram", 0600);
 #if defined (USE_HW_NAT)
-	mknod("/dev/hwnat0", S_IFCHR | 0666, makedev(220, 0));
+	mknod("/dev/hwnat0", S_IFCHR | 0600, makedev(220, 0));
+	chmod("/dev/hwnat0", 0600);
 #endif
 #if defined (USE_MTK_AES)
 	mknod("/dev/crypto", S_IFCHR | 0666, makedev(10, 60));
@@ -445,7 +447,9 @@ init_main_loop(void)
 {
 	pid_t shell_pid = 0;
 
-	umask(0000);
+	/* Services must opt in to shared writes instead of exposing every new
+	 * configuration and PID file to unprivileged local processes. */
+	umask(0022);
 
 	/* Basic initialization */
 	init_time();
