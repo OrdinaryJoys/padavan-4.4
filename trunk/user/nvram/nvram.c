@@ -86,132 +86,157 @@ static int is_sys_param(char *p)
 
 static int nvram_save(char *file)
 {
-	FILE *fp;
-	char *name, *buf;
-	unsigned long count, filelen, i;
+	FILE *fp = NULL;
+	char *name, *end, *limit, *buf = NULL, *candidate = NULL;
+	size_t count, i;
+	uint32_t filelen;
 	unsigned char rand = 0, temp;
-
-	if ((fp = fopen(file, "w")) == NULL)
-		return -1;
+	int fd, candidate_created = 0, ret = -1;
 
 	buf = malloc(NVRAM_SPACE);
-	if (!buf) {
-		fclose(fp);
-		perror ("Out of memory!\n");
-		return -1;
-	}
-
+	if (!buf)
+		goto out;
 	buf[0] = 0;
-	nvram_getall(buf, NVRAM_SPACE, 0);
+	if (nvram_getall(buf, NVRAM_SPACE, 0) != 0)
+		goto out;
 
 	count = 0;
-	for (name = buf; *name; name += strlen(name) + 1)
-	{
-		count = count + strlen(name) + 1;
+	limit = buf + NVRAM_SPACE;
+	for (name = buf; name < limit && *name; name = end + 1) {
+		end = memchr(name, 0, limit - name);
+		if (!end)
+			goto out;
+		count += end - name + 1;
 	}
-
+	if (name == limit)
+		goto out;
 	filelen = count + (1024 - count % 1024);
+	if (filelen > NVRAM_SPACE)
+		goto out;
 	rand = get_rand() % 30;
 
-	fwrite(PROFILE_HEADER_NEW, 1, 4, fp);
-	fwrite(&filelen, 1, 3, fp);
-	fwrite(&rand, 1, 1, fp);
+	/* Publish only a completely written backup, preserving any old copy on
+	 * read, allocation, write or flush failure. mkstemp also keeps it private. */
+	candidate = malloc(strlen(file) + sizeof(".new.XXXXXX"));
+	if (!candidate)
+		goto out;
+	sprintf(candidate, "%s.new.XXXXXX", file);
+	fd = mkstemp(candidate);
+	if (fd < 0)
+		goto out;
+	candidate_created = 1;
+	fp = fdopen(fd, "wb");
+	if (!fp) {
+		close(fd);
+		goto out;
+	}
+	if (fwrite(PROFILE_HEADER_NEW, 1, 4, fp) != 4 ||
+	    fwrite(&filelen, 1, 3, fp) != 3 || fwrite(&rand, 1, 1, fp) != 1)
+		goto out;
 
-	for (i = 0; i < count; i++)
-	{
-		if (buf[i] == 0x0)
+	for (i = 0; i < count; i++) {
+		if (buf[i] == 0)
 			buf[i] = 0xfd + get_rand() % 3;
 		else
 			buf[i] = 0xff - buf[i] + rand;
 	}
-
-	fwrite(buf, 1, count, fp);
-	for (i = count; i < filelen; i++)
-	{
+	if (fwrite(buf, 1, count, fp) != count)
+		goto out;
+	for (i = count; i < filelen; i++) {
 		temp = 0xfd + get_rand() % 3;
-		fwrite(&temp, 1, 1, fp);
+		if (fwrite(&temp, 1, 1, fp) != 1)
+			goto out;
 	}
-
-	fclose(fp);
+	if (ferror(fp) || fflush(fp) != 0)
+		goto out;
+	if (fclose(fp) != 0) {
+		fp = NULL;
+		goto out;
+	}
+	fp = NULL;
+	if (rename(candidate, file) != 0)
+		goto out;
+	ret = 0;
+out:
+	if (fp)
+		fclose(fp);
+	if (ret != 0 && candidate_created)
+		unlink(candidate);
+	free(candidate);
 	free(buf);
-	return 0;
+	return ret;
 }
 
 static int nvram_restore(char *file)
 {
 	FILE *fp;
-	char header[8], *p, *v, *buf;
-	unsigned long count, filelen, *filelenptr, i;
-	unsigned char rand, *randptr;
+	char header[8], *p, *v, *end, *limit, *buf;
+	uint32_t filelen;
+	size_t i;
+	unsigned char rand;
+	int encoded, ret = 1;
 
-	if ((fp = fopen(file, "r+")) == NULL)
+	if ((fp = fopen(file, "rb")) == NULL)
 		return -1;
-
-	buf = malloc(NVRAM_SPACE);
-	if (!buf) {
+	if (fread(header, 1, sizeof(header), fp) != sizeof(header)) {
 		fclose(fp);
-		perror ("Out of memory!\n");
-		return -1;
-	}
-
-	buf[0] = 0;
-
-	count = fread(header, 1, 8, fp);
-	if (count>=8 && strncmp(header, PROFILE_HEADER, 4) == 0)
-	{
-		filelenptr = (unsigned long *)(header + 4);
-		fread(buf, 1, *filelenptr, fp);
-	}
-	else if (count>=8 && strncmp(header, PROFILE_HEADER_NEW, 4) == 0)
-	{
-		filelenptr = (unsigned long *)(header + 4);
-		filelen = *filelenptr & 0xffffff;
-		randptr = (unsigned char *)(header + 7);
-		rand = *randptr;
-		if (filelen > NVRAM_SPACE)
-			filelen = NVRAM_SPACE;
-		count = fread(buf, 1, filelen, fp);
-		for (i = 0; i < count; i++)
-		{
-			if ((unsigned char) buf[i] > ( 0xfd - 0x1))
-				buf[i] = 0x0;
-			else
-				buf[i] = 0xff + rand - buf[i];
-		}
-	}
-	else
-	{
-		fclose(fp);
-		free(buf);
 		return 1;
 	}
-
-	fclose(fp);
-
-	nvram_clear();
-
-	p = buf;
-
-	while (*p)
-	{
-		v = strchr(p, '=');
-		if (v != NULL)
-		{
-			*v++ = 0;
-			if (is_sys_param(p))
-				nvram_set(p, v);
-			p = v + strlen(v) + 1;
-		}
-		else
-		{
-			nvram_unset(p);
-			p = p + 1;
+	memcpy(&filelen, header + 4, sizeof(filelen));
+	encoded = memcmp(header, PROFILE_HEADER_NEW, 4) == 0;
+	if (encoded)
+		filelen &= 0xffffff;
+	else if (memcmp(header, PROFILE_HEADER, 4) != 0) {
+		fclose(fp);
+		return 1;
+	}
+	if (filelen == 0 || filelen > NVRAM_SPACE) {
+		fclose(fp);
+		return 1;
+	}
+	buf = malloc(filelen);
+	if (!buf) {
+		fclose(fp);
+		return -1;
+	}
+	if (fread(buf, 1, filelen, fp) != filelen || ferror(fp))
+		goto out;
+	if (encoded) {
+		rand = (unsigned char)header[7];
+		for (i = 0; i < filelen; i++) {
+			if ((unsigned char)buf[i] >= 0xfd)
+				buf[i] = 0;
+			else
+				buf[i] = 0xff + rand - (unsigned char)buf[i];
 		}
 	}
 
-	free(buf);
+	/* Validate every entry and the terminating empty entry before clearing
+	 * any live configuration.  Never scan beyond the uploaded payload. */
+	limit = buf + filelen;
+	for (p = buf; p < limit && *p; p = end + 1) {
+		end = memchr(p, 0, limit - p);
+		if (!end || !memchr(p, '=', end - p) || *p == '=')
+			goto out;
+	}
+	if (p == limit)
+		goto out;
 
-	return 0;
+	if (nvram_clear() != 0)
+		goto out;
+	for (p = buf; *p; p = end + 1) {
+		end = p + strlen(p);
+		v = strchr(p, '=');
+		*v++ = 0;
+		if (is_sys_param(p) && nvram_set(p, v) != 0)
+			goto out;
+	}
+	ret = 0;
+
+out:
+	fclose(fp);
+	free(buf);
+	return ret;
 }
 
 static int nvram_show(int show_all)

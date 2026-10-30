@@ -4017,11 +4017,12 @@ do_restore_nv_cgi(const char *url, FILE *stream)
 		doSystem("killall %s %s", "-q", "watchdog");
 		sleep(1);
 		ret = eval("/usr/sbin/nvram", "restore", upload_file);
+		if (ret == 0)
+			ret = nvram_commit();
 		if (ret != 0) {
-			httpd_log("%s: Unable to extract %s file!", "NVRAM restore", "profile");
+			httpd_log("%s: Unable to restore or commit %s file!", "NVRAM restore", "profile");
 			eval("/sbin/watchdog");
-		} else
-			nvram_commit();
+		}
 	}
 
 	unlink(upload_file);
@@ -4055,29 +4056,59 @@ do_restore_st_cgi(const char *url, FILE *stream)
 }
 
 static void
+cleanup_nvram_download(void)
+{
+	unlink(PROFILE_FIFO_DOWNLOAD);
+}
+
+static int
+prepare_nvram_download(const char *url)
+{
+	struct stat info;
+	cleanup_nvram_download();
+	if (!get_login_safe())
+		return 403;
+	if (eval("/usr/sbin/nvram", "save", PROFILE_FIFO_DOWNLOAD) != 0 ||
+	    stat(PROFILE_FIFO_DOWNLOAD, &info) != 0 || !S_ISREG(info.st_mode) || info.st_size <= 0) {
+		cleanup_nvram_download();
+		httpd_log("NVRAM backup: unable to create backup");
+		return 500;
+	}
+	return 0;
+}
+
+static void
 do_nvram_file(const char *url, FILE *stream)
 {
-	char *nvram_file = PROFILE_FIFO_DOWNLOAD;
+	do_file(PROFILE_FIFO_DOWNLOAD, stream);
+}
 
-	unlink(nvram_file);
-	if (get_login_safe()) {
-		eval("/usr/sbin/nvram", "save", nvram_file);
-		do_file(nvram_file, stream);
-		unlink(nvram_file);
+static void
+cleanup_storage_download(void)
+{
+	unlink(STORAGE_FIFO_FILENAME);
+}
+
+static int
+prepare_storage_download(const char *url)
+{
+	struct stat info;
+	cleanup_storage_download();
+	if (!get_login_safe())
+		return 403;
+	if (eval("/sbin/mtd_storage.sh", "backup") != 0 ||
+	    stat(STORAGE_FIFO_FILENAME, &info) != 0 || !S_ISREG(info.st_mode) || info.st_size <= 0) {
+		cleanup_storage_download();
+		httpd_log("Storage backup: unable to create backup");
+		return 500;
 	}
+	return 0;
 }
 
 static void
 do_storage_file(const char *url, FILE *stream)
 {
-	char *storage_file = STORAGE_FIFO_FILENAME;
-
-	unlink(storage_file);
-	if (get_login_safe()) {
-		eval("/sbin/mtd_storage.sh", "backup");
-		do_file(storage_file, stream);
-		unlink(storage_file);
-	}
+	do_file(STORAGE_FIFO_FILENAME, stream);
 }
 
 static void
@@ -4185,8 +4216,8 @@ struct mime_handler mime_handlers[] = {
 	{ "**.js",  "text/javascript", no_cache_IE, NULL, do_ej, 1 },
 
 	/* downloads objects */
-	{ "Settings_**.CFG", "application/force-download", NULL, NULL, do_nvram_file, 1 },
-	{ "Storage_**.TBZ", "application/force-download", NULL, NULL, do_storage_file, 1 },
+	{ "Settings_**.CFG", "application/force-download", NULL, NULL, do_nvram_file, 1, prepare_nvram_download, cleanup_nvram_download },
+	{ "Storage_**.TBZ", "application/force-download", NULL, NULL, do_storage_file, 1, prepare_storage_download, cleanup_storage_download },
 	{ "syslog.txt", "application/force-download", syslog_txt, NULL, do_syslog_file, 1 },
 #if defined(APP_SCUT)
 	{ "scutclient.log", "application/force-download", scutclient_log_txt, NULL, do_scutclient_log_file, 1 },

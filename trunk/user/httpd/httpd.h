@@ -46,9 +46,21 @@ struct mime_handler {
 	void (*input)(const char *url, FILE *stream, int clen, char *boundary);
 	void (*output)(const char *url, FILE *stream);
 	int need_auth;
+	int (*prepare)(const char *url);
+	void (*cleanup)(void);
 };
 
 extern struct mime_handler mime_handlers[];
+
+extern int http_request_begin(int fd);
+extern void http_request_allow_body(void);
+extern int http_request_wait(int fd, int writing);
+extern int http_request_expired(void);
+extern FILE *http_client_fopen(int fd);
+extern int http_same_origin(const char *source, const char *authority, int secure, int referer);
+extern int http_csrf_allowed(const char *host, const char *origin, const char *referer,
+                            const char *fetch_site, int explicit_request, int secure, int is_get);
+extern int http_request_changes_state(int post, int head, const char *file, const char *query);
 
 /* CGI helper functions */
 extern void init_cgi(char *query);

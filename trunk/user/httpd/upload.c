@@ -81,21 +81,20 @@ check_header_bz2(const char *buf, long *file_len)
 static int
 check_header_nvram(const char *buf, long *file_len)
 {
-	unsigned int *p_len = (unsigned int *)(buf + 4);
+	uint32_t length;
 
-	if (strncmp(buf, PROFILE_HEADER_NEW, 4) == 0) {
-		*file_len = (long)(*p_len & 0xffffff);
-		return 0;
+	memcpy(&length, buf + 4, sizeof(length));
+	if (strncmp(buf, PROFILE_HEADER_NEW, 4) == 0)
+		length &= 0xffffff;
+	else if (strncmp(buf, PROFILE_HEADER, 4) != 0) {
+		httpd_log("%s: Incorrect %s header!", "NVRAM restore", "profile");
+		return -1;
 	}
-
-	if (strncmp(buf, PROFILE_HEADER, 4) == 0) {
-		*file_len = (long)(*p_len);
-		return 0;
-	}
-
-	httpd_log("%s: Incorrect %s header!", "NVRAM restore", "profile");
-
-	return -1;
+	/* Both supported profiles use a little-endian, four-byte length. */
+	if (length == 0 || (uint64_t)length + 8 > (uint64_t)*file_len)
+		return -1;
+	*file_len = (long)length + 8;
+	return 0;
 }
 
 static int
@@ -123,7 +122,9 @@ check_header_image(const char *buf, long *file_len)
 		return -2;
 	}
 
-	*file_len = (long)(ntohl(hdr->ih_size) + sizeof(image_header_t));
+	if ((uint64_t)ntohl(hdr->ih_size) + sizeof(image_header_t) > get_mtd_size(FW_MTD_NAME))
+		return -1;
+	*file_len = (long)ntohl(hdr->ih_size) + sizeof(image_header_t);
 
 	return 0;
 }
@@ -187,7 +188,7 @@ check_crc_image(const char *fw_image)
 	}
 
 	datalen = ntohl(hdr->ih_size);
-	if (datalen > ((unsigned int)sbuf.st_size - sizeof(image_header_t))) {
+	if (datalen != ((unsigned int)sbuf.st_size - sizeof(image_header_t))) {
 		ret = -1;
 		httpd_log("%s: Firmware image is corrupted! Please check free space in /tmp!", "Firmware update");
 		goto checkcrc_fail;
@@ -215,137 +216,149 @@ checkcrc_fail:
 	return ret;
 }
 
+/* A marker prefix inside file data is not a MIME delimiter.  Keep enough
+ * lookahead to validate its line ending, including a split closing marker. */
+static int
+multipart_boundary_end(const char *buf, size_t len, const char *marker, size_t marker_len, int final)
+{
+	size_t tail;
+
+	if (len < marker_len || memcmp(buf, marker, marker_len) != 0)
+		return 0;
+	buf += marker_len;
+	tail = len - marker_len;
+	if (tail >= 2 && buf[0] == '\r' && buf[1] == '\n')
+		return 1;
+	if (tail >= 1 && buf[0] == '\n')
+		return 1;
+	if (tail < 2 || buf[0] != '-' || buf[1] != '-')
+		return 0;
+	return (tail == 2 && final) || (tail >= 3 && buf[2] == '\n') ||
+	       (tail >= 4 && buf[2] == '\r' && buf[3] == '\n');
+}
+
 static int
 do_upload_file(FILE *stream, int clen, char *bndr, const char *fn, const char *obj_name, check_header_t func_hdr, int hdr_size)
 {
 	FILE *fp = NULL;
-	char buf[64+UPLOAD_BUF_SIZE+1], buf_obj[32], *ptr;
-	int cnt, count, offset, ret, ch, valid_header;
+	char buf[UPLOAD_BUF_SIZE + 136], buf_obj[32], *pb;
+	int fd, count, ch, ret = -1, found_part = 0, found_body = 0;
+	size_t pending = 0, keep, offset, bndr_len = bndr ? strlen(bndr) : 0;
 	long filelen;
 
-	ret = EINVAL;
-	valid_header = 0;
-	snprintf(buf_obj, sizeof(buf_obj), "name=\"%s\"", obj_name);
-
-	/* Look for our part */
-	while (clen > 0) {
-		if (!fgets(buf, MIN(clen + 1, sizeof(buf)), stream))
-			goto err;
-		clen -= strlen(buf);
-		if (!strncasecmp(buf, "Content-Disposition:", 20) && strstr(buf, buf_obj))
-			break;
-	}
-
-	/* Skip boundary and headers */
-	while (clen > 0) {
-		if (!fgets(buf, MIN(clen + 1, sizeof(buf)), stream))
-			goto err;
-		clen -= strlen(buf);
-		if (!strcmp(buf, "\n") || !strcmp(buf, "\r\n"))
-			break;
-	}
-
+	/* A rejected new request must never leave an older upload actionable. */
 	unlink(fn);
-	if (!(fp = fopen(fn, "w+")))
-		goto err;
+	if (clen <= 0 || hdr_size <= 0 || hdr_size > UPLOAD_BUF_SIZE ||
+	    (bndr && (bndr_len < 3 || bndr_len >= 128)))
+		goto out;
+
+	snprintf(buf_obj, sizeof(buf_obj), "name=\"%s\"", obj_name);
+	while (clen > 0) {
+		if (!fgets(buf, MIN((size_t)clen + 1, sizeof(buf)), stream))
+			goto out;
+		clen -= strlen(buf);
+		if (!strncasecmp(buf, "Content-Disposition:", 20) && strstr(buf, buf_obj)) {
+			found_part = 1;
+			break;
+		}
+	}
+	while (found_part && clen > 0) {
+		if (!fgets(buf, MIN((size_t)clen + 1, sizeof(buf)), stream))
+			goto out;
+		clen -= strlen(buf);
+		if (!strcmp(buf, "\n") || !strcmp(buf, "\r\n")) {
+			found_body = 1;
+			break;
+		}
+	}
+	if (!found_body || clen < hdr_size)
+		goto out;
 
 	filelen = clen;
-	offset = 0;
-	cnt = 0;
-	ptr = buf + 64;
-	memset(buf, 0, 64);
+	if (fread(buf, 1, hdr_size, stream) != (size_t)hdr_size)
+		goto out;
+	clen -= hdr_size;
+	if (func_hdr(buf, &filelen) != 0 ||
+	    (!bndr && (filelen < hdr_size || filelen - hdr_size > clen)))
+		goto out;
 
-	/* Pipe the rest to the FIFO */
-	while (clen > 0 && filelen > 0) {
-		count = fread(ptr + offset, 1, MIN(clen, UPLOAD_BUF_SIZE-offset), stream);
-		if (count <= 0)
-			goto err;
-		
-		clen -= count;
-		
-		if (cnt == 0) {
-			if (count + offset < hdr_size) {
-				offset += count;
-				continue;
-			}
-			
-			count += offset;
-			offset = 0;
-			cnt++;
-			
-			if (func_hdr(ptr, &filelen) != 0) {
-				fwlog("upload: header check failed");
-				goto err;
-			}
-			
-			valid_header = 1;
+	fd = open(fn, O_WRONLY|O_CREAT|O_EXCL, 0600);
+	if (fd < 0)
+		goto out;
+	fp = fdopen(fd, "wb");
+	if (!fp) {
+		close(fd);
+		goto out;
+	}
+	if (fwrite(buf, 1, hdr_size, fp) != (size_t)hdr_size)
+		goto out;
+
+	if (!bndr) {
+		filelen -= hdr_size;
+		while (filelen > 0) {
+			count = fread(buf, 1, MIN(filelen, UPLOAD_BUF_SIZE), stream);
+			if (count <= 0)
+				goto out;
+			clen -= count;
+			filelen -= count;
+			if (fwrite(buf, 1, count, fp) != (size_t)count)
+				goto out;
 		}
-		
-		/* check boundary marker (after \r\n or \n) */
-		if (bndr) {
-			char *pb = memmem(buf, 64 + count, bndr, strlen(bndr));
-			if (!pb)
-				pb = memmem(buf, 64 + count, bndr+1, strlen(bndr+1));
-			if (pb) {
-				if (pb > ptr) {
-					count = (int)(pb - ptr);
-					filelen = count;
-				} else {
-					/* part of boundary marker may be writed to file, ignore this */
-					filelen = 0;
+	} else {
+		/* Keep a boundary-sized suffix until the next read.  This also
+		 * removes a marker split between reads without writing its prefix. */
+		int found_boundary = 0;
+		while (clen > 0) {
+			count = fread(buf + pending, 1, MIN(clen, UPLOAD_BUF_SIZE), stream);
+			if (count <= 0)
+				goto out;
+			clen -= count;
+			pending += count;
+			pb = NULL;
+			for (offset = 0; offset < pending; offset++) {
+				if (multipart_boundary_end(buf + offset, pending - offset, bndr, bndr_len, clen == 0) ||
+				    multipart_boundary_end(buf + offset, pending - offset, bndr + 1, bndr_len - 1, clen == 0)) {
+					pb = buf + offset;
 					break;
 				}
 			}
-		}
-		
-		if (count > filelen)
-			count = filelen;
-		
-		filelen -= count;
-		if (fwrite(ptr, 1, count, fp) != (size_t)count) {
-			fwlog("upload: short write: %s", strerror(errno));
-			goto err;
-		}
-		
-		if (bndr && count >= 64)
-			memcpy(buf, ptr + count - 64, 64);
-	}
-
-	if (!valid_header)
-		goto err;
-
-	/* Slurp anything remaining in the request */
-	while (clen-- > 0) {
-		if((ch = fgetc(stream)) == EOF)
-			break;
-		
-		if (filelen > 0) {
-			if (fwrite(&ch, 1, 1, fp) != 1) {
-				fwlog("upload: short write (tail): %s", strerror(errno));
-				goto err;
+			if (pb) {
+				count = pb - buf;
+				if (fwrite(buf, 1, count, fp) != (size_t)count)
+					goto out;
+				found_boundary = 1;
+				break;
 			}
-			filelen--;
+			keep = MIN(pending, bndr_len + 4);
+			count = pending - keep;
+			if (fwrite(buf, 1, count, fp) != (size_t)count)
+				goto out;
+			memmove(buf, buf + count, keep);
+			pending = keep;
 		}
+		if (!found_boundary)
+			goto out;
 	}
 
+	/* Content-Length is a promise: an early EOF is an incomplete request. */
+	while (clen > 0) {
+		if (fgetc(stream) == EOF)
+			goto out;
+		clen--;
+	}
 	ret = 0;
 
-err:
-	if (fp)
-		fclose(fp);
-
-	/* Slurp anything remaining in the request */
+out:
+	/* Buffered writes may fail only when fclose flushes the final block. */
+	if (fp && fclose(fp) != 0)
+		ret = -1;
 	while (clen-- > 0) {
-		if((ch = fgetc(stream)) == EOF)
+		if ((ch = fgetc(stream)) == EOF)
 			break;
 	}
-
-	if (ret != 0 || !valid_header) {
+	if (ret != 0)
 		unlink(fn);
-		return -1;
-	}
-
-	return 0;
+	return ret;
 }
 
 void
@@ -356,11 +369,12 @@ do_upgrade_fw_post(const char *url, FILE *stream, int clen, char *boundary)
 	unsigned long long avail = 0;
 	int ret;
 
+	unlink(upload_file);
 	unlink("/tmp/fwcheck.log");
 	if (statvfs("/tmp", &vfs) == 0)
 		avail = (unsigned long long)vfs.f_bavail * vfs.f_frsize;
 	fwlog("post: clen=%d avail=%llu", clen, avail);
-	if (avail > 0 && avail < (unsigned long long)clen + (1U << 20)) {
+	if (clen <= 0 || avail < (unsigned long long)clen + (1U << 20)) {
 		fwlog("post: not enough free space in /tmp");
 		httpd_log("%s: not enough free space in /tmp", "Firmware update");
 		return;
@@ -401,6 +415,11 @@ do_restore_st_post(const char *url, FILE *stream, int clen, char *boundary)
 {
 	const char *upload_file = STORAGE_FIFO_FILENAME;
 	char bndr[128];
+
+	if (!boundary || !*boundary || strlen(boundary) > sizeof(bndr) - 5) {
+		unlink(upload_file);
+		return;
+	}
 
 	/* BZ2 not store file length in the header, check boundary marker */
 	snprintf(bndr, sizeof(bndr), "\r\n--%s", boundary);

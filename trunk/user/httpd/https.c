@@ -88,37 +88,50 @@ static const unsigned char dh1024_g[]={
 	0x85,0x5E,0x6E,0xEB,0x22,0xB3,0xB2,0xE5,
 };
 
+static int
+ssl_interrupted(int error, int operation_errno)
+{
+	return operation_errno == EINTR &&
+	       (error == SSL_ERROR_SYSCALL || error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE);
+}
+
 static ssize_t
 http_ssl_read(void *cookie, char *buf, size_t len)
 {
-	int nr, err;
+	int nr, err, operation_errno;
 	http_ssl_cookie_t *hsc = (http_ssl_cookie_t *)cookie;
 	size_t total = 0;
 
-	do {
+	while (total < len) {
+		if (http_request_expired())
+			return total ? (ssize_t)total : -1;
+		errno = 0;
 		nr = SSL_read(hsc->ssl, buf + total, len - total);
 		if (nr > 0) {
 			total += (size_t)nr;
+			if (!SSL_pending(hsc->ssl))
+				break;
 		} else {
+			operation_errno = errno;
 			err = SSL_get_error(hsc->ssl, nr);
-			switch (err) {
-			case SSL_ERROR_ZERO_RETURN:
-				goto read_out;
-				break;
-			case SSL_ERROR_WANT_WRITE:
-			case SSL_ERROR_WANT_READ:
-				break;
-			default:
+			if (ssl_interrupted(err, operation_errno))
+				continue;
+			if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+				if (http_request_wait(hsc->fd, err == SSL_ERROR_WANT_WRITE))
+					continue;
+				operation_errno = errno;
+			}
+			if (err != SSL_ERROR_ZERO_RETURN) {
 				if (debug_mode)
 					ERR_print_errors_fp(stderr);
-				if (total == 0)
-					total = (ssize_t)-1;
-				goto read_out;
+				if (total == 0) {
+					errno = operation_errno ? operation_errno : EIO;
+					return -1;
+				}
 			}
+			break;
 		}
-	} while ((total < len) && SSL_pending(hsc->ssl));
-
-read_out:
+	}
 
 	return (ssize_t)total;
 }
@@ -126,34 +139,38 @@ read_out:
 static ssize_t
 http_ssl_write(void *cookie, const char *buf, size_t len)
 {
-	int nw, err;
+	int nw, err, operation_errno;
 	http_ssl_cookie_t *hsc = (http_ssl_cookie_t *)cookie;
 	size_t total = 0;
 
 	while (total < len) {
+		if (http_request_expired())
+			return total ? (ssize_t)total : -1;
+		errno = 0;
 		nw = SSL_write(hsc->ssl, buf + total, len - total);
 		if (nw > 0) {
 			total += (size_t)nw;
 		} else {
+			operation_errno = errno;
 			err = SSL_get_error(hsc->ssl, nw);
-			switch (err) {
-			case SSL_ERROR_ZERO_RETURN:
-				goto write_out;
-				break;
-			case SSL_ERROR_WANT_WRITE:
-			case SSL_ERROR_WANT_READ:
-				break;
-			default:
+			if (ssl_interrupted(err, operation_errno))
+				continue;
+			if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+				if (http_request_wait(hsc->fd, err == SSL_ERROR_WANT_WRITE))
+					continue;
+				operation_errno = errno;
+			}
+			if (err != SSL_ERROR_ZERO_RETURN) {
 				if (debug_mode)
 					ERR_print_errors_fp(stderr);
-				if (total == 0)
-					total = (ssize_t)-1;
-				goto write_out;
+				if (total == 0) {
+					errno = operation_errno ? operation_errno : EIO;
+					return -1;
+				}
 			}
+			break;
 		}
 	}
-
-write_out:
 
 	return (ssize_t)total;
 }
@@ -339,10 +356,18 @@ FILE *ssl_server_fopen(int fd)
 		goto ERROR;
 
 	for (;;) {
-		int ret = SSL_accept(hsc->ssl);
+		int ret, err, operation_errno;
+		if (http_request_expired())
+			goto ERROR;
+		errno = 0;
+		ret = SSL_accept(hsc->ssl);
 		if (ret <= 0) {
-			int err = SSL_get_error(hsc->ssl, ret);
-			if (ret < 0 && (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE))
+			operation_errno = errno;
+			err = SSL_get_error(hsc->ssl, ret);
+			if (ret < 0 && ssl_interrupted(err, operation_errno))
+				continue;
+			if (ret < 0 && (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) &&
+			    http_request_wait(hsc->fd, err == SSL_ERROR_WANT_WRITE))
 				continue;
 			goto ERROR;
 		}

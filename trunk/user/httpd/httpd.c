@@ -55,6 +55,9 @@
 #define MAX_LISTEN_BACKLOG	511
 #define MAX_CONN_ACCEPT		50
 #define MAX_CONN_TIMEOUT	30
+#ifndef HTTP_IO_TIMEOUT
+#define HTTP_IO_TIMEOUT		60
+#endif
 #define MAX_AUTH_LEN		128
 
 /* A multi-family in_addr. */
@@ -750,19 +753,6 @@ eat_post_data(FILE *conn_fp, int clen)
 		fgetc(conn_fp);
 }
 
-static void
-try_pull_data(FILE *conn_fp, int conn_fd)
-{
-	int flags = fcntl(conn_fd, F_GETFL);
-
-	/* Read up to two more characters */
-	if (flags != -1 && fcntl(conn_fd, F_SETFL, flags | O_NONBLOCK) != -1) {
-		if (fgetc(conn_fp) != EOF)
-			fgetc(conn_fp);
-		
-		fcntl(conn_fd, F_SETFL, flags);
-	}
-}
 
 int
 do_fwrite(const char *buffer, int len, FILE *stream)
@@ -838,17 +828,118 @@ set_preferred_lang(char *cur)
 	return 0;
 }
 
+/* The accept/select deadline does not cover blocking stdio or TLS reads. */
+static int
+set_client_timeouts(int fd)
+{
+	struct timeval timeout = { HTTP_IO_TIMEOUT, 0 };
+	int ret;
+
+	do {
+		ret = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+	} while (ret < 0 && errno == EINTR);
+	if (ret < 0)
+		return -1;
+	do {
+		ret = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+	} while (ret < 0 && errno == EINTR);
+	return ret;
+}
+
+static int
+parse_content_length(const char *value, int *length)
+{
+	unsigned int result = 0, digit;
+
+	while (*value == ' ' || *value == '\t')
+		value++;
+	if (*value < '0' || *value > '9')
+		return -1;
+	do {
+		digit = *value++ - '0';
+		if (result > (50000000U - digit) / 10)
+			return -1;
+		result = result * 10 + digit;
+	} while (*value >= '0' && *value <= '9');
+	while (*value == ' ' || *value == '\t' || *value == '\r' || *value == '\n')
+		value++;
+	if (*value)
+		return -1;
+	*length = result;
+	return 0;
+}
+
+/* MIME permits a quoted boundary parameter; keep its value in the header
+ * buffer, without quotes, so subsequent header reads cannot overwrite it. */
+static char *
+parse_multipart_boundary(char *value)
+{
+	char *p = value, *start, *out, *tail;
+	size_t length = 0;
+	int quoted;
+
+	while ((p = strchr(p, ';')) != NULL) {
+		p++;
+		while (*p == ' ' || *p == '\t') p++;
+		if (strncasecmp(p, "boundary", 8) != 0) continue;
+		p += 8;
+		while (*p == ' ' || *p == '\t') p++;
+		if (*p != '=') continue;
+		p++;
+		while (*p == ' ' || *p == '\t') p++;
+		start = out = p;
+		quoted = (*p == '"');
+		if (quoted) p++;
+		while (*p && *p != '\r' && *p != '\n') {
+			if ((quoted && *p == '"') || (!quoted && (*p == ';' || *p == ' ' || *p == '\t')))
+				break;
+			if (quoted && *p == '\\') {
+				p++;
+				if (!*p || *p == '\r' || *p == '\n') return NULL;
+			}
+			if ((unsigned char)*p < 32 || (unsigned char)*p >= 127 || ++length > 70)
+				return NULL;
+			*out++ = *p++;
+		}
+		if (quoted && *p++ != '"') return NULL;
+		if (length == 0) return NULL;
+		tail = p;
+		while (*tail == ' ' || *tail == '\t') tail++;
+		if (*tail && *tail != ';' && *tail != '\r' && *tail != '\n') return NULL;
+		*out = '\0';
+		return start;
+	}
+	return NULL;
+}
+
+static char *
+trim_header_value(char *value)
+{
+	char *end;
+	while (*value == ' ' || *value == '\t') value++;
+	end = value + strcspn(value, "\r\n");
+	while (end > value && (end[-1] == ' ' || end[-1] == '\t')) end--;
+	*end = 0;
+	return value;
+}
+
 static void
 handle_request(FILE *conn_fp, const conn_item_t *item)
 {
 	char line[4096];
 	char *method, *path, *protocol, *authorization, *boundary;
+	char *host = NULL, *origin = NULL, *referer = NULL, *fetch_site = NULL;
 	char *cur, *end, *cp, *file, *query;
-	int len, login_state, method_id, do_logout, clen = 0;
+	int len, login_state, method_id, do_logout, clen = 0, have_clen = 0, headers_done = 0;
+	int explicit_request = 0, is_secure = 0;
 	time_t if_modified_since = (time_t)-1;
 	struct mime_handler *handler;
 	struct stat st, *p_st = NULL;
 	uaddr conn_ip;
+
+#if defined (SUPPORT_HTTPS)
+	is_secure = item->ssl;
+#endif
 
 	/* Initialize the request variables. */
 	authorization = boundary = NULL;
@@ -856,6 +947,11 @@ handle_request(FILE *conn_fp, const conn_item_t *item)
 	/* Parse the first line of the request. */
 	if (!fgets(line, sizeof(line), conn_fp)) {
 		send_error( 400, "Bad Request", NULL, "No request found.", conn_fp);
+		return;
+	}
+
+	if (!strchr(line, '\n')) {
+		send_error(400, "Bad Request", NULL, "Request line too long or incomplete.", conn_fp);
 		return;
 	}
 
@@ -879,7 +975,12 @@ handle_request(FILE *conn_fp, const conn_item_t *item)
 	end = line + sizeof(line) - 1;
 
 	while ( (cur < end) && (fgets(cur, line + sizeof(line) - cur, conn_fp)) ) {
+		if (!strchr(cur, '\n')) {
+			send_error(400, "Bad Request", NULL, "Header too long or incomplete.", conn_fp);
+			return;
+		}
 		if ( strcmp( cur, "\n" ) == 0 || strcmp( cur, "\r\n" ) == 0 ) {
+			headers_done = 1;
 			break;
 		}
 		
@@ -893,26 +994,60 @@ handle_request(FILE *conn_fp, const conn_item_t *item)
 			authorization = cp;
 			cur = cp + strlen(cp) + 1;
 		}
+		else if (strncasecmp(cur, "Host:", 5) == 0) {
+			if (host) {
+				send_error(400, "Bad Request", NULL, "Duplicate Host header.", conn_fp);
+				return;
+			}
+			host = trim_header_value(cur + 5);
+			cur = host + strlen(host) + 1;
+		}
+		else if (strncasecmp(cur, "Origin:", 7) == 0) {
+			if (origin) {
+				send_error(400, "Bad Request", NULL, "Duplicate Origin header.", conn_fp);
+				return;
+			}
+			origin = trim_header_value(cur + 7);
+			cur = origin + strlen(origin) + 1;
+		}
+		else if (strncasecmp(cur, "Referer:", 8) == 0) {
+			referer = trim_header_value(cur + 8);
+			cur = referer + strlen(referer) + 1;
+		}
+		else if (strncasecmp(cur, "Sec-Fetch-Site:", 15) == 0) {
+			fetch_site = trim_header_value(cur + 15);
+			cur = fetch_site + strlen(fetch_site) + 1;
+		}
+		else if (strncasecmp(cur, "X-K2P-Request:", 14) == 0) {
+			explicit_request = strcmp(trim_header_value(cur + 14), "1") == 0;
+		}
 		else if (strncasecmp( cur, "Content-Length:", 15) == 0) {
+			int parsed_length;
 			cp = cur + 15;
 			cp += strspn( cp, " \t" );
-			clen = strtoul( cp, NULL, 0 );
-			if ((clen < 0) || (clen > 50000000)) {
+			if (parse_content_length(cp, &parsed_length) != 0 ||
+			    (have_clen && parsed_length != clen)) {
 				send_error( 400, "Bad Request", NULL, "Content length invalid.", conn_fp);
 				return;
 			}
+			clen = parsed_length;
+			have_clen = 1;
 		}
 		else if (strncasecmp( cur, "If-Modified-Since:", 18) == 0) {
 			cp = cur + 18;
 			cp += strspn( cp, " \t" );
 			if_modified_since = tdate_parse(cp);
 		}
-		else if ((cp = strstr( cur, "boundary=" ))) {
-			boundary = cp + 9;
-			for ( cp = cp + 9; *cp && *cp != '\r' && *cp != '\n'; cp++ );
-			*cp = '\0';
-			cur = ++cp;
+		else if (strncasecmp(cur, "Content-Type:", 13) == 0) {
+			boundary = parse_multipart_boundary(cur + 13);
+			if (boundary)
+				cur = boundary + strlen(boundary) + 1;
 		}
+	}
+
+	if (!headers_done) {
+		send_error(400, "Bad Request", NULL, "Incomplete request headers.", conn_fp);
+		return;
 	}
 
 	if (strcasecmp(method, "get") == 0)
@@ -969,6 +1104,11 @@ handle_request(FILE *conn_fp, const conn_item_t *item)
 
 	/* special case for reset browser credentials */
 	if (strcmp(file, "logout") == 0) {
+		if (!http_csrf_allowed(host, origin, referer, fetch_site, explicit_request, is_secure,
+		                       method_id == HTTP_METHOD_GET)) {
+			send_error(403, "Forbidden", NULL, "Same-origin proof required.", conn_fp);
+			return;
+		}
 		send_headers( 401, "Unauthorized", NULL, NULL, NULL, conn_fp );
 		return;
 	}
@@ -985,34 +1125,61 @@ handle_request(FILE *conn_fp, const conn_item_t *item)
 
 #if defined (SUPPORT_HTTPS)
 	http_is_ssl = item->ssl;
+	is_secure = item->ssl;
 #endif
 
-	do_logout = (strcmp(file, "Logout.asp") == 0) ? 1 : 0;
+	do_logout = (method_id != HTTP_METHOD_HEAD && strcmp(file, "Logout.asp") == 0) ? 1 : 0;
+
+	/* An existing login belongs to a different peer.  Do not let CGI
+	 * handlers bypass authentication merely because the login is busy. */
+	if (handler->need_auth && login_state == 0) {
+		send_error(403, "Forbidden", NULL, "Another administrator is logged in.", conn_fp);
+		return;
+	}
 
 	if (handler->need_auth && login_state > 1 && !do_logout) {
 		if (!auth_check(authorization)) {
 			http_logout(&conn_ip);
-			if (method_id == HTTP_METHOD_POST)
-				eat_post_data(conn_fp, clen);
 			send_authenticate(conn_fp);
 			return;
 		}
 		
-		if (login_state == 2)
-			http_login(&conn_ip);
 	}
+
+	if ((http_request_changes_state(method_id == HTTP_METHOD_POST, method_id == HTTP_METHOD_HEAD, file, query) ||
+	     (strncmp(file, "update.cgi", 10) == 0 && (origin || referer || fetch_site))) &&
+	    !http_csrf_allowed(host, origin, referer, fetch_site, explicit_request, is_secure,
+	                       method_id == HTTP_METHOD_GET)) {
+		send_error(403, "Forbidden", NULL,
+		           "Same-origin proof required. CLI writes require X-K2P-Request: 1.", conn_fp);
+		return;
+	}
+	if (handler->need_auth && login_state == 2 && !do_logout)
+		http_login(&conn_ip);
+	if (handler->need_auth)
+		http_request_allow_body();
 
 	if (method_id == HTTP_METHOD_POST) {
 		if (handler->input)
 			handler->input(file, conn_fp, clen, boundary);
 		else
 			eat_post_data(conn_fp, clen);
-		try_pull_data(conn_fp, item->fd);
 	} else {
 		if (query)
 			do_uncgi_query(query);
 		else if (handler->output == do_ej)
 			do_cgi_clear();
+	}
+
+	if (handler->prepare) {
+		int status = handler->prepare(file);
+		if (status != 0) {
+			if (handler->cleanup)
+				handler->cleanup();
+			send_error(status, status == 403 ? "Forbidden" : "Internal Server Error",
+			           NULL, "Unable to prepare download.", conn_fp);
+			return;
+		}
 	}
 
 	if (handler->output == do_file) {
@@ -1032,6 +1199,9 @@ handle_request(FILE *conn_fp, const conn_item_t *item)
 		if (handler->output)
 			handler->output(file, conn_fp);
 	}
+
+	if (handler->cleanup)
+		handler->cleanup();
 
 	if (do_logout)
 		http_logout(&conn_ip);
@@ -1267,6 +1437,12 @@ main(int argc, char **argv)
 						item->ssl = (i > 0) ? 1 : 0;
 #endif
 						if (is_http_client_allowed(&item->usa)) {
+								if (set_client_timeouts(item->fd) != 0) {
+									httpd_log("Cannot set client I/O timeout (errno: %d)", errno);
+									close(item->fd);
+									free(item);
+									continue;
+								}
 							setsockopt(item->fd, SOL_SOCKET, SO_KEEPALIVE, &int_1, sizeof(int_1));
 							FD_SET(item->fd, &active_rfds);
 							TAILQ_INSERT_TAIL(&pool.head, item, entry);
@@ -1302,13 +1478,15 @@ main(int argc, char **argv)
 			pool.count--;
 			
 			if (selected) {
-				FILE *conn_fp;
+				FILE *conn_fp = NULL;
+				if (http_request_begin(item->fd) == 0) {
 #if defined (SUPPORT_HTTPS)
 				if (item->ssl)
 					conn_fp = ssl_server_fopen(item->fd);
 				else
 #endif
-				conn_fp = fdopen(item->fd, "r+");
+				conn_fp = http_client_fopen(item->fd);
+				}
 				if (conn_fp) {
 					handle_request(conn_fp, item);
 					fflush(conn_fp);

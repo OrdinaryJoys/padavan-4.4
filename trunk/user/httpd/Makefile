@@ -11,7 +11,7 @@ include $(SHDIR)/cflags.mk
 CFLAGS += -Wall -I. -I$(SHDIR) -I$(SHDIR)/include
 CFLAGS += -I$(USERDIR)/wireless_tools
 
-LDFLAGS += -L. -lm
+LDFLAGS += -L. -lm -lrt
 LDFLAGS += -L$(SHDIR) -lshared
 LDFLAGS += -L$(USERDIR)/wireless_tools -liw
 ifeq ($(STORAGE_ENABLED),y)
@@ -24,7 +24,7 @@ endif
 
 EXEC = httpd
 OBJS = httpd.o ej.o cgi.o web_ex.o common.o nvram_x.o ralink.o crc32.o base64.o aspbw.o initial_web_hook.o variables.o
-OBJS += tdate_parse.o upload.o
+OBJS += tdate_parse.o upload.o http_client_io.o http_origin_guard.o
 ifeq ($(CONFIG_FIRMWARE_INCLUDE_HTTPS),y)
 OBJS += https.o
 endif
