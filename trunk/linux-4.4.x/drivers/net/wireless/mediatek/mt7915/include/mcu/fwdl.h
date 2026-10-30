@@ -139,7 +139,6 @@ enum fw_format {
 
 /*
  * patch format:
-<<<<<<< HEAD
  * PATCH_FORMAT_V1 support 7636, 7637, 7615, 7622, CONNAC (p18, 7663, 7626)
  * PATCH_FORMAT_V2 support CONNANC2.0 (7915)
  */
