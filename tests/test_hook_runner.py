@@ -66,7 +66,9 @@ class HookRunnerTests(unittest.TestCase):
                         HOOK_TEST_PAYLOAD=str(self.payload), HOOK_TEST_PROC='' if sys.platform.startswith('linux') else str(self.proc),
                         HOOK_FD_DIRECTORY='/proc/self/fd' if sys.platform.startswith('linux') else '/dev/fd')
 
-    def command(self, body='exit 0\n', timeout=400, term=80, hard=120, fault='none', descriptors='normal',
+    # Functional controls include ASan and shell startup. Deadline-specific
+    # controls pass their own short budgets; production remains30000ms.
+    def command(self, body='exit 0\n', timeout=2000, term=80, hard=120, fault='none', descriptors='normal',
                 level=0, mode=0o755, shebang=True, binary=None):
         self.script.write_text(('#!/bin/sh\n' if shebang else '') + body)
         self.script.chmod(mode)
@@ -113,7 +115,7 @@ fi
 
     def test_normal_exit_zero_action_and_raw_nonzero_statuses(self):
         result = self.run_case(body='printf "%s" "$1" > "$HOOK_ARG_OUT"\nexit 0\n', level=2)
-        self.assertEqual(result['status'], 0)
+        self.assertEqual(result['status'], 0, result)
         self.assertEqual(self.arg_out.read_text(), '2')
         self.assertGreater(result['exits_seen'], 0)
         self.assertEqual(result['reaped_direct_by_old_handler'], 0)
@@ -126,7 +128,7 @@ fi
         for name in ('TERM', 'USR2'):
             with self.subTest(name=name):
                 result = self.run_case(body=f'kill -{name} $$\n')
-                self.assertEqual(result['status'], getattr(signal, 'SIG' + name))
+                self.assertEqual(result['status'], getattr(signal, 'SIG' + name), result)
                 self.assertEqual(result['error'], 0)
 
     def test_literal_path_no_shebang_fallback_and_nonexecutable_script(self):
@@ -147,7 +149,7 @@ fi
 
     def test_high_fd_above_lowered_soft_limit_is_closed_before_exec(self):
         result = self.run_case(body='if [ -e "$HOOK_FD_DIRECTORY/512" ]; then exit 44; fi\nexit 0\n', descriptors='high-fd')
-        self.assertEqual(result['status'], 0)
+        self.assertEqual(result['status'], 0, result)
 
     def test_descriptor_close_error_prevents_exec(self):
         result = self.run_case(body='touch "$HOOK_EFFECT"\n', fault='fd-close')
