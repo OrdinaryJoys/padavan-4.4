@@ -361,6 +361,59 @@ static int hash_descriptor(int fd,size_t maximum,unsigned char digest[32],size_t
   }
   snapshot_sha_final(&hash,digest);return 1;
 }
+int conf_snapshot_input_alias(const char *logical,const struct stat *observed,const char **error)
+{
+  const char *actual=conf_snapshot_overlay(logical);
+  struct snap_record current,after,*same=NULL,*source=NULL,*record;
+  unsigned char digest[32];unsigned int i;size_t size=0,total=0;
+  int fd=-1,ok=0;
+  if(snap.mode!=CONF_SNAPSHOT_CAPTURE)return 1;
+  memset(&current,0,sizeof(current));memset(&after,0,sizeof(after));
+  fd=open(actual,O_RDONLY|O_NONBLOCK|O_CLOEXEC);
+  if(fd<0||!describe_path(&current,actual,fd))goto out;
+  if(actual!=logical){
+    char *path=absolute_path(logical);if(!path)goto out;
+    free(current.path);current.path=path;current.overlay=1;
+  }
+  if(!S_ISREG((mode_t)current.target.value[2])||current.target.value[6]>CONF_CONFIG_MAX_BYTES||
+     current.target.value[0]!=(uint64_t)observed->st_dev||
+     current.target.value[1]!=(uint64_t)observed->st_ino)goto out;
+  for(i=0;i<snap.count;i++)if(snap.records[i].kind==SNAP_FILE){
+    record=&snap.records[i];
+    if(record->target.value[0]==current.target.value[0]&&
+       record->target.value[1]==current.target.value[1])source=record;
+    if(!strcmp(record->path,current.path))same=record;
+    if(record->target.value[6]>CONF_CONFIG_TOTAL_BYTES-total)goto out;
+    total+=(size_t)record->target.value[6];
+  }
+  /* A stale pre-open stat must not cause a file which was never captured to
+   * disappear behind dnsmasq's inode deduplication. */
+  if(!source)goto out;
+  if(same){
+    if(strcmp(same->real,current.real)||same->overlay!=current.overlay||
+       !meta_equal(&same->target,&current.target,0)||
+       !meta_equal(&same->leaf,&current.leaf,0))goto out;
+  }else if(snap.budget->files>=CONF_CONFIG_MAX_FILES||
+           current.target.value[6]>CONF_CONFIG_TOTAL_BYTES-total)goto out;
+  if(!hash_descriptor(fd,CONF_CONFIG_MAX_BYTES,digest,&size)||size!=current.target.value[6]||
+     !describe_path(&after,actual,fd)||strcmp(after.real,current.real)||
+     !meta_equal(&after.target,&current.target,0)||!meta_equal(&after.leaf,&current.leaf,0))goto out;
+  if(same){
+    /* Recursive includes may reach their own still-open record. input_end and
+     * finish bind that record's complete parsed SHA before a manifest exists. */
+    if(same->fd<0&&memcmp(same->digest,digest,32))goto out;
+  }else{
+    record=new_record(SNAP_FILE,error);if(!record)goto out;
+    *record=current;current.path=current.real=NULL;record->kind=SNAP_FILE;
+    record->fd=-1;record->bytes=size;
+    memcpy(record->digest,digest,32);snap.budget->files++;
+  }
+  ok=1;
+out:
+  if(fd>=0&&close(fd))ok=0;
+  free(current.path);free(current.real);free(after.path);free(after.real);
+  return ok?1:snap_fail(error,"snapshot duplicate source identity or SHA256 changed");
+}
 static int verify_graph(int promote)
 {
   unsigned int i,entries=0,selected=0,files=0,overlays=0,scripts=0;

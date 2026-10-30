@@ -198,9 +198,12 @@ fi
     def test_exit_zero_background_is_cleaned_and_still_rejected(self):
         for redirect in ('', '> /dev/null 2>&1'):
             with self.subTest(redirect=redirect):
-                result = self.run_case(body=self.background_setup(redirect) + 'exit 0\n')
+                # This checks live-descendant policy, not a short timeout.
+                # Instrumented shell startup can consume the default400ms
+                # fixture budget on slower hosts; timeout has its own tests.
+                result = self.run_case(body=self.background_setup(redirect) + 'exit 0\n', timeout=2000)
                 self.assertLess(result['status'], 0)
-                self.assertEqual(result['background'], 1)
+                self.assertEqual(result['background'], 1, result)
                 self.assertGreater(result['group_signals'], 0)
                 self.assert_not_live(int(self.child_pid.read_text()))
 

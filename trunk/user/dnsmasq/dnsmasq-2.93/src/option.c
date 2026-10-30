@@ -5765,7 +5765,12 @@ static int one_file(char *file, int hard_opt)
 	  
 	  for (r = filesread; r; r = r->next)
 	    if (r->dev == statbuf.st_dev && r->ino == statbuf.st_ino)
-	      return 1;
+	      {
+                const char *snapshot_error;
+                if (!do_popen && !conf_snapshot_input_alias(file, &statbuf, &snapshot_error))
+                  die("%s", (char *)snapshot_error, EC_BADCONF);
+	        return 1;
+              }
 	  
 	  r = safe_malloc(sizeof(struct fileread));
 	  r->next = filesread;

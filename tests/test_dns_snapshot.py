@@ -166,6 +166,53 @@ if(ferror(stdin))return 1;snapshot_sha_final(&s,d);for(i=0;i<32;i++)printf("%02x
         self.refresh_candidate();self.prepared();alias.unlink();alias.symlink_to(other.name)
         self.use(expect=1)
 
+    def test_inode_deduplicated_conf_file_alias_is_still_bound(self):
+        original=self.base/'shared.conf';other=self.base/'other.conf'
+        original.write_text('server=/public.example/192.0.2.1\n')
+        other.write_bytes(original.read_bytes());alias=self.base/'alias.conf'
+        initial=self.custom.read_text()
+        self.custom.write_text(initial+'conf-file='+str(original)+'\nconf-file='+str(alias)+'\n')
+        self.refresh_candidate()
+        for phase in ('before-seal','after-seal'):
+            with self.subTest(phase=phase):
+                alias.symlink_to(original.name);self.capture()
+                if phase=='after-seal':self.seal()
+                alias.unlink();alias.symlink_to(other.name)
+                result=self.seal(expect=1) if phase=='before-seal' else self.use(expect=1)
+                self.assertIn('snapshot',result.stderr)
+                self.assertEqual(self.counter.read_text(),'ran\n')
+                shutil.rmtree(self.cache);alias.unlink();self.counter.unlink()
+
+    def test_inode_deduplicated_conf_dir_alias_is_still_bound(self):
+        original=self.base/'shared.conf';other=self.base/'other.conf'
+        original.write_text('server=/public.example/192.0.2.1\n')
+        other.write_bytes(original.read_bytes());directory=self.base/'conf.d';directory.mkdir()
+        alias=directory/'alias.conf'
+        self.custom.write_text(self.custom.read_text()+'conf-file='+str(original)+
+                               '\nconf-dir='+str(directory)+',*.conf\n')
+        self.refresh_candidate()
+        for phase in ('before-seal','after-seal'):
+            with self.subTest(phase=phase):
+                alias.symlink_to(original);self.capture()
+                if phase=='after-seal':self.seal()
+                alias.unlink();alias.symlink_to(other)
+                result=self.seal(expect=1) if phase=='before-seal' else self.use(expect=1)
+                self.assertIn('snapshot',result.stderr)
+                self.assertEqual(self.counter.read_text(),'ran\n')
+                shutil.rmtree(self.cache);alias.unlink();self.counter.unlink()
+
+    def test_same_logical_path_dedup_reuses_record_without_reexpansion(self):
+        included=self.base/'included.conf'
+        included.write_text('server=/once.example/192.0.2.1\nconf-file='+str(included)+'\n')
+        self.custom.write_text(self.custom.read_text()+'conf-file='+str(self.custom)+'\n'+
+                               ('conf-file='+str(included)+'\n')*130)
+        self.refresh_candidate();self.prepared();self.use();self.use(ordinary=True)
+        self.assertEqual(self.counter.read_text(),'ran\n')
+        self.assertEqual((self.cache/'flat.conf').read_text().count('once.example'),1)
+        # main, overlay, script and included: repeated logical names add no
+        # aliases, including the overlay's recursive still-open reference.
+        self.assertEqual(struct.unpack_from('>Q',(self.cache/'manifest').read_bytes(),40)[0],4)
+
     def test_same_content_input_inode_replacement_after_seal_is_rejected(self):
         self.prepared();new=self.base/'replacement';new.write_bytes(self.custom.read_bytes())
         os.replace(new,self.custom);self.use(expect=1)
