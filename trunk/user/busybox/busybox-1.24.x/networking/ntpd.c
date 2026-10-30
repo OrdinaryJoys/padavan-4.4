@@ -2120,6 +2120,8 @@ recv_and_process_client_pkt(void /*int fd*/)
 /* By doing init in a separate function we decrease stack usage
  * in main loop.
  */
+#include "ntp_startup.h"
+
 static NOINLINE void ntp_init(char **argv)
 {
 	unsigned opts;
@@ -2155,6 +2157,8 @@ static NOINLINE void ntp_init(char **argv)
 
 //	if (opts & OPT_x) /* disable stepping, only slew is allowed */
 //		G.time_was_stepped = 1;
+	if (ntp_startup_budget_begin() != 0)
+		bb_perror_msg_and_die("cannot arm startup deadline");
 	if (peers) {
 		while (peers)
 			add_peers(llist_pop(&peers));
@@ -2195,6 +2199,7 @@ static NOINLINE void ntp_init(char **argv)
 		setsockopt_int(G_listen_fd, IPPROTO_IP, IP_TOS, IPTOS_LOWDELAY);
 	}
 #endif
+	ntp_startup_budget_end();
 	if (!(opts & OPT_n)) {
 		bb_daemonize_or_rexec(DAEMON_DEVNULL_STDIO, argv);
 		logmode = LOGMODE_NONE;
@@ -2228,6 +2233,14 @@ static NOINLINE void ntp_init(char **argv)
 		| (1 << SIGCHLD)
 		, SIG_IGN
 	);
+}
+
+static void ntp_first_reply(void)
+{
+	if (option_mask32 & OPT_qq) {
+		option_mask32 &= ~OPT_qq;
+		alarm(50);
+	}
 }
 
 int ntpd_main(int argc UNUSED_PARAM, char **argv) MAIN_EXTERNALLY_VISIBLE;
@@ -2371,10 +2384,7 @@ int ntpd_main(int argc UNUSED_PARAM, char **argv)
 				 * Now we did get a reply.
 				 * Increase timeout to 50 seconds to finish syncing.
 				 */
-				if (option_mask32 & OPT_qq) {
-					option_mask32 &= ~OPT_qq;
-					alarm(50);
-				}
+				ntp_first_reply();
 				nfds--;
 				recv_and_process_peer_pkt(idx2peer[j]);
 				gettime1900d(); /* sets G.cur_time */

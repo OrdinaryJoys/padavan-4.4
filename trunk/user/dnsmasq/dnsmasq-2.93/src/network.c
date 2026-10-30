@@ -15,6 +15,7 @@
 */
 
 #include "dnsmasq.h"
+#include "runtime_file.h"
 
 #ifdef HAVE_LINUX_NETWORK
 
@@ -1698,20 +1699,21 @@ void check_servers(int no_loop_check)
    This is a protection against an update-time/write race on resolv.conf */
 int reload_servers(char *fname)
 {
-  FILE *f;
+  struct dns_runtime_file snapshot;
+  const char *error;
   char *line = NULL;
   size_t linesz = 0;
   int gotone = 0;
 
-  if (!(f = fopen(fname, "r")))
+  if (!dns_runtime_file_open(&snapshot, fname, &error))
     {
-      my_syslog(LOG_ERR, _("failed to read %s: %s"), fname, strerror(errno));
+      my_syslog(LOG_ERR, _("failed to read %s: %s"), fname, error);
       return 0;
     }
   
   mark_servers(SERV_FROM_RESOLV);
   
-  while (get_line_alloc(f, &line, &linesz))
+  while (get_line_alloc(snapshot.stream, &line, &linesz))
     {
       union mysockaddr addr, source_addr;
       char *token = strtok(line, " \t\n\r");
@@ -1768,7 +1770,7 @@ int reload_servers(char *fname)
       gotone = 1;
     }
   
-  fclose(f);
+  dns_runtime_file_close(&snapshot);
   cleanup_servers();
 
   return gotone;

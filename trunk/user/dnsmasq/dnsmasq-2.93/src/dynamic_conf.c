@@ -55,7 +55,7 @@ static int child_done(pid_t pid, int *success)
   return 1;
 }
 
-static void stop_group(pid_t pid, int exited)
+static void stop_group(pid_t pid, int exited, int *raw_status)
 {
   long long end, now;
   int status;
@@ -77,7 +77,12 @@ static void stop_group(pid_t pid, int exited)
     end += 300;
   do {
     pid_t result = waitpid(pid, &status, WNOHANG);
-    if (result == pid || (result == -1 && errno != EINTR))
+    if (result == pid)
+      {
+        if (raw_status) *raw_status = status;
+        return;
+      }
+    if (result == -1 && errno != EINTR)
       return;
     poll(NULL, 0, 10);
     now = monotonic_ms();
@@ -135,8 +140,8 @@ static int close_inherited(long max_fd)
   return 1;
 }
 
-FILE *conf_script_open(const char *command, struct conf_script_budget *budget,
-                       const char **error)
+FILE *conf_script_open_status(const char *command, struct conf_script_budget *budget,
+                              const char **error, int *raw_status)
 {
   FILE *output = NULL;
   char *collected = NULL;
@@ -151,6 +156,7 @@ FILE *conf_script_open(const char *command, struct conf_script_budget *budget,
   struct sigaction action, previous[2];
   int installed_handlers = 0;
 
+  if (raw_status) *raw_status = -1;
   *error = "conf-script resource setup failed";
   cancelled = 0;
   memset(&action, 0, sizeof(action));
@@ -298,11 +304,11 @@ FILE *conf_script_open(const char *command, struct conf_script_budget *budget,
             budget->bytes += (size_t)count;
           }
     }
-  stop_group(pid, done); pid = -1;
+  stop_group(pid, done, raw_status); pid = -1;
   if (cancelled)
     { *error = "conf-script execution cancelled"; goto fail; }
   if (!success)
-    { *error = "conf-script returned a nonzero status"; goto fail; }
+    { *error = CONF_SCRIPT_STATUS_ERROR; goto fail; }
   /* No disk file: --test inherits a deliberately small diagnostic file limit.
    * A memory stream keeps that limit from rejecting valid generated config. */
   if (!collected)
@@ -323,7 +329,7 @@ FILE *conf_script_open(const char *command, struct conf_script_budget *budget,
 
 fail:
   if (pid > 0)
-    stop_group(pid, done);
+    stop_group(pid, done, raw_status);
   for (i = 0; i != 2; i++)
     {
       if (pipes[i][0] != -1) close(pipes[i][0]);
@@ -335,6 +341,12 @@ fail:
   for (i = 0; i < installed_handlers; i++)
     sigaction(cancel_signals[i], &previous[i], NULL);
   return NULL;
+}
+
+FILE *conf_script_open(const char *command, struct conf_script_budget *budget,
+                       const char **error)
+{
+  return conf_script_open_status(command, budget, error, NULL);
 }
 
 void conf_script_close(FILE *stream, struct conf_script_budget *budget)

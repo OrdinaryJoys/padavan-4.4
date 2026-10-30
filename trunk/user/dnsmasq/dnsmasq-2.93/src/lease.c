@@ -15,6 +15,8 @@
 */
 
 #include "dnsmasq.h"
+#include "dynamic_conf.h"
+#include "runtime_file.h"
 #ifdef HAVE_DHCP
 
 static struct dhcp_lease *leases = NULL, *old_leases = NULL;
@@ -174,6 +176,11 @@ static int read_leases(time_t now, FILE *leasestream)
 void lease_init(time_t now)
 {
   FILE *leasestream;
+  struct dns_runtime_file initial = {0};
+#ifdef HAVE_SCRIPT
+  struct conf_script_budget init_budget = {0};
+  int script_input = 0;
+#endif
 
   leases_left = daemon->dhcp_max;
 
@@ -192,7 +199,35 @@ void lease_init(time_t now)
 	  
 	  strcpy(daemon->dhcp_buff, daemon->lease_change_command);
 	  strcat(daemon->dhcp_buff, " init");
-	  leasestream = popen(daemon->dhcp_buff, "r");
+	  {
+            const char *error;
+            int raw_status = -1;
+            leasestream = conf_script_open_status(daemon->dhcp_buff, &init_budget,
+                                                   &error, &raw_status);
+            if (!leasestream)
+              {
+                /* Only a completed nonzero script, without a collector
+                 * failure, retains the upstream exit-code contract. */
+                if (!strcmp(error, CONF_SCRIPT_STATUS_ERROR) && raw_status >= 0 &&
+                    WIFEXITED(raw_status))
+                  {
+                    int code = WEXITSTATUS(raw_status);
+                    if (code == 126 || code == 127)
+                      {
+                        errno = code == 127 ? ENOENT : EACCES;
+                        die(_("cannot run bounded lease-init script: %s"), strerror(errno), EC_FILE);
+                      }
+                    if (code != 0)
+                      {
+                        sprintf(daemon->dhcp_buff, "%d", code);
+                        die(_("lease-init script returned exit code %s"), daemon->dhcp_buff,
+                            code + EC_INIT_OFFSET);
+                      }
+                  }
+                die(_("bounded lease-init failed: %s"), (char *)error, EC_FILE);
+              }
+            script_input = 1;
+          }
 	}
       else
 #endif
@@ -204,14 +239,35 @@ void lease_init(time_t now)
     }
   else
     {
-      /* NOTE: need a+ mode to create file if it doesn't exist */
-      leasestream = daemon->lease_stream = fopen(daemon->lease_file, "a+");
-
-      if (!leasestream)
-	die(_("cannot open or create lease file %s: %s"), daemon->lease_file, EC_FILE);
-
-      /* a+ mode leaves pointer at end. */
-      rewind(leasestream);
+      int fd, status;
+      struct stat st;
+      const char *error;
+      /* Keep the persistent append/update stream, but never block opening a
+       * FIFO or consume a different inode through a second pathname open. */
+      fd = open(daemon->lease_file, O_RDWR|O_CREAT|O_APPEND|O_NONBLOCK|O_CLOEXEC|O_NOCTTY,
+                S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH);
+      if (fd == -1)
+        die(_("cannot open or create lease file %s: %s"), daemon->lease_file, EC_FILE);
+      status = fstat(fd, &st);
+      if (status == -1 || !S_ISREG(st.st_mode))
+        {
+          int saved = status == -1 ? errno : EINVAL;
+          close(fd);
+          errno = saved;
+          die(_("cannot open regular lease file %s: %s"), daemon->lease_file, EC_FILE);
+        }
+      daemon->lease_stream = fdopen(fd, "a+");
+      if (!daemon->lease_stream)
+        {
+          int saved = errno;
+          close(fd);
+          errno = saved;
+          die(_("cannot open lease stream %s: %s"), daemon->lease_file, EC_FILE);
+        }
+      if (!dns_runtime_file_read_fd_limit(&initial, fd, DNS_RUNTIME_FILE_BYTES,
+                                          DNS_RUNTIME_FILE_LINES, &error))
+        die(_("cannot snapshot lease database: %s"), (char *)error, EC_FILE);
+      leasestream = initial.stream;
     }
 
   if (leasestream)
@@ -224,28 +280,11 @@ void lease_init(time_t now)
     }
   
 #ifdef HAVE_SCRIPT
-  if (!daemon->lease_stream)
-    {
-      int rc = 0;
-
-      /* shell returns 127 for "command not found", 126 for bad permissions. */
-      if (!leasestream || (rc = pclose(leasestream)) == -1 || WEXITSTATUS(rc) == 127 || WEXITSTATUS(rc) == 126)
-	{
-	  if (WEXITSTATUS(rc) == 127)
-	    errno = ENOENT;
-	  else if (WEXITSTATUS(rc) == 126)
-	    errno = EACCES;
-
-	  die(_("cannot run lease-init script %s: %s"), daemon->lease_change_command, EC_FILE);
-	}
-      
-      if (WEXITSTATUS(rc) != 0)
-	{
-	  sprintf(daemon->dhcp_buff, "%d", WEXITSTATUS(rc));
-	  die(_("lease-init script returned exit code %s"), daemon->dhcp_buff, WEXITSTATUS(rc) + EC_INIT_OFFSET);
-	}
-    }
+  if (script_input)
+    conf_script_close(leasestream, &init_budget);
+  else
 #endif
+    dns_runtime_file_close(&initial);
 
   /* Some leases may have expired */
   file_dirty = 0;

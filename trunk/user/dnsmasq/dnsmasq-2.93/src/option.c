@@ -20,6 +20,7 @@
 #include <setjmp.h>
 #include "dynamic_conf.h"
 #include "conf_snapshot.h"
+#include "runtime_file.h"
 
 static volatile int mem_recover = 0;
 static jmp_buf mem_jmp;
@@ -5727,6 +5728,7 @@ int option_read_dynfile(char *file, int flags)
 static int one_file(char *file, int hard_opt)
 {
   FILE *f;
+  struct dns_runtime_file runtime;
   int nofile_ok = 0, do_popen = 0;
   const char *input_file;
   unsigned int parent_script = script_context;
@@ -5816,22 +5818,16 @@ static int one_file(char *file, int hard_opt)
               die(_("cannot read %s: %s"), file, EC_FILE);
             }
 	}
-      else if (!(f = fopen(file, "r")))
-	{   
-	  if (errno == ENOENT && nofile_ok)
-	    return 1; /* No conffile, all done. */
-	  else
-	    {
-	      char *str = _("cannot read %s: %s");
-	      if (hard_opt != 0)
-		{
-		  my_syslog(LOG_ERR, str, file, strerror(errno));
-		  return 0;
-		}
-	      else
-		die(str, file, EC_FILE);
-	    }
-	} 
+      else
+        {
+          const char *error;
+          if (!dns_runtime_file_open(&runtime, file, &error))
+            {
+              my_syslog(LOG_ERR, _("cannot read %s: %s"), file, error);
+              return 0;
+            }
+          f = runtime.stream;
+        }
     }
   
    if (hard_opt == 0 && !do_popen)
@@ -5851,6 +5847,8 @@ static int one_file(char *file, int hard_opt)
 
   if (do_popen)
     conf_script_close(f, &script_budget);
+  else if (hard_opt != 0)
+    dns_runtime_file_close(&runtime);
   else
     fclose(f);
 	
@@ -5984,17 +5982,18 @@ struct hostsfile *expand_filelist(struct hostsfile *list)
 
 void read_servers_file(void)
 {
-  FILE *f;
+  struct dns_runtime_file snapshot;
+  const char *error;
 
-  if (!(f = fopen(daemon->servers_file, "r")))
+  if (!dns_runtime_file_open(&snapshot, daemon->servers_file, &error))
     {
-       my_syslog(LOG_ERR, _("cannot read %s: %s"), daemon->servers_file, strerror(errno));
+       my_syslog(LOG_ERR, _("cannot read %s: %s"), daemon->servers_file, error);
        return;
     }
   
   mark_servers(SERV_FROM_FILE);
-  read_file(daemon->servers_file, f, LOPT_REV_SERV, 0);
-  fclose(f);
+  read_file(daemon->servers_file, snapshot.stream, LOPT_REV_SERV, 0);
+  dns_runtime_file_close(&snapshot);
   cleanup_servers();
   check_servers(0);
 }
@@ -6402,17 +6401,18 @@ void read_opts(int argc, char **argv, char *compile_opts)
     {
       char *line = NULL;
       size_t linesz = 0;
-      FILE *f;
+      struct dns_runtime_file snapshot;
+      const char *error;
 
       if (option_bool(OPT_NO_RESOLV) ||
 	  !daemon->resolv_files || 
 	  (daemon->resolv_files)->next)
 	die(_("must have exactly one resolv.conf to read domain from."), NULL, EC_BADCONF);
       
-      if (!(f = fopen((daemon->resolv_files)->name, "r")))
-	die(_("failed to read %s: %s"), (daemon->resolv_files)->name, EC_FILE);
+      if (!dns_runtime_file_open(&snapshot, (daemon->resolv_files)->name, &error))
+        die("%s", (char *)error, EC_FILE);
       
-      while (get_line_alloc(f, &line, &linesz))
+      while (get_line_alloc(snapshot.stream, &line, &linesz))
 	{
 	  char *token = strtok(line, " \t\n\r");
 	  
@@ -6428,7 +6428,7 @@ void read_opts(int argc, char **argv, char *compile_opts)
 	    }
 	}
 
-      fclose(f);
+      dns_runtime_file_close(&snapshot);
 
       if (!daemon->domain_suffix)
 	die(_("no search directive found in %s"), (daemon->resolv_files)->name, EC_MISC);

@@ -131,6 +131,7 @@ static int svcStatus[ACTIVEITEMS] = {-1, -1, -1, -1};
 static int ntpc_timer = -1;
 static int ntpc_server_idx = 0;
 static int ntpc_tries = 0;
+static int ntpc_launch_pid = -1;
 
 static int httpd_missing = 0;
 static int dnsmasq_missing = 0;
@@ -235,11 +236,33 @@ httpd_check_v2()
 }
 #endif
 
+static int
+ntpc_reap_launcher(void)
+{
+	int status;
+	pid_t waited;
+
+	if (ntpc_launch_pid <= 0)
+		return 0;
+	/* A signal-handler caller must never wait for DNS or retry indefinitely
+	 * on EINTR. The next timer tick retries an interrupted nonblocking reap. */
+	waited = waitpid(ntpc_launch_pid, &status, WNOHANG);
+	if (waited == ntpc_launch_pid || (waited < 0 && errno == ECHILD))
+		ntpc_launch_pid = -1;
+	return ntpc_launch_pid > 0;
+}
+
 static void
 refresh_ntp(void)
 {
 	char *svcs[] = { "ntpd", NULL };
 	char *ntp_addr[2], *ntp_server;
+	char *argv[] = { "/usr/sbin/ntpd", "-qt", "-S", NTPC_DONE_SCRIPT,
+		"-p", NULL, NULL };
+	int pid, status;
+
+	if (ntpc_reap_launcher() || firmware_upgrade_inhibited())
+		return;
 
 	kill_services(svcs, 3, 1);
 
@@ -259,7 +282,18 @@ refresh_ntp(void)
 	ntp_server = (ntpc_server_idx) ? ntp_addr[1] : ntp_addr[0];
 	ntpc_server_idx = (ntpc_server_idx + 1) % 2;
 
-	eval("/usr/sbin/ntpd", "-qt", "-S", NTPC_DONE_SCRIPT, "-p", ntp_server);
+	/* DNS lookup precedes ntpd's own daemonization. Never wait for it in
+	 * the hardware-watchdog feed loop. _eval's child resets signal handlers
+	 * and masks; its launcher deadline also covers exec/startup failures. */
+	if (firmware_upgrade_inhibited())
+		return;
+	argv[5] = ntp_server;
+	status = _eval(argv, NULL, 15, &pid);
+	if (status != 0) {
+		logmessage("NTP Client", "Cannot launch time synchronization: %d.", status);
+		return;
+	}
+	ntpc_launch_pid = pid;
 
 	logmessage("NTP Client", "Synchronizing time to %s.", ntp_server);
 }
@@ -274,6 +308,11 @@ static void
 ntpc_handler(void)
 {
 	int ntp_period = nvram_get_int("ntp_period");
+
+	/* Also reap when NTP was disabled after an asynchronous start. At most
+	 * one launcher is owned; WAN-down children are reaped on the next
+	 * connected check, or by PID1 if the watchdog itself is stopped. */
+	ntpc_reap_launcher();
 
 	if (ntp_period < 1)
 		return;

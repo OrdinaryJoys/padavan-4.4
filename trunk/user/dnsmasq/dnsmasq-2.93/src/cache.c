@@ -15,6 +15,7 @@
 */
 
 #include "dnsmasq.h"
+#include "runtime_file.h"
 
 static struct crec *cache_head = NULL, *cache_tail = NULL, **hash_table = NULL;
 static struct crec *config_spare = NULL;
@@ -1435,18 +1436,22 @@ static int gettok(FILE *f, char *token, size_t buffsz)
 
 int read_hostsfile(char *filename, unsigned int index, int cache_size, struct crec **rhash, int hashsz)
 {  
-  FILE *f = fopen(filename, "r");
+  struct dns_runtime_file input;
+  const char *input_error;
+  FILE *f;
   char *token = daemon->namebuff, *domain_suffix = NULL;
   int names_done = 0, name_count = cache_size, lineno = 1;
   unsigned int flags = 0;
   union all_addr addr;
   int atnl, addrlen = 0;
 
-  if (!f)
+  if (!dns_runtime_file_open_limit(&input, filename, DNS_RUNTIME_HOSTS_BYTES,
+                                   DNS_RUNTIME_HOSTS_LINES, &input_error))
     {
-      my_syslog(LOG_ERR, _("failed to load names from %s: %s"), filename, strerror(errno));
+      my_syslog(LOG_ERR, _("failed to load names from %s: %s"), filename, input_error);
       return cache_size;
     }
+  f = input.stream;
   
   lineno += eatspace(f);
   
@@ -1535,7 +1540,7 @@ int read_hostsfile(char *filename, unsigned int index, int cache_size, struct cr
       lineno += atnl;
     } 
 
-  fclose(f);
+  dns_runtime_file_close(&input);
   
   if (rhash)
     rehash(name_count); 

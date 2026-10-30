@@ -131,7 +131,22 @@ int log_reopen(char *log_file)
       /* NOTE: umask is set to 022 by the time this gets called */
       
       if (log_file)
-	log_fd = open(log_file, O_WRONLY|O_CREAT|O_APPEND, S_IRUSR|S_IWUSR|S_IRGRP);
+	{
+          struct stat st;
+          log_fd = open(log_file, O_WRONLY|O_CREAT|O_APPEND|O_NONBLOCK|O_CLOEXEC|O_NOCTTY,
+                        S_IRUSR|S_IWUSR|S_IRGRP);
+          if (log_fd != -1)
+            {
+              int status = fstat(log_fd, &st);
+              if (status == -1 || !S_ISREG(st.st_mode))
+                {
+                  int error = status == -1 ? errno : EINVAL;
+                  close(log_fd);
+                  log_fd = -1;
+                  errno = error;
+                }
+            }
+        }
       else
 	{
 #if defined(HAVE_SOLARIS_NETWORK) || defined(__ANDROID__)

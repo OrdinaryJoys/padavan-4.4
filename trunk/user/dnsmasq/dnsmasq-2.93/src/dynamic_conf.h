@@ -23,6 +23,7 @@
 #define CONF_CONFIG_MAX_FILES 128U
 #define CONF_CONFIG_MAX_DEPTH 32U
 #define CONF_CONFIG_MAX_DIR_ENTRIES 4096U
+#define CONF_SCRIPT_STATUS_ERROR "conf-script returned a nonzero status"
 
 struct conf_script_budget {
   long long deadline;
@@ -39,6 +40,10 @@ struct conf_script_budget {
 int conf_script_check(const struct conf_script_budget *budget);
 FILE *conf_script_open(const char *command, struct conf_script_budget *budget,
                        const char **error);
+/* Optional raw wait status is set only by waitpid reaping the owned child.
+ * A non-NULL stream is still required: exit0 cannot override a collector error. */
+FILE *conf_script_open_status(const char *command, struct conf_script_budget *budget,
+                              const char **error, int *raw_status);
 void conf_script_close(FILE *stream, struct conf_script_budget *budget);
 int conf_config_line(FILE *stream, char **buffer, size_t *capacity,
                      size_t *file_bytes, struct conf_script_budget *budget,
