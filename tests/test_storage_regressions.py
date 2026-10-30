@@ -6,6 +6,7 @@ import bz2
 import fcntl
 import io
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -70,7 +71,10 @@ CODE""")
         self.stub('mtd_write','echo write >> "'+str(self.flash_calls)+'"\nexit "${FLASH_RC:-0}"')
         text=SCRIPT.read_text()
         replacements={'/sbin/storage_validate':str(self.bin/'storage_validate'),'/sbin/rstats':str(self.bin/'rstats'),'/etc/storage':str(self.storage),'/tmp/':str(self.tmp)+'/', '/proc/mtd':str(self.proc),'/dev/mtdblock':str(self.base/'mtdblock')}
-        for old in sorted(replacements,key=len,reverse=True): text=text.replace(old,replacements[old])
+        # Replace the original script once: injected Linux /tmp fixture paths
+        # must not be rewritten again by the generic /tmp/ mapping.
+        pattern='|'.join(re.escape(old) for old in sorted(replacements,key=len,reverse=True))
+        text=re.sub(pattern,lambda match:replacements[match.group(0)],text)
         self.replay=self.base/'replay.sh';self.replay.write_text(text)
 
     def tearDown(self): self.temp.cleanup()
