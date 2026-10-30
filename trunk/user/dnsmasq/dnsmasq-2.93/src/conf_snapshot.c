@@ -1,4 +1,8 @@
 /* Private expanded startup configuration transactions. GPL2 or later. */
+#ifndef NO_LARGEFILE
+#define _LARGEFILE_SOURCE 1
+#define _FILE_OFFSET_BITS 64
+#endif
 #define _GNU_SOURCE
 #include "conf_snapshot.h"
 #include "snapshot_sha256.h"
@@ -361,7 +365,7 @@ static int hash_descriptor(int fd,size_t maximum,unsigned char digest[32],size_t
   }
   snapshot_sha_final(&hash,digest);return 1;
 }
-int conf_snapshot_input_alias(const char *logical,const struct stat *observed,const char **error)
+int conf_snapshot_input_alias(const char *logical,uint64_t observed_device,uint64_t observed_inode,const char **error)
 {
   const char *actual=conf_snapshot_overlay(logical);
   struct snap_record current,after,*same=NULL,*source=NULL,*record;
@@ -376,8 +380,7 @@ int conf_snapshot_input_alias(const char *logical,const struct stat *observed,co
     free(current.path);current.path=path;current.overlay=1;
   }
   if(!S_ISREG((mode_t)current.target.value[2])||current.target.value[6]>CONF_CONFIG_MAX_BYTES||
-     current.target.value[0]!=(uint64_t)observed->st_dev||
-     current.target.value[1]!=(uint64_t)observed->st_ino)goto out;
+     current.target.value[0]!=observed_device||current.target.value[1]!=observed_inode)goto out;
   for(i=0;i<snap.count;i++)if(snap.records[i].kind==SNAP_FILE){
     record=&snap.records[i];
     if(record->target.value[0]==current.target.value[0]&&

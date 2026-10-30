@@ -5767,7 +5767,8 @@ static int one_file(char *file, int hard_opt)
 	    if (r->dev == statbuf.st_dev && r->ino == statbuf.st_ino)
 	      {
                 const char *snapshot_error;
-                if (!do_popen && !conf_snapshot_input_alias(file, &statbuf, &snapshot_error))
+                if (!do_popen && !conf_snapshot_input_alias(file, (uint64_t)statbuf.st_dev,
+                                                          (uint64_t)statbuf.st_ino, &snapshot_error))
                   die("%s", (char *)snapshot_error, EC_BADCONF);
 	        return 1;
               }

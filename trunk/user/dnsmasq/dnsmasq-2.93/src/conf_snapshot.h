@@ -3,7 +3,7 @@
 #define DNSMASQ_CONF_SNAPSHOT_H
 #include <stdio.h>
 #include <stddef.h>
-#include <sys/stat.h>
+#include <stdint.h>
 #include "dynamic_conf.h"
 
 #define CONF_SNAPSHOT_FLAT_BYTES CONF_CONFIG_TOTAL_BYTES
@@ -22,7 +22,7 @@ const char *conf_snapshot_overlay(const char *logical);
 int conf_snapshot_input_begin(const char *logical, FILE *stream, const char **error);
 int conf_snapshot_input_end(FILE *stream, const char **error);
 /* Observe an inode-deduplicated path without expanding it a second time. */
-int conf_snapshot_input_alias(const char *logical, const struct stat *observed,
+int conf_snapshot_input_alias(const char *logical, uint64_t observed_device, uint64_t observed_inode,
                               const char **error);
 int conf_snapshot_line(const char *line, const char **error);
 int conf_snapshot_script(unsigned int ordinal, unsigned int parent, unsigned int depth,
