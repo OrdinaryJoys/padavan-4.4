@@ -32,6 +32,8 @@
 
 /* From RFC 3164 */
 #define MAX_MESSAGE 1024
+#define LOG_WRITE_ATTEMPTS 128
+#define LOG_FLUSH_TIMEOUT_MS 200
 
 /* defaults in case we die() before we log_start() */
 static int log_fac = LOG_DAEMON;
@@ -55,6 +57,114 @@ struct log_entry {
 
 static struct log_entry *entries = NULL;
 static struct log_entry *free_entries = NULL;
+
+static long long log_milliseconds(void)
+{
+  struct timespec now;
+  if (clock_gettime(CLOCK_MONOTONIC, &now) == -1)
+    return -1;
+  return (long long)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+#if !defined(HAVE_SOLARIS_NETWORK) && !defined(__ANDROID__)
+static int log_socket(int type)
+{
+  int flags, fd = socket(AF_UNIX, type, 0), saved;
+  if (fd == -1)
+    return -1;
+  if (fcntl(fd, F_SETFD, FD_CLOEXEC) == -1 ||
+      (flags = fcntl(fd, F_GETFL)) == -1 ||
+      fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1)
+    goto fail;
+#ifdef SO_NOSIGPIPE
+  {
+    int enabled = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) == -1)
+      goto fail;
+  }
+#endif
+  return fd;
+fail:
+  saved = errno;
+  close(fd);
+  errno = saved;
+  return -1;
+}
+
+static int log_connect(int fd)
+{
+  struct sockaddr_un address;
+  memset(&address, 0, sizeof(address));
+#ifdef HAVE_SOCKADDR_SA_LEN
+  address.sun_len = sizeof(address) - sizeof(address.sun_path) + strlen(_PATH_LOG) + 1;
+#endif
+  address.sun_family = AF_UNIX;
+  safe_strncpy(address.sun_path, _PATH_LOG, sizeof(address.sun_path));
+  return connect(fd, (struct sockaddr *)&address, sizeof(address));
+}
+
+static ssize_t log_socket_send(int fd, const void *data, size_t length)
+{
+  int flags = 0;
+#ifdef MSG_NOSIGNAL
+  flags |= MSG_NOSIGNAL;
+#endif
+#ifdef MSG_DONTWAIT
+  flags |= MSG_DONTWAIT;
+#endif
+  return send(fd, data, length, flags);
+}
+
+/* Startup errors and permanent output failures must not re-enter a blocking
+ * libc syslog path. This bounded, best-effort fallback owns only its fresh
+ * nonblocking socket; it never calls my_syslog recursively. */
+static void log_fallback(int priority, const char *func, const char *format, va_list args)
+{
+  char payload[MAX_MESSAGE], *stamp;
+  time_t now;
+  int prefix, type = connection_type, attempt;
+  size_t length;
+  time(&now);
+  if (!(stamp = ctime(&now)))
+    return;
+  prefix = snprintf(payload, sizeof(payload), "<%d>%.15s dnsmasq%s[%d]: ",
+                    priority | log_fac, stamp + 4, func, (int)getpid());
+  if (prefix < 0 || (size_t)prefix >= sizeof(payload))
+    return;
+  if (vsnprintf(payload + prefix, sizeof(payload) - (size_t)prefix, format, args) < 0)
+    return;
+  length = strlen(payload) + 1;
+  for (attempt = 0; attempt != 2; attempt++)
+    {
+      int fd = log_socket(type), error;
+      size_t offset = 0, wanted = length - (type == SOCK_DGRAM);
+      unsigned int writes = 0;
+      if (fd == -1)
+        return;
+      if (log_connect(fd) == -1)
+        {
+          error = errno;
+          close(fd);
+          if (error != EPROTOTYPE)
+            return;
+          type = type == SOCK_DGRAM ? SOCK_STREAM : SOCK_DGRAM;
+          continue;
+        }
+      connection_type = type;
+      while (offset < wanted && writes++ != 4)
+        {
+          ssize_t count = log_socket_send(fd, payload + offset, wanted - offset);
+          if (count == -1 && errno == EINTR)
+            continue;
+          if (count <= 0 || (size_t)count > wanted - offset)
+            break;
+          offset += (size_t)count;
+        }
+      close(fd);
+      return;
+    }
+}
+#endif
 
 
 int log_start(struct passwd *ent_pw, int errfd)
@@ -166,12 +276,9 @@ int log_reopen(char *log_file)
 #   define _PATH_LOG ""  /* dummy */
 	  return 1;
 #else
-	  int flags;
-	  log_fd = socket(AF_UNIX, connection_type, 0);
-	  
-	  /* if max_logs is zero, leave the socket blocking */
-	  if (log_fd != -1 && max_logs != 0 && (flags = fcntl(log_fd, F_GETFL)) != -1)
-	    fcntl(log_fd, F_SETFL, flags | O_NONBLOCK);
+          /* Even the default one-entry queue must never block DNS or
+           * shutdown waiting for a syslog reader to drain its socket. */
+          log_fd = log_socket(connection_type);
 #endif
 	}
     }
@@ -187,11 +294,37 @@ static void free_entry(void)
   free_entries = tmp;
 }      
 
+static void lost_entry(void)
+{
+  if (entries_lost < INT_MAX)
+    entries_lost++;
+}
+
+static void discard_entries(void)
+{
+  while (entries)
+    {
+      lost_entry();
+      free_entry();
+    }
+}
+
+static void restart_entry(void)
+{
+  if (entries)
+    {
+      entries->length += entries->offset;
+      entries->offset = 0;
+    }
+}
+
 static void log_write(void)
 {
   ssize_t rc;
+  unsigned int attempts = 0;
+  int progressed = 0;
    
-  while (entries)
+  while (entries && attempts++ != LOG_WRITE_ATTEMPTS)
     {
       /* The data in the payload is written with a terminating zero character 
 	 and the length reflects this. For a stream connection we need to 
@@ -200,6 +333,7 @@ static void log_write(void)
 	 to elide the zero. If we're logging to a file, turn the zero into 
 	 a newline, and leave the length alone. */
       int len_adjust = 0;
+      progressed = 0;
 
       if (log_to_file)
 	entries->payload[entries->offset + entries->length - 1] = '\n';
@@ -210,13 +344,29 @@ static void log_write(void)
       if (entries->pid != getpid())
 	{
 	  free_entry();
+	  progressed = 1;
 	  continue;
 	}
 
       connection_good = 1;
 
-      if ((rc = write(log_fd, entries->payload + entries->offset, entries->length - len_adjust)) != -1)
+      if (log_to_file)
+        rc = write(log_fd, entries->payload + entries->offset, entries->length - len_adjust);
+#if !defined(HAVE_SOLARIS_NETWORK) && !defined(__ANDROID__)
+      else
+        rc = log_socket_send(log_fd, entries->payload + entries->offset, entries->length - len_adjust);
+#else
+      else
+        rc = write(log_fd, entries->payload + entries->offset, entries->length - len_adjust);
+#endif
+      if (rc == 0)
+        {
+          connection_good = 0;
+          return;
+        }
+      if (rc > 0)
 	{
+          progressed = 1;
 	  entries->length -= rc;
 	  entries->offset += rc;
 	  if (entries->length == len_adjust)
@@ -233,7 +383,7 @@ static void log_write(void)
 	}
       
       if (errno == EINTR)
-	continue;
+	return;
 
       if (errno == EAGAIN || errno == EWOULDBLOCK)
 	return; /* syslogd busy, go again when select() or poll() says so */
@@ -249,15 +399,17 @@ static void log_write(void)
 	{
 	  /* Once a stream socket hits EPIPE, we have to close and re-open
 	     (we ignore SIGPIPE) */
-	  if (errno == EPIPE)
+	  if (errno == EPIPE || errno == ECONNRESET)
 	    {
 	      if (log_reopen(NULL))
-		continue;
+                {
+                  restart_entry();
+                  continue;
+                }
 	    }
 	  else if (errno == ECONNREFUSED || 
 		   errno == ENOTCONN || 
-		   errno == EDESTADDRREQ || 
-		   errno == ECONNRESET)
+		   errno == EDESTADDRREQ)
 	    {
 	      /* socket went (syslogd down?), try and reconnect. If we fail,
 		 stop trying until the next call to my_syslog() 
@@ -265,21 +417,15 @@ static void log_write(void)
 		 ENOTCONN -> nobody listening
 		 (ECONNRESET, EDESTADDRREQ are *BSD equivalents) */
 	      
-	      struct sockaddr_un logaddr;
-	      
-#ifdef HAVE_SOCKADDR_SA_LEN
-	      logaddr.sun_len = sizeof(logaddr) - sizeof(logaddr.sun_path) + strlen(_PATH_LOG) + 1; 
-#endif
-	      logaddr.sun_family = AF_UNIX;
-	      safe_strncpy(logaddr.sun_path, _PATH_LOG, sizeof(logaddr.sun_path));
-	      
 	      /* Got connection back? try again. */
-	      if (connect(log_fd, (struct sockaddr *)&logaddr, sizeof(logaddr)) != -1)
+#if !defined(HAVE_SOLARIS_NETWORK) && !defined(__ANDROID__)
+	      if (log_connect(log_fd) != -1)
 		continue;
+#endif
 	      
 	      /* errors from connect which mean we should keep trying */
 	      if (errno == ENOENT || 
-		  errno == EALREADY || 
+		  errno == EALREADY || errno == EINPROGRESS ||
 		  errno == ECONNREFUSED ||
 		  errno == EISCONN || 
 		  errno == EINTR ||
@@ -296,17 +442,28 @@ static void log_write(void)
 		{
 		  connection_type = connection_type == SOCK_DGRAM ? SOCK_STREAM : SOCK_DGRAM;
 		  if (log_reopen(NULL))
-		    continue;
+                    {
+                      restart_entry();
+                      continue;
+                    }
 		}
 	    }
 	}
 
-      /* give up - fall back to syslog() - this handles out-of-space
-	 when logging to a file, for instance. */
-      log_fd = -1;
-      my_syslog(LOG_CRIT, _("log failed: %s"), strerror(errno));
+      /* Drop the failed queue before reporting through the bounded fallback.
+       * Do not leak the old descriptor or re-enter a blocking libc logger. */
+      {
+        int saved = errno;
+        close(log_fd);
+        log_fd = -1;
+        connection_good = 0;
+        discard_entries();
+        my_syslog(LOG_CRIT, _("log failed: %s"), strerror(saved));
+      }
       return;
     }
+  if (entries && !progressed)
+    connection_good = 0;
 }
 
 /* priority is one of LOG_DEBUG, LOG_INFO, LOG_NOTICE, etc. See sys/syslog.h.
@@ -371,7 +528,7 @@ void my_syslog(int priority, const char *format, ...)
       va_start(ap, format);
       __android_log_vprint(alog_lvl, "dnsmasq", format, ap);
       va_end(ap);
-#else
+#elif defined(HAVE_SOLARIS_NETWORK)
       /* fall-back to syslog if we die during startup or 
 	 fail during running (always on Solaris). */
       static int isopen = 0;
@@ -384,6 +541,10 @@ void my_syslog(int priority, const char *format, ...)
       va_start(ap, format);  
       vsyslog(priority, format, ap);
       va_end(ap);
+#else
+      va_start(ap, format);
+      log_fallback(priority, func, format, ap);
+      va_end(ap);
 #endif
 
       return;
@@ -395,7 +556,7 @@ void my_syslog(int priority, const char *format, ...)
     entries_alloced++;
   
   if (!entry)
-    entries_lost++;
+    lost_entry();
   else
     {
       /* add to end of list, consumed from the start */
@@ -482,21 +643,25 @@ void check_log_writer(int force)
 
 void flush_log(void)
 {
-  /* write until queue empty, but don't loop forever if there's
-   no connection to the syslog in existence */
+  long long now = log_milliseconds(), deadline = now < 0 ? -1 : now + LOG_FLUSH_TIMEOUT_MS;
+  /* Syslog sockets are nonblocking, including the default one-entry queue.
+   * Named files and stderr retain their existing kernel write semantics. */
   while (log_fd != -1)
     {
       struct timespec waiter;
       log_write();
-      if (!entries || !connection_good)
-	{
-	  close(log_fd);	
-	  break;
-	}
+      if (!entries || !connection_good || deadline < 0 ||
+          (now = log_milliseconds()) < 0 || now >= deadline)
+        break;
       waiter.tv_sec = 0;
       waiter.tv_nsec = 1000000; /* 1 ms */
       nanosleep(&waiter, NULL);
     }
+  if (log_fd != -1)
+    close(log_fd);
+  log_fd = -1;
+  connection_good = 0;
+  discard_entries();
 }
 
 void die(char *message, char *arg1, int exit_code)

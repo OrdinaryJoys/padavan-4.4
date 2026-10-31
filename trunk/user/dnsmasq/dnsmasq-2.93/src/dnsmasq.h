@@ -1392,6 +1392,9 @@ void cache_send_ipset(unsigned char op, struct ipsets *sets,
 struct crec *cache_insert(char *name, union all_addr *addr, unsigned short class, 
 			  time_t now, unsigned long ttl, unsigned int flags);
 void cache_reload(void);
+int cache_reload_prepare(void);
+void cache_reload_commit(void);
+void cache_reload_abort(void);
 void cache_add_dhcp_entry(char *host_name, int prot, union all_addr *host_address, time_t ttd);
 struct in_addr a_record_from_hosts(char *name, time_t now);
 void cache_unhash_dhcp(void);
@@ -1564,6 +1567,10 @@ void read_opts (int argc, char **argv, char *compile_opts);
 char *option_string(int prot, unsigned int opt, unsigned char *val, 
 		    int opt_len, char *buf, int buf_len);
 void reread_dhcp(void);
+int dhcp_reload_prepare(void);
+void dhcp_reload_commit(void);
+void dhcp_reload_abort(void);
+int dhcp_reload_ethers_prepare(struct dhcp_config *old_boundary);
 void read_servers_file(void);
 void set_option_bool(unsigned int opt);
 void reset_option_bool(unsigned int opt);
@@ -1708,7 +1715,7 @@ int delay_dhcp(time_t start, int sec, int fd, uint32_t addr, unsigned short id);
 void queue_event(int event);
 void send_alarm(time_t event, time_t now);
 void send_event(int fd, int event, int data, char *msg);
-void clear_cache_and_reload(time_t now);
+int clear_cache_and_reload(time_t now);
 #ifdef HAVE_DNSSEC
 int swap_to_tcp(struct frec *forward, time_t now, int status, struct dns_header *header,
 		ssize_t *plen, char *name, int class, struct server *server, int *keycount, int *validatecount);

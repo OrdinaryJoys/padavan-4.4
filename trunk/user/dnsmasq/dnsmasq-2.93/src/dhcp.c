@@ -15,6 +15,8 @@
 */
 
 #include "dnsmasq.h"
+#include "runtime_file.h"
+#include "reload_file.h"
 
 #ifdef HAVE_DHCP
 
@@ -921,12 +923,204 @@ int address_allocate(struct dhcp_context *context,
   return 0;
 }
 
-void dhcp_read_ethers(void)
+/* Ethers can update existing static configurations by name, address or MAC.
+ * Prepare a fully owned clone, not just a new FROM_ETHERS prefix, so a later
+ * syntax/input/allocation failure cannot write through into the live graph. */
+static char *ethers_string(const char *source)
 {
-  FILE *f = fopen(ETHERSFILE, "r");
+  size_t size;
+  char *copy;
+  if (!source) return NULL;
+  size = strlen(source) + 1;
+  if ((copy = dns_reload_malloc(size))) memcpy(copy, source, size);
+  return copy;
+}
+
+static struct dhcp_netid *ethers_tags(struct dhcp_netid *source)
+{
+  struct dhcp_netid *head = NULL, **tail = &head;
+  for (; source && dns_reload_ok(); source = source->next)
+    {
+      struct dhcp_netid *copy = dns_reload_malloc(sizeof(*copy));
+      if (!copy || !(copy->net = ethers_string(source->net))) return NULL;
+      *tail = copy; tail = &copy->next;
+    }
+  return head;
+}
+
+static struct dhcp_config *ethers_clone(struct dhcp_config *source)
+{
+  struct dhcp_config *copy = dns_reload_malloc(sizeof(*copy));
+  struct hwaddr_config *hardware, **htail;
+  struct dhcp_netid_list *tag, **ttail;
+  if (!copy) return NULL;
+  *copy = *source;
+  copy->next = NULL; copy->clid = NULL; copy->hostname = copy->domain = NULL;
+  copy->hwaddr = NULL; copy->netid = NULL; copy->filter = NULL;
+#ifdef HAVE_DHCP6
+  copy->addr6 = NULL;
+#endif
+  if ((source->flags & CONFIG_CLID) && source->clid_len > 0)
+    {
+      if (!source->clid || !(copy->clid = dns_reload_malloc(source->clid_len))) return NULL;
+      memcpy(copy->clid, source->clid, source->clid_len);
+    }
+  if ((source->flags & CONFIG_NAME) && source->hostname)
+    {
+      size_t name = strlen(source->hostname) + 1;
+      size_t domain = source->domain ? strlen(source->domain) + 1 : 0;
+      if (!(copy->hostname = dns_reload_malloc(name + domain))) return NULL;
+      memcpy(copy->hostname, source->hostname, name);
+      if (domain)
+        { copy->domain = copy->hostname + name; memcpy(copy->domain, source->domain, domain); }
+    }
+  for (hardware = source->hwaddr, htail = &copy->hwaddr; hardware && dns_reload_ok(); hardware = hardware->next)
+    {
+      struct hwaddr_config *node = dns_reload_malloc(sizeof(*node));
+      if (!node) return NULL;
+      *node = *hardware; node->next = NULL; *htail = node; htail = &node->next;
+    }
+  for (tag = source->netid, ttail = &copy->netid; tag && dns_reload_ok(); tag = tag->next)
+    {
+      struct dhcp_netid_list *node = dns_reload_malloc(sizeof(*node));
+      if (!node || !tag->list || !(node->list = dns_reload_malloc(sizeof(*node->list)))) return NULL;
+      /* list->next is a temporary request-time tag chain, not owned here. */
+      if (!(node->list->net = ethers_string(tag->list->net))) return NULL;
+      *ttail = node; ttail = &node->next;
+    }
+  if (source->filter && !(copy->filter = ethers_tags(source->filter))) return NULL;
+#ifdef HAVE_DHCP6
+  {
+    struct addrlist *address, **tail = &copy->addr6;
+    for (address = source->addr6; address && dns_reload_ok(); address = address->next)
+      {
+        struct addrlist *node = dns_reload_malloc(sizeof(*node));
+        if (!node) return NULL;
+        *node = *address; node->next = NULL; *tail = node; tail = &node->next;
+      }
+  }
+#endif
+  return dns_reload_ok() ? copy : NULL;
+}
+
+int dhcp_reload_ethers_prepare(struct dhcp_config *old_boundary)
+{
+  struct dns_runtime_file input;
+  struct dhcp_config *original = daemon->dhcp_conf, *head = NULL, **tail = &head, *source;
+  char line[DNS_RUNTIME_LINE_BYTES + 1];
+  int in_old = 0, count = 0, lineno = 0;
+  if (!dns_reload_active() || !dns_reload_ok()) return 0;
+  if (!dns_reload_read(&input, ETHERSFILE, 0)) return 0;
+  for (source = original; source && dns_reload_ok(); source = source->next)
+    {
+      struct dhcp_config *copy;
+      if (source == old_boundary) in_old = 1;
+      if (in_old && (source->flags & (CONFIG_BANK | CONFIG_FROM_ETHERS))) continue;
+      if (!(copy = ethers_clone(source)))
+        { dns_reload_fail("ethers configuration clone failed"); break; }
+      *tail = copy; tail = &copy->next;
+    }
+  while (dns_reload_ok() && fgets(line, sizeof(line), input.stream))
+    {
+      char *ip, *cp, *host = NULL, *end = line + strlen(line);
+      unsigned int flags;
+      unsigned char hardware[ETHER_ADDR_LEN];
+      struct in_addr address;
+      struct dhcp_config *config;
+      lineno++;
+      while (end != line && isspace((unsigned char)end[-1])) *--end = 0;
+      if (*line == '#' || *line == '+' || !*line) continue;
+      for (ip = line; *ip && !isspace((unsigned char)*ip); ip++);
+      for (; *ip && isspace((unsigned char)*ip); ip++) *ip = 0;
+      if (!*ip || parse_hex(line, hardware, ETHER_ADDR_LEN, NULL, NULL) != ETHER_ADDR_LEN)
+        { dns_reload_fail("invalid ethers hardware-address syntax"); break; }
+      for (cp = ip; *cp; cp++)
+        if (!(*cp == '.' || (*cp >= '0' && *cp <= '9'))) break;
+      if (!*cp)
+        {
+          if (inet_pton(AF_INET, ip, &address) != 1)
+            { dns_reload_fail("invalid ethers address syntax"); break; }
+          flags = CONFIG_ADDR;
+          for (config = head; config; config = config->next)
+            if ((config->flags & CONFIG_ADDR) && config->addr.s_addr == address.s_addr) break;
+        }
+      else
+        {
+          int nomem = 0;
+          host = canonicalise(ip, &nomem);
+          if (host) host = dns_reload_track(host, strlen(host) + 1);
+          if (!host || !legal_hostname(host))
+            {
+              dns_reload_free(host);
+              dns_reload_fail(nomem ? "ethers hostname allocation failed" : "invalid ethers hostname syntax");
+              break;
+            }
+          flags = CONFIG_NAME;
+          for (config = head; config; config = config->next)
+            if ((config->flags & CONFIG_NAME) && hostname_isequal(config->hostname, host)) break;
+        }
+      if (config && (config->flags & CONFIG_FROM_ETHERS))
+        {
+          /* Preserve the upstream first-record-wins duplicate policy. */
+          my_syslog(MS_DHCP | LOG_ERR, _("ignoring %s line %d, duplicate name or IP address"), ETHERSFILE, lineno);
+          dns_reload_free(host);
+          continue;
+        }
+      if (!config)
+        {
+          for (config = head; config; config = config->next)
+            {
+              struct hwaddr_config *h = config->hwaddr;
+              if (h && !h->next && h->wildcard_mask == 0 && h->hwaddr_len == ETHER_ADDR_LEN &&
+                  (h->hwaddr_type == ARPHRD_ETHER || h->hwaddr_type == 0) &&
+                  memcmp(h->hwaddr, hardware, ETHER_ADDR_LEN) == 0) break;
+            }
+          if (!config)
+            {
+              if (!(config = dns_reload_malloc(sizeof(*config)))) break;
+              config->flags = CONFIG_FROM_ETHERS; config->next = head; head = config;
+            }
+          if (flags & CONFIG_NAME)
+            {
+              if (config->flags & CONFIG_NAME) dns_reload_free(config->hostname);
+              config->hostname = host; config->domain = NULL; host = NULL;
+            }
+          if (flags & CONFIG_ADDR) config->addr = address;
+          config->flags |= flags;
+        }
+      config->flags |= CONFIG_NOCLID;
+      if (!config->hwaddr && !(config->hwaddr = dns_reload_malloc(sizeof(*config->hwaddr))))
+        { dns_reload_free(host); break; }
+      while (config->hwaddr->next)
+        {
+          struct hwaddr_config *old = config->hwaddr->next;
+          config->hwaddr->next = old->next; dns_reload_free(old);
+        }
+      memcpy(config->hwaddr->hwaddr, hardware, ETHER_ADDR_LEN);
+      config->hwaddr->hwaddr_len = ETHER_ADDR_LEN;
+      config->hwaddr->hwaddr_type = ARPHRD_ETHER;
+      config->hwaddr->wildcard_mask = 0;
+      dns_reload_free(host); count++;
+    }
+  if (ferror(input.stream)) dns_reload_fail("ethers memory snapshot read failed");
+  dns_runtime_file_close(&input);
+  if (!dns_reload_ok()) return 0;
+  daemon->dhcp_conf = head;
+  my_syslog(MS_DHCP | LOG_INFO, _("read %s - %d addresses"), ETHERSFILE, count);
+  return 1;
+}
+
+#ifdef HAVE_INOTIFY
+/* The optional dynamic-directory profile retains its upstream merge/reload
+ * semantics. Its IO still uses the same bounded regular snapshot, but its
+ * legacy per-record mutation is not the configured-file group transaction. */
+static void dhcp_read_ethers_legacy(void)
+{
+  struct dns_runtime_file input;
+  const char *error;
+  FILE *f;
   unsigned int flags;
-  size_t linesz = 0;
-  char *line = NULL;
+  char line[DNS_RUNTIME_LINE_BYTES + 1];
   char *ip, *cp;
   struct in_addr addr;
   unsigned char hwaddr[ETHER_ADDR_LEN];
@@ -936,11 +1130,13 @@ void dhcp_read_ethers(void)
 
   addr.s_addr = 0; /* eliminate warning */
   
-  if (!f)
+  if (!dns_runtime_file_open(&input, ETHERSFILE, &error))
     {
-      my_syslog(MS_DHCP | LOG_ERR, _("failed to read %s: %s"), ETHERSFILE, strerror(errno));
+      my_syslog(MS_DHCP | LOG_ERR, _("failed to read %s: %s"), ETHERSFILE, error);
       return;
     }
+
+  f = input.stream;
 
   /* This can be called again on SIGHUP, so remove entries created last time round. */
   for (up = &daemon->dhcp_conf, config = daemon->dhcp_conf; config; config = tmp)
@@ -959,7 +1155,7 @@ void dhcp_read_ethers(void)
 	up = &config->next;
     }
 
-  while (get_line_alloc(f, &line, &linesz))
+  while (fgets(line, sizeof(line), f))
     {
       char *host = NULL;
       
@@ -1020,6 +1216,7 @@ void dhcp_read_ethers(void)
       if (config && (config->flags & CONFIG_FROM_ETHERS))
 	{
 	  my_syslog(MS_DHCP | LOG_ERR, _("ignoring %s line %d, duplicate name or IP address"), ETHERSFILE, lineno); 
+          free(host);
 	  continue;
 	}
 	
@@ -1078,9 +1275,20 @@ void dhcp_read_ethers(void)
 
     }
   
-  fclose(f);
+  dns_runtime_file_close(&input);
 
   my_syslog(MS_DHCP | LOG_INFO, _("read %s - %d addresses"), ETHERSFILE, count);
+}
+#endif
+
+void dhcp_read_ethers(void)
+{
+#ifdef HAVE_INOTIFY
+  if (daemon->dynamic_dirs) { dhcp_read_ethers_legacy(); return; }
+#endif
+  /* Kept for source/API compatibility; normal reloads prepare ethers together
+   * with hosts and DHCP options before committing any part of the group. */
+  reread_dhcp();
 }
 
 

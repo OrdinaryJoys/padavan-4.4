@@ -4,6 +4,7 @@
 #define DNSMASQ_RUNTIME_FILE_H
 
 #include <stdio.h>
+#include <sys/stat.h>
 
 #define DNS_RUNTIME_FILE_BYTES (2U * 1024U * 1024U)
 #define DNS_RUNTIME_LINE_BYTES 16384U
@@ -20,6 +21,8 @@
 struct dns_runtime_file {
   FILE *stream;
   void *contents;
+  size_t size;
+  struct stat metadata;
 };
 
 int dns_runtime_file_open(struct dns_runtime_file *snapshot, const char *path,
@@ -31,6 +34,7 @@ int dns_runtime_file_read_fd_limit(struct dns_runtime_file *snapshot, int source
                                    size_t byte_limit, unsigned int line_limit,
                                    const char **error);
 void dns_runtime_file_close(struct dns_runtime_file *snapshot);
+int dns_runtime_file_unchanged(const char *path, const struct stat *metadata);
 
 /* Only the fixed literal /dev/null, with a verified standard device identity.
  * flags may contain O_WRONLY or O_RDWR, optionally O_APPEND. The returned

@@ -39,6 +39,8 @@
 #include <pwd.h>
 #include <grp.h>
 #include <syslog.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <utime.h>
 
 #include "nvram_linux.h"
@@ -635,13 +637,52 @@ void
 logmessage(char *logheader, char *fmt, ...)
 {
 	va_list args;
-	char buf[512];
+	char buf[512], frame[640], stamp[32];
+	struct sockaddr_un address;
+	struct tm local;
+	time_t now;
+	int saved_errno = errno, fd, flags, length;
 
 	va_start(args, fmt);
-	vsnprintf(buf, sizeof(buf), fmt, args);
-	openlog(logheader, 0, 0);
-	syslog(0, buf);
-	closelog();
+	length = vsnprintf(buf, sizeof(buf), fmt, args);
 	va_end(args);
+	if (length < 0)
+		goto done;
+
+	/* This helper also runs in watchdog callbacks. libc syslog can wait
+	 * indefinitely for a full /dev/log queue, delaying the next hardware
+	 * feed. Keep the original user/emergency priority and bounded body,
+	 * but send one nonblocking datagram, dropping it on pressure or error.
+	 * The formatted body is data, never a second printf format string. */
+	now = time(NULL);
+	stamp[0] = '\0';
+	if (localtime_r(&now, &local) &&
+	    !strftime(stamp, sizeof(stamp), "%b %e %T", &local))
+		stamp[0] = '\0';
+	length = snprintf(frame, sizeof(frame), "<%d>%s%s%.64s: %s",
+		LOG_USER | LOG_EMERG, stamp, stamp[0] ? " " : "",
+		logheader ? logheader : "router", buf);
+	if (length < 0)
+		goto done;
+	if ((size_t)length >= sizeof(frame))
+		length = sizeof(frame) - 1;
+
+	fd = socket(AF_UNIX, SOCK_DGRAM, 0);
+	if (fd < 0)
+		goto done;
+	flags = fcntl(fd, F_GETFL);
+	if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0 ||
+	    (flags = fcntl(fd, F_GETFD)) < 0 ||
+	    fcntl(fd, F_SETFD, flags | FD_CLOEXEC) < 0)
+		goto close_socket;
+	memset(&address, 0, sizeof(address));
+	address.sun_family = AF_UNIX;
+	strcpy(address.sun_path, "/dev/log");
+	(void)sendto(fd, frame, length, MSG_DONTWAIT | MSG_NOSIGNAL,
+		(struct sockaddr *)&address, sizeof(address));
+close_socket:
+	close(fd);
+done:
+	errno = saved_errno;
 }
 

@@ -16,6 +16,11 @@
 
 #include "dnsmasq.h"
 #include "runtime_file.h"
+#include "reload_file.h"
+#undef whine_malloc
+#define whine_malloc(size) dns_reload_malloc(size)
+#undef free
+#define free(pointer) dns_reload_free(pointer)
 
 static struct crec *cache_head = NULL, *cache_tail = NULL, **hash_table = NULL;
 static struct crec *config_spare = NULL;
@@ -1431,6 +1436,8 @@ static int gettok(FILE *f, char *token, size_t buffsz)
 	  token[count++] = c;
 	  token[count] = 0;
 	}
+      else if (dns_reload_active())
+        dns_reload_fail("hosts token exceeds DNS name buffer");
     }
 }
 
@@ -1445,17 +1452,18 @@ int read_hostsfile(char *filename, unsigned int index, int cache_size, struct cr
   union all_addr addr;
   int atnl, addrlen = 0;
 
-  if (!dns_runtime_file_open_limit(&input, filename, DNS_RUNTIME_HOSTS_BYTES,
+  if (dns_reload_active() ? !dns_reload_read(&input, filename, 1) :
+      !dns_runtime_file_open_limit(&input, filename, DNS_RUNTIME_HOSTS_BYTES,
                                    DNS_RUNTIME_HOSTS_LINES, &input_error))
     {
-      my_syslog(LOG_ERR, _("failed to load names from %s: %s"), filename, input_error);
+      my_syslog(LOG_ERR, _("failed to load names from %s: %s"), filename, dns_reload_active() ? dns_reload_error() : input_error);
       return cache_size;
     }
   f = input.stream;
   
   lineno += eatspace(f);
   
-  while ((atnl = gettok(f, token, MAXDNAMESTR)) != -1)
+  while (dns_reload_ok() && (atnl = gettok(f, token, MAXDNAMESTR)) != -1)
     {
       if (inet_pton(AF_INET, token, &addr) > 0)
 	{
@@ -1472,7 +1480,8 @@ int read_hostsfile(char *filename, unsigned int index, int cache_size, struct cr
       else
 	{
 	  my_syslog(LOG_ERR, _("bad address at %s line %d"), filename, lineno); 
-	  while (atnl == 0)
+          if (dns_reload_active()) { dns_reload_fail("invalid hosts address syntax"); break; }
+	  while (atnl == 0 && dns_reload_ok())
 	    atnl = gettok(f, token, MAXDNAMESTR);
 	  lineno += atnl;
 	  continue;
@@ -1485,7 +1494,7 @@ int read_hostsfile(char *filename, unsigned int index, int cache_size, struct cr
 	  cache_size = name_count;
 	} 
       
-      while (atnl == 0)
+      while (atnl == 0 && dns_reload_ok())
 	{
 	  struct crec *cache;
 	  int fqdn, nomem;
@@ -1534,12 +1543,18 @@ int read_hostsfile(char *filename, unsigned int index, int cache_size, struct cr
 	      
 	    }
 	  else if (!nomem)
-	    my_syslog(LOG_ERR, _("bad name at %s line %d"), filename, lineno); 
+            {
+              my_syslog(LOG_ERR, _("bad name at %s line %d"), filename, lineno);
+              dns_reload_fail("invalid hosts name syntax");
+            }
+          else
+            dns_reload_fail("hosts name allocation failed");
 	}
 
       lineno += atnl;
     } 
 
+  if (ferror(f)) dns_reload_fail("hosts memory snapshot read failed");
   dns_runtime_file_close(&input);
   
   if (rhash)
@@ -1550,7 +1565,7 @@ int read_hostsfile(char *filename, unsigned int index, int cache_size, struct cr
   return name_count;
 }
 	    
-void cache_reload(void)
+static void cache_reload_build(void)
 {
   struct crec *cache, **up, *tmp;
   int revhashsz, i, total_size = daemon->cachesize;
@@ -1619,7 +1634,7 @@ void cache_reload(void)
       {
 	
 	if (!(cache->addr.ds.keydata = blockdata_alloc(ds->digest, ds->digestlen)))
-	  free_config_crec(cache);
+          { dns_reload_fail("DNSSEC candidate block allocation failed"); free_config_crec(cache); }
 	else
 	  {
 	    cache->flags = F_FORWARD | F_IMMORTAL | F_DS | F_CONFIG | F_NAMEP;
@@ -1681,7 +1696,9 @@ void cache_reload(void)
       if (!option_bool(OPT_NO_HOSTS))
 	total_size = read_hostsfile(HOSTSFILE, SRC_HOSTS, total_size, (struct crec **)daemon->packet, revhashsz);
       
-      daemon->addn_hosts = expand_filelist(daemon->addn_hosts);
+      if (!dns_reload_active())
+        daemon->addn_hosts = expand_filelist(daemon->addn_hosts);
+
       for (ah = daemon->addn_hosts; ah; ah = ah->next)
 	if (!(ah->flags & AH_INACTIVE))
 	  total_size = read_hostsfile(ah->fname, ah->index, total_size, (struct crec **)daemon->packet, revhashsz);
@@ -1721,10 +1738,153 @@ void cache_reload(void)
     }
   
 #ifdef HAVE_INOTIFY
-  set_dynamic_inotify(AH_HOSTS, total_size, (struct crec **)daemon->packet, revhashsz);
+  if (!dns_reload_active())
+    set_dynamic_inotify(AH_HOSTS, total_size, (struct crec **)daemon->packet, revhashsz);
 #endif
   
 } 
+
+
+/* A complete alternative hosts/config hash is built while the live cache,
+ * name blocks, DHCP records, free lists and metrics remain untouched. */
+struct reload_cache_image {
+  struct crec *head, *tail, **table, *spare, *chain;
+  union bigname *big;
+  struct nameblock *blocks;
+  int error, names_left, size;
+};
+static struct reload_cache_image reload_candidate;
+static struct hostsfile *reload_hosts;
+static u32 reload_metrics[__METRIC_MAX];
+static int reload_cache_ready;
+
+static struct reload_cache_image cache_image(void)
+{
+  struct reload_cache_image image;
+  image.head = cache_head; image.tail = cache_tail; image.table = hash_table;
+  image.spare = config_spare; image.chain = new_chain; image.big = big_free;
+  image.blocks = hostblocks; image.error = insert_error;
+  image.names_left = bignames_left; image.size = hash_size;
+  return image;
+}
+
+static void cache_use_image(struct reload_cache_image image)
+{
+  cache_head = image.head; cache_tail = image.tail; hash_table = image.table;
+  config_spare = image.spare; new_chain = image.chain; big_free = image.big;
+  hostblocks = image.blocks; insert_error = image.error;
+  bignames_left = image.names_left; hash_size = image.size;
+}
+
+int cache_reload_prepare(void)
+{
+  struct reload_cache_image old = cache_image(), empty;
+  struct hostsfile *old_hosts = daemon->addn_hosts;
+  char *old_packet = daemon->packet, *packet;
+  struct server *old_server = daemon->srv_save;
+  u32 old_metrics[__METRIC_MAX];
+  if (!dns_reload_active() || reload_cache_ready)
+    return 0;
+  reload_hosts = dns_reload_files(old_hosts);
+  if (!dns_reload_ok()) return 0;
+  memset(&empty, 0, sizeof(empty));
+  empty.size = old.size ? old.size : 64;
+  empty.table = dns_reload_malloc(empty.size * sizeof(*empty.table));
+  packet = dns_reload_malloc(daemon->packet_buff_sz);
+  if (!empty.table || !packet) return 0;
+  memcpy(old_metrics, daemon->metrics, sizeof(old_metrics));
+  cache_use_image(empty);
+  daemon->packet = packet;
+  daemon->addn_hosts = reload_hosts;
+  cache_reload_build();
+  reload_candidate = cache_image();
+  memcpy(reload_metrics, daemon->metrics, sizeof(reload_metrics));
+  cache_use_image(old);
+  daemon->packet = old_packet;
+  daemon->addn_hosts = old_hosts;
+  daemon->srv_save = old_server;
+  memcpy(daemon->metrics, old_metrics, sizeof(old_metrics));
+  dns_reload_free(packet);
+  reload_cache_ready = dns_reload_ok();
+  return reload_cache_ready;
+}
+
+void cache_reload_abort(void)
+{
+#ifdef HAVE_DNSSEC
+  int i;
+  struct crec *entry;
+  /* blockdata owns a separate allocator; return only candidate DS payloads. */
+  for (i = 0; reload_candidate.table && i < reload_candidate.size; i++)
+    for (entry = reload_candidate.table[i]; entry; entry = entry->hash_next)
+      cache_blockdata_free(entry);
+#endif
+  memset(&reload_candidate, 0, sizeof(reload_candidate));
+  reload_hosts = NULL;
+  reload_cache_ready = 0;
+}
+
+void cache_reload_commit(void)
+{
+  struct reload_cache_image old = cache_image();
+  struct crec *entry, *next, *spare;
+  struct nameblock *block, *next_block;
+  struct hostsfile *old_hosts = daemon->addn_hosts;
+  int i;
+  if (!reload_cache_ready) return;
+  hash_table = reload_candidate.table;
+  hash_size = reload_candidate.size;
+  /* Candidate construction intentionally never borrows the live free pools.
+   * Keeping all old pools here would grow RSS on every successful HUP. */
+  for (spare = old.spare; spare; spare = next)
+    { next = spare->next; free(spare); }
+  config_spare = reload_candidate.spare;
+  big_free = old.big;
+  for (i = 0; i < old.size; i++)
+    for (entry = old.table[i]; entry; entry = next)
+      {
+        next = entry->hash_next;
+        cache_blockdata_free(entry);
+        if (entry->flags & (F_HOSTS | F_CONFIG))
+          free(entry);
+        else if (entry->flags & F_DHCP)
+          cache_hash(entry);
+        else
+          {
+            if (entry->flags & F_BIGNAME)
+              { entry->name.bname->next = big_free; big_free = entry->name.bname; }
+            entry->flags = 0;
+          }
+      }
+  hostblocks = reload_candidate.blocks;
+  for (block = old.blocks; block; block = next_block)
+    { next_block = block->next; free(block); }
+  cache_head = old.head; cache_tail = old.tail; new_chain = old.chain;
+  insert_error = old.error; bignames_left = old.names_left;
+  free(old.table);
+  daemon->addn_hosts = reload_hosts;
+  dns_reload_free_files(old_hosts);
+  memcpy(daemon->metrics, reload_metrics, sizeof(reload_metrics));
+  daemon->srv_save = NULL;
+  memset(&reload_candidate, 0, sizeof(reload_candidate));
+  reload_hosts = NULL;
+  reload_cache_ready = 0;
+}
+
+void cache_reload(void)
+{
+#ifdef HAVE_INOTIFY
+  if (daemon->dynamic_dirs) { cache_reload_build(); return; }
+#endif
+  if (!dns_reload_begin()) return;
+  if (cache_reload_prepare() && dns_reload_validate())
+    { cache_reload_commit(); dns_reload_end(1); }
+  else
+    {
+      my_syslog(LOG_ERR, _("reload transaction rejected; previous hosts/DHCP configuration retained: %s"), dns_reload_error());
+      cache_reload_abort(); dns_reload_end(0);
+    }
+}
 
 #ifdef HAVE_DHCP
 struct in_addr a_record_from_hosts(char *name, time_t now)

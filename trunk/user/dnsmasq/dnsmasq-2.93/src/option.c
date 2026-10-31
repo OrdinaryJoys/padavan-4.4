@@ -21,8 +21,13 @@
 #include "dynamic_conf.h"
 #include "conf_snapshot.h"
 #include "runtime_file.h"
+#include "reload_file.h"
+#undef free
+#define free(pointer) dns_reload_free(pointer)
 
 static volatile int mem_recover = 0;
+static struct dhcp_config *reload_old_conf;
+static int reload_parse_active;
 static jmp_buf mem_jmp;
 static int one_file(char *file, int hard_opt);
 static struct conf_script_budget script_budget;
@@ -683,7 +688,12 @@ static void *opt_malloc_real(const char *func, unsigned int line, size_t size)
 {
   void *ret;
 
-  if (mem_recover)
+  if (dns_reload_active())
+    {
+      ret = dns_reload_malloc(size);
+      if (!ret && mem_recover) longjmp(mem_jmp, 1);
+    }
+  else if (mem_recover)
     {
       ret = whine_malloc_real(func, line, size);
       if (!ret)
@@ -759,6 +769,11 @@ static char *canonicalise_opt(char *s)
 	die(_("could not get memory"), NULL, EC_NOMEM);
     }
 
+  if (ret && dns_reload_active())
+    {
+      ret = dns_reload_track(ret, strlen(ret) + 1);
+      if (!ret && mem_recover) longjmp(mem_jmp, 1);
+    }
   return ret;
 }
 
@@ -1437,7 +1452,7 @@ static void dhcp_config_free(struct dhcp_config *config)
 	free(config->hostname);
 
 #ifdef HAVE_DHCP6
-      if (config->flags & CONFIG_ADDR6)
+      if (config->addr6)
 	{
 	  struct addrlist *addr, *tmp;
 	  
@@ -4190,6 +4205,7 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 	    else if (strchr(arg, '.') && (inet_pton(AF_INET, arg, &in) > 0))
 	      {
 		struct dhcp_config *configs;
+                int old_segment = 0;
 		
 		new->addr = in;
 		new->flags |= CONFIG_ADDR;
@@ -4197,7 +4213,10 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 		/* If the same IP appears in more than one host config, then DISCOVER
 		   for one of the hosts will get the address, but REQUEST will be NAKed,
 		   since the address is reserved by the other one -> protocol loop. */
-		for (configs = daemon->dhcp_conf; configs; configs = configs->next) 
+		for (configs = daemon->dhcp_conf; configs; configs = configs->next)
+                  {
+                    if (reload_parse_active && configs == reload_old_conf) old_segment = 1;
+                    if (old_segment && (configs->flags & CONFIG_BANK)) continue;
 		  if ((configs->flags & CONFIG_ADDR) && configs->addr.s_addr == in.s_addr)
 		    {
 		      inet_ntop(AF_INET, &in, daemon->addrbuff, ADDRSTRLEN);
@@ -4205,7 +4224,8 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 			      daemon->addrbuff);
 		      dhcp_config_free(new);
 		      return 0;
-		    }	      
+		    }
+                  }
 	      }
 	    else
 	      {
@@ -5522,32 +5542,41 @@ err:
   return 1;
 }
 
-static void read_file(char *file, FILE *f, int hard_opt, int from_script)	
+static int read_file(char *file, FILE *f, int hard_opt, int from_script)
 {
   volatile int lineno = 0;
   char *buff;
+  char *volatile hard_buffer = NULL;
   size_t buffsz;
   size_t file_bytes = 0;
-  int line_status;
+  int line_status = 0;
   const char *line_error = NULL;
   unsigned int from_script_id = script_context;
 
   /* Memory allocation failure longjmps here if mem_recover == 1 */ 
   if (hard_opt != 0)
     {
-      setjmp(mem_jmp);
+      if (setjmp(mem_jmp))
+        { mem_recover = 0; free((void *)hard_buffer); return 0; }
       mem_recover = 1;
     }
   
   buff = NULL;
   buffsz = 0;
+  if (hard_opt != 0)
+    {
+      buffsz = DNS_RUNTIME_LINE_BYTES + 2;
+      hard_buffer = opt_malloc(buffsz);
+      buff = (char *)hard_buffer;
+    }
 
   if (hard_opt == 0 && ++script_budget.parse_depth > CONF_CONFIG_MAX_DEPTH)
     die(_("configuration include nesting limit exceeded"), NULL, EC_BADCONF);
 
   while ((line_status = hard_opt == 0 ?
           conf_config_line(f, &buff, &buffsz, &file_bytes, &script_budget, &line_error) :
-          get_line_alloc(f, &buff, &buffsz)) > 0)
+          (fgets(buff, buffsz, f) ? 1 : (ferror(f) ? -1 : 0))) > 0 &&
+         (hard_opt == 0 || dns_reload_ok()))
     {
       int white, i;
       volatile int option;
@@ -5688,7 +5717,11 @@ static void read_file(char *file, FILE *f, int hard_opt, int from_script)
                      _(" at line %d of %s"), lineno, file);
 	  
 	  if (hard_opt != 0)
-	    my_syslog(LOG_ERR, "%s", daemon->namebuff);
+            {
+	      my_syslog(LOG_ERR, "%s", daemon->namebuff);
+              if (dns_reload_active())
+                { dns_reload_fail("invalid DHCP reload syntax"); free(snapshot_line); break; }
+            }
 	  else
 	    die("%s", daemon->namebuff, EC_BADCONF);
 	}
@@ -5708,7 +5741,17 @@ static void read_file(char *file, FILE *f, int hard_opt, int from_script)
       script_budget.parse_depth--;
     }
 
+  if (hard_opt != 0)
+    {
+      free(buff); hard_buffer = NULL;
+      if (line_status < 0)
+        {
+          my_syslog(LOG_ERR, _("failed to parse runtime input %s"), file);
+          dns_reload_fail("DHCP memory snapshot read failed");
+        }
+    }
   mem_recover = 0;
+  return line_status >= 0 && dns_reload_ok();
 }
 
 #if defined(HAVE_DHCP) && defined(HAVE_INOTIFY)
@@ -5729,7 +5772,7 @@ static int one_file(char *file, int hard_opt)
 {
   FILE *f;
   struct dns_runtime_file runtime;
-  int nofile_ok = 0, do_popen = 0;
+  int nofile_ok = 0, do_popen = 0, read_ok;
   const char *input_file;
   unsigned int parent_script = script_context;
   static struct fileread {
@@ -5821,9 +5864,11 @@ static int one_file(char *file, int hard_opt)
       else
         {
           const char *error;
-          if (!dns_runtime_file_open(&runtime, file, &error))
+          if (dns_reload_active() ? !dns_reload_read(&runtime, file, 0) :
+              !dns_runtime_file_open(&runtime, file, &error))
             {
-              my_syslog(LOG_ERR, _("cannot read %s: %s"), file, error);
+              my_syslog(LOG_ERR, _("cannot read %s: %s"), file,
+                        dns_reload_active() ? dns_reload_error() : error);
               return 0;
             }
           f = runtime.stream;
@@ -5836,7 +5881,7 @@ static int one_file(char *file, int hard_opt)
        if (!conf_snapshot_input_begin(file, f, &snapshot_error))
          die("%s", (char *)snapshot_error, EC_BADCONF);
      }
-   read_file(file, f, hard_opt, do_popen);
+   read_ok = read_file(file, f, hard_opt, do_popen);
    script_context = parent_script;
    if (hard_opt == 0 && !do_popen)
      {
@@ -5852,7 +5897,7 @@ static int one_file(char *file, int hard_opt)
   else
     fclose(f);
 	
-  return 1;
+  return read_ok;
 }
 
 static int file_filter(const struct dirent *ent)
@@ -5902,6 +5947,7 @@ struct hostsfile *expand_filelist(struct hostsfile *list)
 	    /* don't read this as a file */
 	    ah->flags |= AH_INACTIVE;
 	    
+	    namelist = NULL;
 	    entcnt = scandir(ah->fname, &namelist, file_filter, alphasort);
 	    if (entcnt < 0)
 	      my_syslog(LOG_ERR, _("cannot access directory %s: %s"), 
@@ -5945,11 +5991,12 @@ struct hostsfile *expand_filelist(struct hostsfile *list)
 		    if (!ah1)
 		      {
 			if (!(ah1 = whine_malloc(sizeof(struct hostsfile))))
-			  continue;
+                          { free(ent); continue; }
 			
 			if (!(path = whine_malloc(lendir + lenfile + 2)))
 			  {
 			    free(ah1);
+                            free(ent);
 			    continue;
 			  }
 		      	
@@ -5969,8 +6016,8 @@ struct hostsfile *expand_filelist(struct hostsfile *list)
 		    
 		    /* inactivate record if not regular file */
 		    if ((ah1->flags & AH_DIR) && stat(ah1->fname, &buf) != -1 && !S_ISREG(buf.st_mode))
-		      ah1->flags |= AH_INACTIVE; 
-		    
+		      ah1->flags |= AH_INACTIVE;
+                    free(ent);
 		  }
 	      }
 	    free(namelist);
@@ -6045,7 +6092,140 @@ static void clear_dynamic_opt(void)
 #endif
 }
 
-void reread_dhcp(void)
+
+static struct dhcp_config *reload_conf;
+static struct dhcp_opt *reload_opts;
+#ifdef HAVE_DHCP6
+static struct dhcp_opt *reload_opts6;
+#endif
+static struct hostsfile *reload_dhcp_hosts, *reload_dhcp_options;
+static int reload_dhcp_ready, reload_dhcp_cloned;
+
+int dhcp_reload_prepare(void)
+{
+  struct dhcp_config *old_conf = daemon->dhcp_conf;
+  struct dhcp_opt *old_opts = daemon->dhcp_opts;
+#ifdef HAVE_DHCP6
+  struct dhcp_opt *old_opts6 = daemon->dhcp_opts6;
+#endif
+  struct hostsfile *file;
+  if (!dns_reload_active() || reload_dhcp_ready) return 0;
+  reload_dhcp_hosts = dns_reload_files(daemon->dhcp_hosts_file);
+  reload_dhcp_options = dns_reload_files(daemon->dhcp_opts_file);
+  reload_old_conf = old_conf;
+  reload_parse_active = 1;
+  for (file = reload_dhcp_hosts; file && dns_reload_ok(); file = file->next)
+    if (!(file->flags & AH_INACTIVE) && !one_file(file->fname, LOPT_BANK))
+      dns_reload_fail("DHCP hosts candidate parsing failed");
+  for (file = reload_dhcp_options; file && dns_reload_ok(); file = file->next)
+    if (!(file->flags & AH_INACTIVE) && !one_file(file->fname, LOPT_OPTS))
+      dns_reload_fail("DHCP options candidate parsing failed");
+  reload_parse_active = 0;
+  reload_dhcp_cloned = 0;
+  if (dns_reload_ok() && option_bool(OPT_ETHERS))
+    {
+      struct dhcp_config *prefix = daemon->dhcp_conf;
+      if (!dhcp_reload_ethers_prepare(old_conf))
+        dns_reload_fail("ethers candidate preparation failed");
+      else
+        {
+          /* The ethers helper cloned the complete candidate graph. Only
+           * discard our original new prefix; old live nodes stay intact. */
+          while (prefix != old_conf)
+            { struct dhcp_config *next = prefix->next; dhcp_config_free(prefix); prefix = next; }
+          reload_dhcp_cloned = 1;
+        }
+    }
+  reload_conf = daemon->dhcp_conf;
+  reload_opts = daemon->dhcp_opts;
+#ifdef HAVE_DHCP6
+  reload_opts6 = daemon->dhcp_opts6;
+  daemon->dhcp_opts6 = old_opts6;
+#endif
+  daemon->dhcp_conf = old_conf;
+  daemon->dhcp_opts = old_opts;
+  reload_old_conf = NULL;
+  reload_dhcp_ready = dns_reload_ok();
+  return reload_dhcp_ready;
+}
+
+void dhcp_reload_abort(void)
+{
+  reload_conf = NULL; reload_opts = NULL;
+#ifdef HAVE_DHCP6
+  reload_opts6 = NULL;
+#endif
+  reload_dhcp_hosts = reload_dhcp_options = NULL;
+  reload_dhcp_ready = reload_dhcp_cloned = 0;
+  reload_old_conf = NULL; reload_parse_active = 0;
+}
+
+static struct dhcp_opt *detach_options(struct dhcp_opt *head, struct dhcp_opt *old)
+{
+  struct dhcp_opt *tail;
+  if (head == old) return NULL;
+  for (tail = head; tail->next != old; tail = tail->next);
+  tail->next = NULL;
+  return head;
+}
+
+static void append_options(struct dhcp_opt **root, struct dhcp_opt *prefix)
+{
+  struct dhcp_opt *tail;
+  if (!prefix) return;
+  for (tail = prefix; tail->next; tail = tail->next);
+  tail->next = *root; *root = prefix;
+}
+
+void dhcp_reload_commit(void)
+{
+  struct dhcp_config *prefix = reload_conf, *tail, *old = daemon->dhcp_conf;
+  struct dhcp_opt *options;
+#ifdef HAVE_DHCP6
+  struct dhcp_opt *options6;
+#endif
+  if (!reload_dhcp_ready) return;
+  options = detach_options(reload_opts, daemon->dhcp_opts);
+#ifdef HAVE_DHCP6
+  options6 = detach_options(reload_opts6, daemon->dhcp_opts6);
+#endif
+  if (reload_dhcp_cloned)
+    {
+      while (old)
+        { struct dhcp_config *next = old->next; dhcp_config_free(old); old = next; }
+      daemon->dhcp_conf = prefix;
+    }
+  else
+    {
+      if (prefix == old) prefix = NULL;
+      else
+        {
+          for (tail = prefix; tail->next != old; tail = tail->next);
+          tail->next = NULL;
+        }
+      clear_dynamic_conf();
+      if (prefix)
+        {
+          for (tail = prefix; tail->next; tail = tail->next);
+          tail->next = daemon->dhcp_conf; daemon->dhcp_conf = prefix;
+        }
+    }
+  clear_dynamic_opt();
+  append_options(&daemon->dhcp_opts, options);
+#ifdef HAVE_DHCP6
+  append_options(&daemon->dhcp_opts6, options6);
+#endif
+  dns_reload_free_files(daemon->dhcp_hosts_file);
+  dns_reload_free_files(daemon->dhcp_opts_file);
+  daemon->dhcp_hosts_file = reload_dhcp_hosts;
+  daemon->dhcp_opts_file = reload_dhcp_options;
+  dhcp_reload_abort();
+}
+
+#ifdef HAVE_INOTIFY
+/* Optional dynamic-directory mode preserves upstream incremental semantics;
+ * it is not covered by the all-input transaction used by this firmware. */
+static void reread_dhcp_legacy(void)
 {
    struct hostsfile *hf;
 
@@ -6083,6 +6263,23 @@ void reread_dhcp(void)
   set_dynamic_inotify(AH_DHCP_HST | AH_DHCP_OPT, 0, NULL, 0);
 #  endif
 }
+#endif
+
+void reread_dhcp(void)
+{
+#ifdef HAVE_INOTIFY
+  if (daemon->dynamic_dirs) { reread_dhcp_legacy(); return; }
+#endif
+  if (!dns_reload_begin()) return;
+  if (dhcp_reload_prepare() && dns_reload_validate())
+    { dhcp_reload_commit(); dns_reload_end(1); }
+  else
+    {
+      my_syslog(LOG_ERR, _("reload transaction rejected; previous hosts/DHCP configuration retained: %s"), dns_reload_error());
+      dhcp_reload_abort(); dns_reload_end(0);
+    }
+}
+
 #endif
 
 void read_opts(int argc, char **argv, char *compile_opts)

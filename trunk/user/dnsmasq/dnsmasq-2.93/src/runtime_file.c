@@ -78,6 +78,12 @@ static int runtime_same_file(const struct stat *a, const struct stat *b)
 #endif
 }
 
+int dns_runtime_file_unchanged(const char *path, const struct stat *metadata)
+{
+  struct stat current;
+  return stat(path, &current) == 0 && runtime_same_file(metadata, &current);
+}
+
 static long long runtime_milliseconds(void)
 {
   struct timespec now;
@@ -196,6 +202,8 @@ static int runtime_read_owned(struct dns_runtime_file *snapshot, int fd,
   if (!(snapshot->stream = fmemopen(bytes, size ? size : 1, "r")))
     goto fail;
   snapshot->contents = bytes;
+  snapshot->size = size;
+  snapshot->metadata = opened;
   return 1;
 
 fail:

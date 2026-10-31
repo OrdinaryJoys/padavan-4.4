@@ -19,6 +19,8 @@
 
 /* dnsmasq.h has to be included first as it sources config.h */
 #include "dnsmasq.h"
+#include "runtime_file.h"
+#include "reload_file.h"
 
 #if defined(HAVE_IDN) || defined(HAVE_LIBIDN2) || defined(LOCALEDIR)
 #include <locale.h>
@@ -1572,12 +1574,9 @@ static void async_event(int pipe, time_t now)
     switch (ev.event)
       {
       case EVENT_RELOAD:
-	daemon->soa_sn++; /* Bump zone serial, as it may have changed. */
-	
-	/* fall through */
-	
       case EVENT_INIT:
-	clear_cache_and_reload(now);
+        if (!clear_cache_and_reload(now)) break;
+        if (ev.event == EVENT_RELOAD) daemon->soa_sn++;
 	
 	if (daemon->port != 0)
 	  {
@@ -1835,7 +1834,9 @@ static void poll_resolv(int force, int do_reload, time_t now)
     }
 }       
 
-void clear_cache_and_reload(time_t now)
+
+#ifdef HAVE_INOTIFY
+static void clear_cache_and_reload_legacy(time_t now)
 {
   (void)now;
 
@@ -1860,6 +1861,55 @@ void clear_cache_and_reload(time_t now)
     send_alarm(periodic_ra(now), now);
 #endif
 #endif
+}
+#endif
+
+int clear_cache_and_reload(time_t now)
+{
+#ifdef HAVE_INOTIFY
+  if (daemon->dynamic_dirs)
+    { clear_cache_and_reload_legacy(now); return 1; }
+#endif
+  int dns = daemon->port != 0;
+#ifdef HAVE_DHCP
+  int dhcp = daemon->dhcp || daemon->doing_dhcp6;
+#endif
+  if (!dns_reload_begin()) return 0;
+  if ((dns && !cache_reload_prepare())
+#ifdef HAVE_DHCP
+      || (dhcp && !dhcp_reload_prepare())
+#endif
+      || !dns_reload_validate())
+    {
+      my_syslog(LOG_ERR, _("reload transaction rejected; previous hosts/DHCP configuration retained: %s"), dns_reload_error());
+      cache_reload_abort();
+#ifdef HAVE_DHCP
+      dhcp_reload_abort();
+#endif
+      dns_reload_end(0);
+      return 0;
+    }
+  if (dns) cache_reload_commit();
+#ifdef HAVE_DHCP
+  if (dhcp) dhcp_reload_commit();
+#endif
+  dns_reload_end(1);
+#ifdef HAVE_DHCP
+  if (dhcp)
+    {
+      dhcp_update_configs(daemon->dhcp_conf);
+      lease_update_from_configs();
+      lease_update_file(now);
+      lease_update_dns(1);
+    }
+#ifdef HAVE_DHCP6
+  else if (daemon->doing_ra)
+    send_alarm(periodic_ra(now), now);
+#endif
+#else
+  (void)now;
+#endif
+  return 1;
 }
 
 #ifdef HAVE_TFTP
