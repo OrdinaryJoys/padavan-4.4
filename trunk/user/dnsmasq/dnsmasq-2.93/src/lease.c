@@ -21,6 +21,7 @@
 
 static struct dhcp_lease *leases = NULL, *old_leases = NULL;
 static int dns_dirty, file_dirty, leases_left;
+static int lease_discard;
 
 static int read_leases(time_t now, FILE *leasestream)
 {
@@ -183,6 +184,7 @@ void lease_init(time_t now)
 #endif
 
   leases_left = daemon->dhcp_max;
+  lease_discard = 0;
 
   if (option_bool(OPT_LEASE_RO))
     {
@@ -244,12 +246,18 @@ void lease_init(time_t now)
       const char *error;
       /* Keep the persistent append/update stream, but never block opening a
        * FIFO or consume a different inode through a second pathname open. */
-      fd = open(daemon->lease_file, O_RDWR|O_CREAT|O_APPEND|O_NONBLOCK|O_CLOEXEC|O_NOCTTY,
-                S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH);
+      if (strcmp(daemon->lease_file, "/dev/null") == 0)
+        {
+          fd = dns_runtime_null_open(O_RDWR|O_APPEND);
+          lease_discard = fd != -1;
+        }
+      else
+        fd = open(daemon->lease_file, O_RDWR|O_CREAT|O_APPEND|O_NONBLOCK|O_CLOEXEC|O_NOCTTY,
+                  S_IRUSR|S_IWUSR|S_IRGRP|S_IROTH);
       if (fd == -1)
         die(_("cannot open or create lease file %s: %s"), daemon->lease_file, EC_FILE);
       status = fstat(fd, &st);
-      if (status == -1 || !S_ISREG(st.st_mode))
+      if (status == -1 || (!lease_discard && !S_ISREG(st.st_mode)))
         {
           int saved = status == -1 ? errno : EINVAL;
           close(fd);
@@ -264,10 +272,17 @@ void lease_init(time_t now)
           errno = saved;
           die(_("cannot open lease stream %s: %s"), daemon->lease_file, EC_FILE);
         }
-      if (!dns_runtime_file_read_fd_limit(&initial, fd, DNS_RUNTIME_FILE_BYTES,
-                                          DNS_RUNTIME_FILE_LINES, &error))
-        die(_("cannot snapshot lease database: %s"), (char *)error, EC_FILE);
-      leasestream = initial.stream;
+      if (lease_discard)
+        /* The checked Linux null driver returns immediate EOF. Keep this
+         * same descriptor; the general snapshot reader stays regular-only. */
+        leasestream = daemon->lease_stream;
+      else
+        {
+          if (!dns_runtime_file_read_fd_limit(&initial, fd, DNS_RUNTIME_FILE_BYTES,
+                                              DNS_RUNTIME_FILE_LINES, &error))
+            die(_("cannot snapshot lease database: %s"), (char *)error, EC_FILE);
+          leasestream = initial.stream;
+        }
     }
 
   if (leasestream)
@@ -328,6 +343,10 @@ void lease_update_file(time_t now)
   time_t next_event;
   int i, err = 0, extras;
   
+  /* Literal verified /dev/null explicitly opts out of persistence. Do not
+   * issue meaningless truncate/fsync retries; expiry scheduling still runs. */
+  if (lease_discard)
+    file_dirty = 0;
   if (file_dirty != 0 && daemon->lease_stream)
     {
       errno = 0;

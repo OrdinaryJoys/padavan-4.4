@@ -7,6 +7,59 @@
  * Copyright (c) 2026. Distributed under GPL version 2 or later. */
 #include "dnsmasq.h"
 #include "runtime_file.h"
+#ifdef __linux__
+#include <sys/sysmacros.h>
+#endif
+
+static int runtime_null_device(const struct stat *metadata)
+{
+  if (!S_ISCHR(metadata->st_mode))
+    return 0;
+#ifdef __linux__
+  return major(metadata->st_rdev) == 1 && minor(metadata->st_rdev) == 3;
+#elif defined(__APPLE__)
+  /* The native test host's standard null device. Firmware uses Linux1:3. */
+  return major(metadata->st_rdev) == 3 && minor(metadata->st_rdev) == 2;
+#else
+  return 0;
+#endif
+}
+
+int dns_runtime_null_open(int flags)
+{
+  struct stat before, opened, after;
+  int fd, status, saved;
+  if ((flags & ~(O_ACCMODE|O_APPEND)) ||
+      ((flags & O_ACCMODE) != O_WRONLY && (flags & O_ACCMODE) != O_RDWR))
+    {
+      errno = EINVAL;
+      return -1;
+    }
+  if (lstat("/dev/null", &before) == -1)
+    return -1;
+  if (!runtime_null_device(&before))
+    {
+      errno = EINVAL;
+      return -1;
+    }
+  fd = open("/dev/null", flags|O_NONBLOCK|O_CLOEXEC|O_NOCTTY|O_NOFOLLOW);
+  if (fd == -1)
+    return -1;
+  status = fstat(fd, &opened);
+  if (status == 0)
+    status = lstat("/dev/null", &after);
+  if (status == -1 || !runtime_null_device(&opened) || !runtime_null_device(&after) ||
+      before.st_dev != opened.st_dev || before.st_ino != opened.st_ino ||
+      before.st_rdev != opened.st_rdev || after.st_dev != opened.st_dev ||
+      after.st_ino != opened.st_ino || after.st_rdev != opened.st_rdev)
+    {
+      saved = status == -1 ? errno : EINVAL;
+      close(fd);
+      errno = saved;
+      return -1;
+    }
+  return fd;
+}
 
 static int runtime_same_file(const struct stat *a, const struct stat *b)
 {

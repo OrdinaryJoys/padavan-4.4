@@ -15,6 +15,7 @@
 */
 
 #include "dnsmasq.h"
+#include "runtime_file.h"
 
 #ifdef __ANDROID__
 #  include <android/log.h>
@@ -38,6 +39,7 @@ static int log_stderr = 0;
 static int echo_stderr = 0;
 static int log_fd = -1;
 static int log_to_file = 0;
+static int log_null = 0;
 static int entries_alloced = 0;
 static int entries_lost = 0;
 static int connection_good = 1;
@@ -108,7 +110,7 @@ int log_start(struct passwd *ent_pw, int errfd)
      once the file is owned by the dnsmasq user, it can't be written
      whilst dnsmasq is running as root during startup.
  */
-  if (log_to_file && !log_stderr && ent_pw && ent_pw->pw_uid != 0)
+  if (log_to_file && !log_stderr && !log_null && ent_pw && ent_pw->pw_uid != 0)
     {
       struct stat ls;
       if (getgid() == 0 && fstat(log_fd, &ls) == 0 && ls.st_gid == 0 &&
@@ -127,23 +129,32 @@ int log_reopen(char *log_file)
     {      
       if (log_fd != -1)
 	close(log_fd);
+      log_null = 0;
       
       /* NOTE: umask is set to 022 by the time this gets called */
       
       if (log_file)
 	{
           struct stat st;
-          log_fd = open(log_file, O_WRONLY|O_CREAT|O_APPEND|O_NONBLOCK|O_CLOEXEC|O_NOCTTY,
-                        S_IRUSR|S_IWUSR|S_IRGRP);
-          if (log_fd != -1)
+          if (strcmp(log_file, "/dev/null") == 0)
             {
-              int status = fstat(log_fd, &st);
-              if (status == -1 || !S_ISREG(st.st_mode))
+              log_fd = dns_runtime_null_open(O_WRONLY|O_APPEND);
+              log_null = log_fd != -1;
+            }
+          else
+            {
+              log_fd = open(log_file, O_WRONLY|O_CREAT|O_APPEND|O_NONBLOCK|O_CLOEXEC|O_NOCTTY,
+                            S_IRUSR|S_IWUSR|S_IRGRP);
+              if (log_fd != -1)
                 {
-                  int error = status == -1 ? errno : EINVAL;
-                  close(log_fd);
-                  log_fd = -1;
-                  errno = error;
+                  int status = fstat(log_fd, &st);
+                  if (status == -1 || !S_ISREG(st.st_mode))
+                    {
+                      int error = status == -1 ? errno : EINVAL;
+                      close(log_fd);
+                      log_fd = -1;
+                      errno = error;
+                    }
                 }
             }
         }

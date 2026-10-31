@@ -32,4 +32,9 @@ int dns_runtime_file_read_fd_limit(struct dns_runtime_file *snapshot, int source
                                    const char **error);
 void dns_runtime_file_close(struct dns_runtime_file *snapshot);
 
+/* Only the fixed literal /dev/null, with a verified standard device identity.
+ * flags may contain O_WRONLY or O_RDWR, optionally O_APPEND. The returned
+ * descriptor is NONBLOCK/CLOEXEC/NOCTTY and never follows a symlink. */
+int dns_runtime_null_open(int flags);
+
 #endif

@@ -4,7 +4,9 @@ import os
 import shlex
 import shutil
 import signal
+import stat
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -24,8 +26,20 @@ class DNSRuntimeConsumerTests(unittest.TestCase):
             '*.o', 'dnsmasq', 'dnsmasq_baseline', '.copts_*'))
         main = cls.tree / 'src/dnsmasq.c'
         text = main.read_text()
+        spies = r'''
+static int consumer_syncs,consumer_truncates,consumer_chowns,consumer_chmods;
+int consumer_fsync(int fd){consumer_syncs++;return fsync(fd);}
+int consumer_ftruncate(int fd,off_t size){consumer_truncates++;return ftruncate(fd,size);}
+/* Never mutate global device metadata, even if the consumer under test is
+ * wrong. These private metadata backends only count attempted operations. */
+int consumer_fchown(int fd,uid_t uid,gid_t gid){(void)fd;(void)uid;(void)gid;consumer_chowns++;return 0;}
+int consumer_fchmod(int fd,mode_t mode){(void)fd;(void)mode;consumer_chmods++;return 0;}
+gid_t consumer_getgid(void){return 0;}
+int consumer_log_fstat(int fd,struct stat *metadata){int rc=fstat(fd,metadata);
+  if(!rc&&S_ISREG(metadata->st_mode)){metadata->st_gid=0;metadata->st_mode&=~S_IWGRP;}return rc;}
+'''
         text = text.replace('#include "dnsmasq.h"',
-                            '#include "dnsmasq.h"\n#include "dynamic_conf.h"')
+                            '#include "dnsmasq.h"\n#include "dynamic_conf.h"\n' + spies)
         needle = '  read_opts(argc, argv, compile_opts);'
         if text.count(needle) != 1:
             raise AssertionError('consumer replay stop point changed')
@@ -35,7 +49,13 @@ class DNSRuntimeConsumerTests(unittest.TestCase):
     const char *op=getenv("K2P_CONSUMER_OPERATION");
     const char *path=getenv("K2P_CONSUMER_INPUT");
     printf("BEFORE=%s\n",op);fflush(stdout);
-    log_start(NULL,-1);
+    if(getenv("K2P_CONSUMER_LOG_OWNER")) {
+      struct passwd owner;memset(&owner,0,sizeof(owner));owner.pw_uid=1;
+      log_start(&owner,-1);
+      if(getenv("K2P_CONSUMER_REOPEN")) {
+        daemon->log_file=getenv("K2P_CONSUMER_REOPEN");log_start(&owner,-1);
+      }
+    } else log_start(NULL,-1);
     if (!strcmp(op,"hosts")) {
       cache_init();
       printf("HOSTS=%d\n",read_hostsfile((char *)path,SRC_AH,0,NULL,0));
@@ -68,14 +88,42 @@ class DNSRuntimeConsumerTests(unittest.TestCase):
              fflush(daemon->lease_stream))return 97;
         }
       }
+      if(getenv("K2P_CONSUMER_UPDATE")) {
+        static const unsigned char hardware[6]={0,17,34,51,68,102};
+        inet_pton(AF_INET,"192.0.2.74",&address);
+        found=lease4_allocate(address);if(!found)return 96;
+        lease_set_hwaddr(found,hardware,NULL,6,ARPHRD_ETHER,0,1,0);
+        lease_set_expires(found,60,1);lease_update_file(1);
+        printf("EXPIRY_ALARM=%u\n",alarm(0));
+      }
     }
 #else
     if (!strcmp(op,"lease"))return 98;
 #endif
+    printf("SYNC=%d TRUNCATE=%d CHOWN=%d CHMOD=%d\n",consumer_syncs,consumer_truncates,
+           consumer_chowns,consumer_chmods);
     printf("AFTER=%s\n",op);fflush(stdout);return 0;
   }
 '''
         main.write_text(text.replace(needle, needle + replay))
+        substitutions = {
+            'log.c': '''
+int consumer_fchown(int,uid_t,gid_t);int consumer_fchmod(int,mode_t);
+gid_t consumer_getgid(void);int consumer_log_fstat(int,struct stat *);
+#define fchown consumer_fchown
+#define fchmod consumer_fchmod
+#define getgid consumer_getgid
+#define fstat consumer_log_fstat
+''',
+            'lease.c': '''
+int consumer_fsync(int);int consumer_ftruncate(int,off_t);
+#define fsync consumer_fsync
+#define ftruncate consumer_ftruncate
+'''}
+        for name, definitions in substitutions.items():
+            path=cls.tree/'src'/name
+            path.write_text(path.read_text().replace('#include "runtime_file.h"',
+                                                     '#include "runtime_file.h"\n'+definitions))
         options = ('-DNO_DHCP6 -DNO_TFTP -DNO_INOTIFY -DNO_AUTH -DNO_LOOP '
                    '-DCONF_SCRIPT_TIMEOUT_MS=800 -DCONF_SCRIPT_TOTAL_MS=2400')
         result = subprocess.run(['make', '-j4', 'CC=clang', 'COPTS=' + options,
@@ -87,6 +135,49 @@ class DNSRuntimeConsumerTests(unittest.TestCase):
         cls.binary = cls.tree / 'src/dnsmasq'
         if b'LEASE_FOUND=%d' not in cls.binary.read_bytes():
             raise AssertionError('actual DHCP consumer was not compiled')
+        # Same production helper with only local metadata fault injection.
+        # All real opens are of the host's standard null; no global node or
+        # permission is ever changed to emulate a wrong/symlinked device.
+        helper=(SOURCE/'src/runtime_file.c').read_text()
+        shim=r'''
+#undef free
+static const char *fault;static int lookups,opens,closes,opened_flags;
+static int probe_lstat(const char *path,struct stat *st){int rc=lstat(path,st);lookups++;
+ if(!rc){if(!strcmp(fault,"symlink")&&lookups==1)st->st_mode=(st->st_mode&~S_IFMT)|S_IFLNK;
+  if(!strcmp(fault,"device")&&lookups==1)st->st_rdev++;
+  if(!strcmp(fault,"after-inode")&&lookups==2)st->st_ino++;}return rc;}
+static int probe_fstat(int fd,struct stat *st){int rc=fstat(fd,st);
+ if(!rc){if(!strcmp(fault,"fd-inode"))st->st_ino++;
+  if(!strcmp(fault,"fd-type"))st->st_mode=(st->st_mode&~S_IFMT)|S_IFIFO;}return rc;}
+static int probe_open(const char *path,int flags,...){opens++;opened_flags=flags;
+ if(!strcmp(fault,"open")){errno=EACCES;return -1;}return open(path,flags);}
+static int probe_close(int fd){closes++;return close(fd);}
+#define lstat probe_lstat
+#define fstat probe_fstat
+#define open probe_open
+#define close probe_close
+'''
+        helper=helper.replace('#include "dnsmasq.h"','#include "dnsmasq.h"\n'+shim)
+        helper+=r'''
+int main(int argc,char **argv){int fd;assert(argc==2);fault=argv[1];
+ fd=dns_runtime_null_open(O_WRONLY|O_APPEND|(!strcmp(fault,"flags")?O_CREAT:0));
+ if(fd>=0)close(fd);
+ printf("ACCEPT=%d OPENS=%d CLOSES=%d SAFE_FLAGS=%d\n",fd>=0,opens,closes,
+  (opened_flags&(O_NONBLOCK|O_CLOEXEC|O_NOCTTY|O_NOFOLLOW))==(O_NONBLOCK|O_CLOEXEC|O_NOCTTY|O_NOFOLLOW));
+ return 0;}
+'''
+        # dnsmasq.h does not include assert.h on all profiles.
+        helper=helper.replace('#include "dnsmasq.h"','#include "dnsmasq.h"\n#include <assert.h>')
+        path=cls.tree/'null-helper.c';path.write_text(helper)
+        cls.null_helper=cls.tree/'null-helper'
+        compiled=subprocess.run(['clang','-std=gnu99','-Wall','-Wextra','-Werror',
+                        '-fsanitize=address,undefined','-I'+str(SOURCE/'src'),str(path),
+                        '-o',str(cls.null_helper),'-lrt'] if sys.platform.startswith('linux') else
+                       ['clang','-std=gnu99','-Wall','-Wextra','-Werror',
+                        '-fsanitize=address,undefined','-I'+str(SOURCE/'src'),str(path),
+                        '-o',str(cls.null_helper)],capture_output=True,text=True)
+        if compiled.returncode:
+            raise AssertionError(compiled.stdout+compiled.stderr)
 
     @classmethod
     def tearDownClass(cls):
@@ -105,7 +196,8 @@ class DNSRuntimeConsumerTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def run_consumer(self, operation, extra='', expect=0, input_path=None, append=False):
+    def run_consumer(self, operation, extra='', expect=0, input_path=None, append=False,
+                     log_owner=False, reopen=None, update=False):
         path = input_path or self.input
         self.config.write_text('port=0\nno-hosts\nno-resolv\nlog-facility=' +
                                str(path if operation == 'log' else self.log) + '\n' + extra)
@@ -113,6 +205,9 @@ class DNSRuntimeConsumerTests(unittest.TestCase):
                'K2P_CONSUMER_INPUT': str(path)}
         if append:
             env['K2P_CONSUMER_APPEND'] = '1'
+        if log_owner:env['K2P_CONSUMER_LOG_OWNER']='1'
+        if reopen:env['K2P_CONSUMER_REOPEN']=str(reopen)
+        if update:env['K2P_CONSUMER_UPDATE']='1'
         start = time.monotonic()
         process = subprocess.Popen([str(self.binary), '-C', str(self.config)], env=env,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -129,10 +224,10 @@ class DNSRuntimeConsumerTests(unittest.TestCase):
         self.assertLess(time.monotonic() - start, 4.5)
         return out, err
 
-    def lease(self, extra='', expect=0, append=False):
+    def lease(self, extra='', expect=0, append=False, input_path=None, update=False):
         return self.run_consumer('lease', 'dhcp-range=192.0.2.10,192.0.2.100,1h\n' +
-                                 'dhcp-leasefile=' + str(self.input) + '\n' + extra,
-                                 expect=expect, append=append)
+                                 'dhcp-leasefile=' + str(input_path or self.input) + '\n' + extra,
+                                 expect=expect, append=append, update=update)
 
     def init_script(self, body, expect=0, command_prefix=''):
         self.script.write_text('#!/bin/sh\n' + body + '\n')
@@ -264,6 +359,56 @@ class DNSRuntimeConsumerTests(unittest.TestCase):
             with self.subTest(command=command):
                 out,_=self.run_consumer('status',input_path=command)
                 self.assertIn('STREAM=%d RAW=%d\n'%(stream,raw),out);self.assertIn('REAPED=1\n',out)
+
+    @staticmethod
+    def null_identity():
+        value=os.lstat('/dev/null')
+        return (value.st_dev,value.st_ino,value.st_rdev,stat.S_IMODE(value.st_mode),
+                value.st_uid,value.st_gid)
+
+    def test_literal_null_log_preserves_global_metadata_and_skips_owner_changes(self):
+        before=self.null_identity()
+        out,_=self.run_consumer('log',input_path=Path('/dev/null'),log_owner=True)
+        self.assertIn('CHOWN=0 CHMOD=0\n',out)
+        self.assertEqual(self.null_identity(),before)
+
+    def test_log_reopen_from_null_to_regular_resets_metadata_policy(self):
+        before=self.null_identity();replacement=self.base/'reopened.log'
+        out,_=self.run_consumer('log',input_path=Path('/dev/null'),log_owner=True,reopen=replacement)
+        self.assertIn('CHOWN=1 CHMOD=1\n',out)
+        self.assertTrue(replacement.is_file());self.assertEqual(self.null_identity(),before)
+
+    def test_literal_null_lease_discards_updates_without_durability_and_keeps_expiry(self):
+        before=self.null_identity()
+        out,_=self.lease(input_path=Path('/dev/null'),update=True)
+        self.assertIn('LEASE_FOUND=0\n',out)
+        self.assertIn('APPEND=1 NONBLOCK=1 CLOEXEC=1\n',out)
+        self.assertIn('SYNC=0 TRUNCATE=0',out)
+        self.assertRegex(out,r'EXPIRY_ALARM=[1-9][0-9]*\n')
+        self.assertEqual(self.null_identity(),before)
+        # The same real update path must perform durable operations for an
+        # ordinary database, proving that the test actually dirtied a lease.
+        self.input.write_text(LEASE);out,_=self.lease(update=True)
+        self.assertIn('SYNC=1 TRUNCATE=1',out)
+
+    def test_null_alias_paths_are_rejected_by_both_consumers(self):
+        before=self.null_identity();self.input.symlink_to('/dev/null')
+        self.run_consumer('log',expect=3);self.lease(expect=3)
+        self.assertEqual(self.null_identity(),before)
+
+    def test_null_helper_rejects_wrong_identity_and_closes_rejected_descriptors(self):
+        for fault,accepted,opens,closes in (
+                ('normal',1,1,1),('symlink',0,0,0),('device',0,0,0),
+                ('fd-inode',0,1,1),('fd-type',0,1,1),('after-inode',0,1,1),
+                ('open',0,1,0),('flags',0,0,0)):
+            with self.subTest(fault=fault):
+                result=subprocess.run([str(self.null_helper),fault],env=self.env,
+                                      capture_output=True,text=True,timeout=3)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertNotIn('AddressSanitizer',result.stderr)
+                self.assertNotIn('runtime error:',result.stderr)
+                self.assertIn('ACCEPT=%d OPENS=%d CLOSES=%d'%(accepted,opens,closes),result.stdout)
+                if opens:self.assertIn('SAFE_FLAGS=1',result.stdout)
 
 
 if __name__ == '__main__':
