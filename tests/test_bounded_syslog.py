@@ -261,5 +261,50 @@ class BoundedSyslogTests(unittest.TestCase):
         self.assertIn('count=1',out);wire=self.drain();self.assertEqual(len(wire),1)
         self.assertLess(len(wire[0]),256)
 
+    def test_actual_pptpd_ctrlpacket_translation_unit_compiles_links_and_logs(self):
+        # Compile the complete consumer TU with the production HAVE_SYSLOG_H
+        # branch selected. The central-adapter fixture above cannot establish
+        # that every separate consumer has included its component declarations.
+        folder=ROOT/'trunk/user/poptop/pptpd-1.4.0'
+        source=folder/'ctrlpacket.c'
+        fixed=self.base/'ctrlpacket-fixed.c'
+        fixed.write_text(source.read_text())
+        command=['clang','-std=gnu99','-O1','-g','-DHAVE_SYSLOG_H=1','-DHAVE_STRERROR=1',
+                 '-Werror=implicit-function-declaration','-fsanitize=address,undefined',
+                 '-I'+str(folder),'-DPADAVAN_LOG_SOCKET='+json.dumps(str(self.path))]
+        object_path=self.base/'ctrlpacket.o'
+        built=subprocess.run(command+['-c',str(fixed),'-o',str(object_path)],capture_output=True,text=True)
+        self.assertEqual(built.returncode,0,built.stdout+built.stderr)
+        driver=self.base/'ctrlpacket-driver.c'
+        driver.write_text('#include <stdint.h>\n#include '+json.dumps(str(folder/'our_syslog.h'))+r'''
+struct padavan_log_context pptpd_log_context=PADAVAN_LOG_CONTEXT_INIT;
+int pptpctrl_debug=0;
+uint16_t unique_call_id=0;
+extern ssize_t send_pptp_packet(int,void *,size_t);
+int main(void)
+{
+    char packet='x';
+    pptpd_openlog("pptpd-ctrlpacket-probe",LOG_PID,LOG_DAEMON);
+    if(send_pptp_packet(-1,&packet,1)!=-1 || errno!=EBADF) return 1;
+    return 0;
+}
+''')
+        linked=subprocess.run(command+[str(driver),str(object_path),'-o',str(self.base/'ctrlpacket')],
+                              capture_output=True,text=True)
+        self.assertEqual(linked.returncode,0,linked.stdout+linked.stderr)
+        self.server();self.run_binary('ctrlpacket')
+        wire=self.drain();self.assertEqual(len(wire),1)
+        self.assertTrue(wire[0].startswith(b'<27>'))
+        self.assertIn(b"CTRL: Couldn't write packet to client.",wire[0])
+        # Recreate the missing-include regression, not an unrelated syntax
+        # error: on a host with syslog.h the old conditional hides our API.
+        broken=self.base/'ctrlpacket-old-conditional.c'
+        broken.write_text(source.read_text().replace('#include "our_syslog.h"',
+            '#if HAVE_SYSLOG_H\n#include <syslog.h>\n#else\n#include "our_syslog.h"\n#endif',1))
+        rejected=subprocess.run(command+['-c',str(broken),'-o',str(self.base/'ctrlpacket-broken.o')],
+                                capture_output=True,text=True)
+        self.assertNotEqual(rejected.returncode,0,'old consumer unexpectedly compiled')
+        self.assertRegex(rejected.stderr,r"error: call to undeclared function 'pptpd_syslog'")
+
 
 if __name__=='__main__':unittest.main()

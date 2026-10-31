@@ -8,11 +8,7 @@
 #include "config.h"
 #endif
 
-#if HAVE_SYSLOG_H
-#include <syslog.h>
-#else
 #include "our_syslog.h"
-#endif
 
 #include <signal.h>
 #include <stdio.h>
