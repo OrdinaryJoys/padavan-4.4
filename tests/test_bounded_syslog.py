@@ -304,7 +304,8 @@ int main(void)
         rejected=subprocess.run(command+['-c',str(broken),'-o',str(self.base/'ctrlpacket-broken.o')],
                                 capture_output=True,text=True)
         self.assertNotEqual(rejected.returncode,0,'old consumer unexpectedly compiled')
-        self.assertRegex(rejected.stderr,r"error: call to undeclared function 'pptpd_syslog'")
+        self.assertRegex(rejected.stderr,
+                         r"error: (?:call to undeclared function|implicit declaration of function) 'pptpd_syslog'")
 
 
 if __name__=='__main__':unittest.main()
