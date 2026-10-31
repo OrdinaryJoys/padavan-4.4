@@ -37,6 +37,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <string.h>
 #include <ctype.h>
 #include <syslog.h>
+#include "boundedlog.h"
 
 #include "upnpglobalvars.h"
 #include "pcplearndscp.h"
@@ -48,7 +49,7 @@ print_dscp(void) {
 	unsigned int i;
 
 	for (i=0; i < num_dscp_values; i++){
-		syslog(LOG_DEBUG, "Appname %*.s, del %d, loss %d, jitter %d, dscp %d",
+		miniupnpd_syslog(LOG_DEBUG, "Appname %*.s, del %d, loss %d, jitter %d, dscp %d",
 				dscp_values_list[i].app_name_len,
 				dscp_values_list[i].app_name, dscp_values_list[i].delay,
 				dscp_values_list[i].loss, dscp_values_list[i].jitter,

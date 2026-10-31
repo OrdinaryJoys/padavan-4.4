@@ -13,6 +13,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <syslog.h>
+#include "boundedlog.h"
 #include <errno.h>
 #include <sys/uio.h>
 #include <netinet/in.h>
@@ -129,7 +130,7 @@ sendto_schedule2(int sockfd, const void *buf, size_t len, int flags,
 		alloc_len += sizeof(struct sockaddr_in6);
 	elt = malloc(alloc_len);
 	if(elt == NULL) {
-		syslog(LOG_ERR, "malloc failed to allocate %u bytes",
+		miniupnpd_syslog(LOG_ERR, "malloc failed to allocate %u bytes",
 		       (unsigned)alloc_len);
 		return -1;
 	}
@@ -230,7 +231,7 @@ int try_sendto(fd_set * writefds)
 		if((elt->state == ESENDNOW) ||
 		   (elt->state == EWAITREADY && FD_ISSET(elt->sockfd, writefds))) {
 #ifdef DEBUG
-			syslog(LOG_DEBUG, "%s: %d bytes on socket %d",
+			miniupnpd_syslog(LOG_DEBUG, "%s: %d bytes on socket %d",
 			       "try_sendto", (int)elt->len, elt->sockfd);
 #endif
 			n = send_from_to(elt->sockfd, elt->buf, elt->len, elt->flags,
@@ -251,13 +252,13 @@ int try_sendto(fd_set * writefds)
 					/* uncatched error */
 					if(sockaddr_to_string(elt->dest_addr, addr_str, sizeof(addr_str)) <= 0)
 						addr_str[0] = '\0';
-					syslog(LOG_DEBUG, "%s(sock=%d, len=%u, dest=%s): sendto: %m",
+					miniupnpd_syslog(LOG_DEBUG, "%s(sock=%d, len=%u, dest=%s): sendto: %m",
 					       "try_sendto", elt->sockfd, (unsigned)elt->len,
 					       addr_str);
 					ret--;
 				}
 			} else if((int)n != (int)elt->len) {
-				syslog(LOG_WARNING, "%s: %d bytes sent out of %d",
+				miniupnpd_syslog(LOG_WARNING, "%s: %d bytes sent out of %d",
 				       "try_sendto", (int)n, (int)elt->len);
 			}
 			/* remove from the list */
@@ -284,7 +285,7 @@ void finalize_sendto(void)
 	int max_fd;
 
 	if(gettimeofday(&deadline, NULL) < 0) {
-		syslog(LOG_ERR, "gettimeofday: %m");
+		miniupnpd_syslog(LOG_ERR, "gettimeofday: %m");
 		return;
 	}
 	deadline.tv_usec += FINALIZE_SENDTO_DELAY*1000;
@@ -297,7 +298,7 @@ void finalize_sendto(void)
 		max_fd = -1;
 		for(elt = send_list.lh_first; elt != NULL; elt = next) {
 			next = elt->entries.le_next;
-			syslog(LOG_DEBUG, "finalize_sendto(): %d bytes on socket %d",
+			miniupnpd_syslog(LOG_DEBUG, "finalize_sendto(): %d bytes on socket %d",
 			       (int)elt->len, elt->sockfd);
 			n = send_from_to(elt->sockfd, elt->buf, elt->len, elt->flags,
 			                 elt->src_addr, elt->dest_addr, elt->addrlen);
@@ -310,7 +311,7 @@ void finalize_sendto(void)
 						max_fd = elt->sockfd;
 					continue;
 				}
-				syslog(LOG_WARNING, "finalize_sendto(): socket=%d sendto: %m", elt->sockfd);
+				miniupnpd_syslog(LOG_WARNING, "finalize_sendto(): socket=%d sendto: %m", elt->sockfd);
 			}
 			/* remove from the list */
 			LIST_REMOVE(elt, entries);
@@ -318,7 +319,7 @@ void finalize_sendto(void)
 		}
 		/* check deadline */
 		if(gettimeofday(&now, NULL) < 0) {
-			syslog(LOG_ERR, "gettimeofday: %m");
+			miniupnpd_syslog(LOG_ERR, "gettimeofday: %m");
 			return;
 		}
 		if(now.tv_sec > deadline.tv_sec ||
@@ -339,7 +340,7 @@ void finalize_sendto(void)
 		}
 		if(max_fd >= 0) {
 			if(select(max_fd + 1, NULL, &writefds, NULL, &timeout) < 0) {
-				syslog(LOG_ERR, "select: %m");
+				miniupnpd_syslog(LOG_ERR, "select: %m");
 				return;
 			}
 		}

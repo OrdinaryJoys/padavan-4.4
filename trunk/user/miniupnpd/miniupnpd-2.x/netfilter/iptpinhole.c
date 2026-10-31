@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
+#include "../boundedlog.h"
 #include <errno.h>
 #include <arpa/inet.h>
 #include <sys/queue.h>
@@ -69,7 +70,7 @@ add_to_pinhole_list(struct in6_addr * saddr, unsigned short sport,
 
 	p = calloc(1, sizeof(struct pinhole_t) + strlen(desc) + 1);
 	if(!p) {
-		syslog(LOG_ERR, "add_to_pinhole_list calloc() error");
+		miniupnpd_syslog(LOG_ERR, "add_to_pinhole_list calloc() error");
 		return -1;
 	}
 	strcpy(p->desc, desc);
@@ -134,7 +135,7 @@ new_match(int proto, unsigned short sport, unsigned short dport)
 	if(name)
 		strncpy(match->u.user.name, name, sizeof(match->u.user.name));
 	else
-		syslog(LOG_WARNING, "no name for protocol %d", proto);
+		miniupnpd_syslog(LOG_WARNING, "no name for protocol %d", proto);
 	info = (struct ip6t_tcp *)match->data;
 	if(sport) {
 		info->spts[0] = sport;	/* specified source port */
@@ -170,19 +171,19 @@ ip6tc_init_verify_append(const char * table,
 
 	h = ip6tc_init(table);
 	if(!h) {
-		syslog(LOG_ERR, "ip6tc_init error : %s", ip6tc_strerror(errno));
+		miniupnpd_syslog(LOG_ERR, "ip6tc_init error : %s", ip6tc_strerror(errno));
 		return -1;
 	}
 	if(!ip6tc_is_chain(chain, h)) {
-		syslog(LOG_ERR, "chain %s not found", chain);
+		miniupnpd_syslog(LOG_ERR, "chain %s not found", chain);
 		goto error;
 	}
 	if(!ip6tc_append_entry(chain, e, h)) {
-		syslog(LOG_ERR, "ip6tc_append_entry() error : %s", ip6tc_strerror(errno));
+		miniupnpd_syslog(LOG_ERR, "ip6tc_append_entry() error : %s", ip6tc_strerror(errno));
 		goto error;
 	}
 	if(!ip6tc_commit(h)) {
-		syslog(LOG_ERR, "ip6tc_commit() error : %s", ip6tc_strerror(errno));
+		miniupnpd_syslog(LOG_ERR, "ip6tc_commit() error : %s", ip6tc_strerror(errno));
 		goto error;
 	}
 	return 0;	/* ok */
@@ -213,7 +214,7 @@ int add_pinhole(const char * ifname,
 
 	e = calloc(1, sizeof(struct ip6t_entry));
 	if(!e) {
-		syslog(LOG_ERR, "%s: calloc(%d) failed",
+		miniupnpd_syslog(LOG_ERR, "%s: calloc(%d) failed",
 		       "add_pinhole", (int)sizeof(struct ip6t_entry));
 		return -1;
 	}
@@ -239,7 +240,7 @@ int add_pinhole(const char * ifname,
 	               + match->u.match_size
 	               + target->u.target_size);
 	if(!tmp) {
-		syslog(LOG_ERR, "%s: realloc(%d) failed",
+		miniupnpd_syslog(LOG_ERR, "%s: realloc(%d) failed",
 		       "add_pinhole", (int)(sizeof(struct ip6t_entry) + match->u.match_size + target->u.target_size));
 		free(e);
 		free(match);
@@ -315,11 +316,11 @@ delete_pinhole(unsigned short uid)
 
 	h = ip6tc_init("filter");
 	if(!h) {
-		syslog(LOG_ERR, "ip6tc_init error : %s", ip6tc_strerror(errno));
+		miniupnpd_syslog(LOG_ERR, "ip6tc_init error : %s", ip6tc_strerror(errno));
 		return -1;
 	}
 	if(!ip6tc_is_chain(miniupnpd_v6_filter_chain, h)) {
-		syslog(LOG_ERR, "chain %s not found", miniupnpd_v6_filter_chain);
+		miniupnpd_syslog(LOG_ERR, "chain %s not found", miniupnpd_v6_filter_chain);
 		goto error;
 	}
 	index = 0;
@@ -334,12 +335,12 @@ delete_pinhole(unsigned short uid)
 			info = (const struct ip6t_tcp *)&match->data;
 			if((info->spts[0] == p->sport) && (info->dpts[0] == p->dport)) {
 				if(!ip6tc_delete_num_entry(miniupnpd_v6_filter_chain, index, h)) {
-					syslog(LOG_ERR, "ip6tc_delete_num_entry(%s,%u,...): %s",
+					miniupnpd_syslog(LOG_ERR, "ip6tc_delete_num_entry(%s,%u,...): %s",
 					       miniupnpd_v6_filter_chain, index, ip6tc_strerror(errno));
 					goto error;
 				}
 				if(!ip6tc_commit(h)) {
-					syslog(LOG_ERR, "ip6tc_commit(): %s",
+					miniupnpd_syslog(LOG_ERR, "ip6tc_commit(): %s",
 					       ip6tc_strerror(errno));
 					goto error;
 				}
@@ -351,7 +352,7 @@ delete_pinhole(unsigned short uid)
 		index++;
 	}
 	ip6tc_free(h);
-	syslog(LOG_WARNING, "delete_pinhole() rule with PID=%hu not found", uid);
+	miniupnpd_syslog(LOG_WARNING, "delete_pinhole() rule with PID=%hu not found", uid);
 	LIST_REMOVE(p, entries);
 	return -2;	/* not found */
 error:
@@ -413,7 +414,7 @@ get_pinhole_info(unsigned short uid,
 		const struct ip6t_entry_match * match;
 		h = ip6tc_init("filter");
 		if(!h) {
-			syslog(LOG_ERR, "ip6tc_init error : %s", ip6tc_strerror(errno));
+			miniupnpd_syslog(LOG_ERR, "ip6tc_init error : %s", ip6tc_strerror(errno));
 			return -1;
 		}
 		for(e = ip6tc_first_rule(miniupnpd_v6_filter_chain, h);
@@ -462,7 +463,7 @@ clean_pinhole_list(unsigned int * next_timestamp)
 	while(p != NULL) {
 		if(p->timestamp <= (unsigned int)current_time) {
 			unsigned short uid = p->uid;
-			syslog(LOG_INFO, "removing expired pinhole with uid=%hu", uid);
+			miniupnpd_syslog(LOG_INFO, "removing expired pinhole with uid=%hu", uid);
 			p = p->entries.le_next;
 			if(delete_pinhole(uid) == 0)
 				n++;

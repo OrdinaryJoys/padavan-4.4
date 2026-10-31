@@ -73,7 +73,7 @@ int pptp_gre_init(u_int32_t call_id_pair, int pty_fd, struct in_addr *inetaddrs)
         /* Open IP protocol socket */
         gre_fd = vrf_socket(vrf, AF_INET, SOCK_RAW, PPTP_PROTO);
         if (gre_fd < 0) {
-                syslog(LOG_ERR, "GRE: socket() failed");
+                pptpd_syslog(LOG_ERR, "GRE: socket() failed");
                 return -1;
         }
 
@@ -83,15 +83,15 @@ int pptp_gre_init(u_int32_t call_id_pair, int pty_fd, struct in_addr *inetaddrs)
         addr.sin_addr = inetaddrs[0];
         addr.sin_port = 0;
         if (bind(gre_fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
-                syslog(LOG_ERR, "GRE: bind() failed: %s", strerror(errno));
-                syslog(LOG_ERR, "GRE: continuing, but may not work if multi-homed");
+                pptpd_syslog(LOG_ERR, "GRE: bind() failed: %s", strerror(errno));
+                pptpd_syslog(LOG_ERR, "GRE: continuing, but may not work if multi-homed");
         }
 
         addr.sin_family = AF_INET;
         addr.sin_addr = inetaddrs[1];
         addr.sin_port = 0;
         if (connect(gre_fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
-                syslog(LOG_ERR, "GRE: connect() failed: %s", strerror(errno));
+                pptpd_syslog(LOG_ERR, "GRE: connect() failed: %s", strerror(errno));
                 close(gre_fd);
                 return -1;
         }
@@ -128,7 +128,7 @@ int decaps_hdlc(int fd, int (*cb) (int cl, void *pack, unsigned len), int cl)
                         return err ? -1 : 0;
                 } else if (!err) {
                         /* re-xmit and nothing queued */
-                        syslog(LOG_ERR, "GRE: Re-xmit called with nothing queued");
+                        pptpd_syslog(LOG_ERR, "GRE: Re-xmit called with nothing queued");
                         return -1;
                 }
         }
@@ -138,7 +138,7 @@ int decaps_hdlc(int fd, int (*cb) (int cl, void *pack, unsigned len), int cl)
                  * network write failed.
                  */
                 if ((status = read(fd, buffer, sizeof(buffer))) <= 0) {
-                        syslog(LOG_ERR, "GRE: read(fd=%d,buffer=%lx,len=%d) from PTY failed: status = %d error = %s%s",
+                        pptpd_syslog(LOG_ERR, "GRE: read(fd=%d,buffer=%lx,len=%d) from PTY failed: status = %d error = %s%s",
                                fd, (unsigned long) buffer,
                                (int) sizeof(buffer),
                                status, status ? strerror(errno) : "No error",
@@ -162,7 +162,7 @@ int decaps_hdlc(int fd, int (*cb) (int cl, void *pack, unsigned len), int cl)
                  */
                 err = 0;
                 if ((status = cb(cl, copy, len)) < 0) {
-                        syslog(LOG_ERR, "GRE: re-xmit failed from decaps_hdlc: %s", strerror(errno));
+                        pptpd_syslog(LOG_ERR, "GRE: re-xmit failed from decaps_hdlc: %s", strerror(errno));
                         err = 1;
                         return status;  /* return error */
                 }
@@ -186,7 +186,7 @@ int decaps_hdlc(int fd, int (*cb) (int cl, void *pack, unsigned len), int cl)
 
                         /* Dispose of 'too long' packets */
                         if (len >= PACKET_MAX) {
-                                syslog(LOG_ERR, "GRE: Received too long packet from pppd.");
+                                pptpd_syslog(LOG_ERR, "GRE: Received too long packet from pppd.");
                                 while (buffer[start] != HDLC_FLAG && start < end)
                                         start++;
                                 if (start < end) {
@@ -222,21 +222,21 @@ int decaps_hdlc(int fd, int (*cb) (int cl, void *pack, unsigned len), int cl)
                          * start and end of packet].  Others are worth recording.
                          */
                         if (len && len < 4)
-                                syslog(LOG_ERR, "GRE: Received too short packet from pppd.");
+                                pptpd_syslog(LOG_ERR, "GRE: Received too short packet from pppd.");
                         if (escape)
-                                syslog(LOG_ERR, "GRE: Received bad packet from pppd.");
+                                pptpd_syslog(LOG_ERR, "GRE: Received bad packet from pppd.");
                         goto newpacket;
                 }
                 /* Check, then remove the 16-bit FCS checksum field */
                 if (fcs != PPPGOODFCS16) {
-                        syslog(LOG_ERR, "GRE: Bad checksum from pppd.");
+                        pptpd_syslog(LOG_ERR, "GRE: Bad checksum from pppd.");
                         goto newpacket;
                 }
                 len -= sizeof(u_int16_t);
 
                 /* So now we have a packet of length 'len' in 'copy' */
                 if ((status = cb(cl, copy, len)) < 0) {
-                        syslog(LOG_ERR, "GRE: xmit failed from decaps_hdlc: %s", strerror(errno));
+                        pptpd_syslog(LOG_ERR, "GRE: xmit failed from decaps_hdlc: %s", strerror(errno));
                         err = 1;
                         return status;  /* return error */
                 }
@@ -279,7 +279,7 @@ int encaps_hdlc(int fd, void *pack, unsigned len)
          * in loop.  drop large packets.
          */
         if (len > PACKET_MAX) {
-                syslog(LOG_ERR, "GRE: Asked to encapsulate too large packet (len = %d)", len);
+                pptpd_syslog(LOG_ERR, "GRE: Asked to encapsulate too large packet (len = %d)", len);
                 return -1;
         }
         /* start character */
@@ -322,12 +322,12 @@ static int dequeue_gre (callback_t callback, int cl)
                 if (head->seq != gre.seq_recv + 1 ) {  /* wrap-around safe */
                         stats.rx_lost += head->seq - gre.seq_recv - 1;
                         if (pptpctrl_debug)
-                                syslog(LOG_DEBUG, 
+                                pptpd_syslog(LOG_DEBUG,
                                        "GRE: timeout waiting for %d packets", 
                                        head->seq - gre.seq_recv - 1);        
                 }
                 if (pptpctrl_debug)
-                        syslog(LOG_DEBUG, "GRE: accepting #%d from queue", 
+                        pptpd_syslog(LOG_DEBUG, "GRE: accepting #%d from queue",
                                head->seq);
                 gre.seq_recv = head->seq;
                 status = callback(cl, head->packet, head->packlen);
@@ -347,7 +347,7 @@ int decaps_gre(int fd, int (*cb) (int cl, void *pack, unsigned len), int cl)
 
         dequeue_gre(cb, cl);
         if ((status = read(fd, buffer, sizeof(buffer))) <= 0) {
-                syslog(LOG_ERR, "GRE: read(fd=%d,buffer=%lx,len=%d) from network failed: status = %d error = %s",
+                pptpd_syslog(LOG_ERR, "GRE: read(fd=%d,buffer=%lx,len=%d) from network failed: status = %d error = %s",
                        fd, (unsigned long) buffer, (int) sizeof(buffer),
                        status, status ? strerror(errno) : "No error");
                 stats.rx_errors++;
@@ -366,7 +366,7 @@ int decaps_gre(int fd, int (*cb) (int cl, void *pack, unsigned len), int cl)
             (!PPTP_GRE_IS_K(ntoh8(header->flags))) ||   /* flag K should be set     */
             ((ntoh8(header->flags) & 0xF) != 0)) {      /* routing and recursion ctrl = 0  */
                 /* if invalid, discard this packet */
-                syslog(LOG_ERR, "GRE: Discarding packet by header check");
+                pptpd_syslog(LOG_ERR, "GRE: Discarding packet by header check");
                 stats.rx_invalid++;
                 return 0;
         }
@@ -415,21 +415,21 @@ int decaps_gre(int fd, int (*cb) (int cl, void *pack, unsigned len), int cl)
                  */
                 if (seq == gre.seq_recv + 1 || seq == 1) {
                         if (pptpctrl_debug)
-                                syslog(LOG_DEBUG, "GRE: accepting packet #%d", 
+                                pptpd_syslog(LOG_DEBUG, "GRE: accepting packet #%d",
                                        seq);
                         stats.rx_accepted++;
                         gre.seq_recv = seq;
                         return cb(cl, buffer + ip_len + headersize, payload_len);
                 } else if (!seq_greater(seq, gre.seq_recv)) {
                         if (pptpctrl_debug)
-                                syslog(LOG_DEBUG,
+                                pptpd_syslog(LOG_DEBUG,
                                        "GRE: discarding duplicate or old packet #%d (expecting #%d)", 
                                        seq, gre.seq_recv + 1);
                         return 0;       /* discard duplicate packets */
                 } else {
                         stats.rx_buffered++;
                         if (pptpctrl_debug)
-                                syslog(LOG_DEBUG,
+                                pptpd_syslog(LOG_DEBUG,
                                        "GRE: buffering packet #%d (expecting #%d, lost or reordered)",
                                        seq, gre.seq_recv + 1);
                         pqueue_add(seq, buffer + ip_len + headersize, payload_len);
@@ -488,7 +488,7 @@ int encaps_gre(int fd, void *pack, unsigned len)
                 header_len = sizeof(u.header) - sizeof(u.header.ack);
         }
         if (len > PACKET_MAX) {
-                syslog(LOG_ERR, "GRE: packet is too large %d", len);
+                pptpd_syslog(LOG_ERR, "GRE: packet is too large %d", len);
                 stats.tx_oversize++;
                 return 0;       /* drop this, it's too big */
         }

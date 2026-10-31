@@ -1128,6 +1128,11 @@ enum {
 extern const char *msg_eol;
 extern smallint syslog_level;
 extern smallint logmode;
+extern void bb_openlog(const char *, int, int) FAST_FUNC;
+extern void bb_closelog(void) FAST_FUNC;
+extern int bb_setlogmask(int) FAST_FUNC;
+extern void bb_vsyslog(int, const char *, va_list) __attribute__((format(printf, 2, 0))) FAST_FUNC;
+extern void bb_syslog(int, const char *, ...) __attribute__((format(printf, 2, 3))) FAST_FUNC;
 extern uint8_t xfunc_error_retval;
 extern void (*die_func)(void);
 extern void xfunc_die(void) NORETURN FAST_FUNC;

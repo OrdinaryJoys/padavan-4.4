@@ -181,15 +181,15 @@ static void sigchld_responder(int sig)
 
   while ((child = waitpid(-1, &status, WNOHANG)) > 0) {
     if (pptp_delegate) {
-      if (pptp_debug) syslog(LOG_DEBUG, "MGR: Reaped child %d", child);
+      if (pptp_debug) pptpd_syslog(LOG_DEBUG, "MGR: Reaped child %d", child);
     } else {
       int i;
       i = slot_find_by_pid(child);
       if (i != -1) {
         slot_set_pid(i, 0);
-        if (pptp_debug) syslog(LOG_DEBUG, "MGR: Reaped child %d", child);
+        if (pptp_debug) pptpd_syslog(LOG_DEBUG, "MGR: Reaped child %d", child);
       } else {
-        syslog(LOG_INFO, "MGR: Reaped unknown child %d", child);
+        pptpd_syslog(LOG_INFO, "MGR: Reaped unknown child %d", child);
       }
     }
   }
@@ -208,7 +208,7 @@ int pptp_manager(int argc, char **argv)
 
         rc = sigpipe_create();
         if (rc < 0) {
-                syslog(LOG_ERR, "MGR: unable to setup sigchld pipe!");
+                pptpd_syslog(LOG_ERR, "MGR: unable to setup sigchld pipe!");
                 syslog_perror("sigpipe_create");
                 exit(-1);
         }
@@ -219,16 +219,16 @@ int pptp_manager(int argc, char **argv)
 
         /* openlog() not required, done in pptpd.c */
 
-        syslog(LOG_INFO, "MGR: Manager process started");
+        pptpd_syslog(LOG_INFO, "MGR: Manager process started");
 
         if (!pptp_delegate) {
-                syslog(LOG_INFO, "MGR: Maximum of %d connections available", 
+                pptpd_syslog(LOG_INFO, "MGR: Maximum of %d connections available",
                        pptp_connections);
         }
 
         /* Connect the host socket and activate it for listening */
         if (createHostSocket(&hostSocket) < 0) {
-                syslog(LOG_ERR, "MGR: Couldn't create host socket");
+                pptpd_syslog(LOG_ERR, "MGR: Couldn't create host socket");
                 syslog_perror("createHostSocket");
                 exit(-1);
         }
@@ -241,7 +241,7 @@ int pptp_manager(int argc, char **argv)
                 } else {
                         firstOpen = slot_find_empty();
                         if (firstOpen == -1) {
-                                syslog(LOG_ERR, "MGR: No free connection slots or IPs - no more clients can connect!");
+                                pptpd_syslog(LOG_ERR, "MGR: No free connection slots or IPs - no more clients can connect!");
                         } else {
                                 FD_SET(hostSocket, &connSet);
                         }
@@ -254,7 +254,7 @@ int pptp_manager(int argc, char **argv)
                 while (1) {
                         if (select(max_fd + 1, &connSet, NULL, NULL, NULL) != -1) break;
                         if (errno == EINTR) continue;
-                        syslog(LOG_ERR, "MGR: Error with manager select()!");
+                        pptpd_syslog(LOG_ERR, "MGR: Error with manager select()!");
                         syslog_perror("select");
                         exit(-1);
                 }
@@ -295,7 +295,7 @@ int pptp_manager(int argc, char **argv)
 #endif
                         if (clientSocket == -1) {
                                 /* accept failed, but life goes on... */
-                                syslog(LOG_ERR, "MGR: accept() failed");
+                                pptpd_syslog(LOG_ERR, "MGR: accept() failed");
                                 syslog_perror("accept");
                         } else if (clientSocket != 0) {
                                 fd_set rfds;
@@ -320,14 +320,14 @@ int pptp_manager(int argc, char **argv)
                                 tv.tv_sec = pptp_stimeout;
                                 tv.tv_usec = 0;
                                 if (select(clientSocket + 1, &rfds, NULL, NULL, &tv) <= 0) {
-                                        syslog(LOG_ERR, "MGR: dropped slow initial connection");
+                                        pptpd_syslog(LOG_ERR, "MGR: dropped slow initial connection");
                                         close(clientSocket);
                                         continue;
                                 }
 
                                 if (recv(clientSocket, &ph, sizeof(ph), MSG_PEEK) !=
                                                 sizeof(ph)) {
-                                        syslog(LOG_ERR, "MGR: dropped small initial connection");
+                                        pptpd_syslog(LOG_ERR, "MGR: dropped small initial connection");
                                         close(clientSocket);
                                         continue;
                                 }
@@ -338,23 +338,23 @@ int pptp_manager(int argc, char **argv)
                                 ph.ctrl_type = ntohs(ph.ctrl_type);
 
                                 if (ph.length <= 0 || ph.length > PPTP_MAX_CTRL_PCKT_SIZE) {
-                                        syslog(LOG_WARNING, "MGR: initial packet length %d outside "
+                                        pptpd_syslog(LOG_WARNING, "MGR: initial packet length %d outside "
                                                         "(0 - %d)",  ph.length, PPTP_MAX_CTRL_PCKT_SIZE);
                                         goto dos_exit;
                                 }
 
                                 if (ph.magic != PPTP_MAGIC_COOKIE) {
-                                        syslog(LOG_WARNING, "MGR: initial packet bad magic");
+                                        pptpd_syslog(LOG_WARNING, "MGR: initial packet bad magic");
                                         goto dos_exit;
                                 }
 
                                 if (ph.pptp_type != PPTP_CTRL_MESSAGE) {
-                                        syslog(LOG_WARNING, "MGR: initial packet has bad type");
+                                        pptpd_syslog(LOG_WARNING, "MGR: initial packet has bad type");
                                         goto dos_exit;
                                 }
 
                                 if (ph.ctrl_type != START_CTRL_CONN_RQST) {
-                                        syslog(LOG_WARNING, "MGR: initial packet has bad ctrl type "
+                                        pptpd_syslog(LOG_WARNING, "MGR: initial packet has bad ctrl type "
                                                         "0x%x", ph.ctrl_type);
                 dos_exit:
                                         close(clientSocket);
@@ -367,14 +367,14 @@ int pptp_manager(int argc, char **argv)
                                 switch (ctrl_pid = fork()) {
 #endif
                                 case -1:        /* error */
-                                        syslog(LOG_ERR, "MGR: fork() failed launching " PPTP_CTRL_BIN);
+                                        pptpd_syslog(LOG_ERR, "MGR: fork() failed launching " PPTP_CTRL_BIN);
                                         close(clientSocket);
                                         break;
 
                                 case 0: /* child */
                                         close(hostSocket);
                                         if (pptp_debug)
-                                                syslog(LOG_DEBUG, "MGR: Launching " PPTP_CTRL_BIN " to handle client");
+                                                pptpd_syslog(LOG_DEBUG, "MGR: Launching " PPTP_CTRL_BIN " to handle client");
                                         connectCall(clientSocket, !pptp_delegate ? firstOpen : 0);
                                         _exit(1);
                                         /* NORETURN */
@@ -544,6 +544,6 @@ static void connectCall(int clientSocket, int clientNumber)
 
         /* ok, args are setup: invoke the call handler */
         execve(PPTP_CTRL_BIN, ctrl_argv, environ);
-        syslog(LOG_ERR, "MGR: Failed to exec " PPTP_CTRL_BIN "!");
+        pptpd_syslog(LOG_ERR, "MGR: Failed to exec " PPTP_CTRL_BIN "!");
         _exit(1);
 }

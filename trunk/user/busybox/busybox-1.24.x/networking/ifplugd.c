@@ -609,7 +609,7 @@ int ifplugd_main(int argc UNUSED_PARAM, char **argv)
 
 	/* this can't be moved before socket creation */
 	if (!(opts & FLAG_NO_SYSLOG)) {
-		openlog(applet_name, 0, LOG_DAEMON);
+		bb_openlog(applet_name, 0, LOG_DAEMON);
 		logmode |= LOGMODE_SYSLOG;
 	}
 

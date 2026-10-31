@@ -37,10 +37,24 @@
 #include <ctype.h>
 #include <limits.h>
 
+#include "../shared/bounded_syslog.h"
 #include "util.h"
 #include "uopt.h"
 #include "mtrace.h"
 #include "osdef.h"
+
+static struct padavan_log_context udpxy_log = PADAVAN_LOG_CONTEXT_INIT;
+void udpxy_openlog(const char *ident, int options, int facility)
+{ padavan_log_open(&udpxy_log, ident, options, facility); }
+void udpxy_closelog(void)
+{ padavan_log_close(&udpxy_log); }
+void udpxy_syslog(int priority, const char *format, ...)
+{
+    va_list arguments;
+    va_start(arguments, format);
+    padavan_log_vwrite(&udpxy_log, priority, format, arguments);
+    va_end(arguments);
+}
 
 extern const char  COMPILE_MODE[];
 extern const char  VERSION[];
@@ -218,7 +232,7 @@ mperror( FILE* fp, int err, const char* format, ... )
     snprintf( buf + n, sizeof(buf) - n - 1, ": %s",
               strerror(err) );
 
-    syslog( LOG_ERR | LOG_LOCAL0, "%s", buf );
+    udpxy_syslog( LOG_ERR | LOG_LOCAL0, "%s", buf );
     if( fp ) (void) tmfprintf( fp, "%s\n", buf );
 
     return;

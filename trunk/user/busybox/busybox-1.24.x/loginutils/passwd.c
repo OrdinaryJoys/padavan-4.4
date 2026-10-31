@@ -33,7 +33,7 @@ static char* new_password(const struct passwd *pw, uid_t myuid, const char *algo
 			goto err_ret;
 		encrypted = pw_encrypt(orig, pw->pw_passwd, 1); /* returns malloced str */
 		if (strcmp(encrypted, pw->pw_passwd) != 0) {
-			syslog(LOG_WARNING, "incorrect password for %s", pw->pw_name);
+			bb_syslog(LOG_WARNING, "incorrect password for %s", pw->pw_name);
 			bb_do_delay(LOGIN_FAIL_DELAY);
 			puts("Incorrect password");
 			goto err_ret;
@@ -106,7 +106,7 @@ int passwd_main(int argc UNUSED_PARAM, char **argv)
 #endif
 
 	logmode = LOGMODE_BOTH;
-	openlog(applet_name, 0, LOG_AUTH);
+	bb_openlog(applet_name, 0, LOG_AUTH);
 	opt = getopt32(argv, "a:lud", &opt_a);
 	//argc -= optind;
 	argv += optind;

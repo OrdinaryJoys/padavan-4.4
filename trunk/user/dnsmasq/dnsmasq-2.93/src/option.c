@@ -4206,6 +4206,7 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 	      {
 		struct dhcp_config *configs;
                 int old_segment = 0;
+                unsigned int reload_work = 0;
 		
 		new->addr = in;
 		new->flags |= CONFIG_ADDR;
@@ -4213,7 +4214,7 @@ static int one_opt(int option, char *arg, char *errstr, char *gen_err, int comma
 		/* If the same IP appears in more than one host config, then DISCOVER
 		   for one of the hosts will get the address, but REQUEST will be NAKed,
 		   since the address is reserved by the other one -> protocol loop. */
-		for (configs = daemon->dhcp_conf; configs; configs = configs->next)
+		for (configs = daemon->dhcp_conf; configs && dns_reload_step(&reload_work); configs = configs->next)
                   {
                     if (reload_parse_active && configs == reload_old_conf) old_segment = 1;
                     if (old_segment && (configs->flags & CONFIG_BANK)) continue;
@@ -5893,7 +5894,7 @@ static int one_file(char *file, int hard_opt)
   if (do_popen)
     conf_script_close(f, &script_budget);
   else if (hard_opt != 0)
-    dns_runtime_file_close(&runtime);
+    dns_reload_close(&runtime);
   else
     fclose(f);
 	
@@ -6275,8 +6276,9 @@ void reread_dhcp(void)
     { dhcp_reload_commit(); dns_reload_end(1); }
   else
     {
-      my_syslog(LOG_ERR, _("reload transaction rejected; previous hosts/DHCP configuration retained: %s"), dns_reload_error());
+      const char *error = dns_reload_error();
       dhcp_reload_abort(); dns_reload_end(0);
+      my_syslog(LOG_ERR, _("reload transaction rejected; previous hosts/DHCP configuration retained: %s"), error);
     }
 }
 

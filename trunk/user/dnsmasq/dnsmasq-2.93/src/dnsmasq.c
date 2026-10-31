@@ -1567,7 +1567,7 @@ static void async_event(int pipe, time_t now)
 {
   pid_t p;
   struct event_desc ev;
-  int wstatus, i, check = 0;
+  int wstatus, i, check = 0, reload_accepted;
   char *msg;
   
   if (read_event(pipe, &ev, &msg))
@@ -1575,7 +1575,10 @@ static void async_event(int pipe, time_t now)
       {
       case EVENT_RELOAD:
       case EVENT_INIT:
-        if (!clear_cache_and_reload(now)) break;
+        dns_reload_initial(ev.event == EVENT_INIT);
+        reload_accepted = clear_cache_and_reload(now);
+        dns_reload_initial(0);
+        if (!reload_accepted) break;
         if (ev.event == EVENT_RELOAD) daemon->soa_sn++;
 	
 	if (daemon->port != 0)
@@ -1881,12 +1884,13 @@ int clear_cache_and_reload(time_t now)
 #endif
       || !dns_reload_validate())
     {
-      my_syslog(LOG_ERR, _("reload transaction rejected; previous hosts/DHCP configuration retained: %s"), dns_reload_error());
+      const char *error = dns_reload_error();
       cache_reload_abort();
 #ifdef HAVE_DHCP
       dhcp_reload_abort();
 #endif
       dns_reload_end(0);
+      my_syslog(LOG_ERR, _("reload transaction rejected; previous hosts/DHCP configuration retained: %s"), error);
       return 0;
     }
   if (dns) cache_reload_commit();

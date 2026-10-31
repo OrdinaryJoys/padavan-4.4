@@ -1,0 +1,38 @@
+--- a/src/openvpn/error.c
++++ b/src/openvpn/error.c
+@@ -43,6 +43,8 @@
+ 
+ 
+ #if SYSLOG_CAPABILITY
++#include "../../../../shared/bounded_syslog.h"
++static struct padavan_log_context padavan_vpn_log = PADAVAN_LOG_CONTEXT_INIT;
+ #ifndef LOG_OPENVPN
+ #define LOG_OPENVPN LOG_DAEMON
+ #endif
+@@ -334,7 +336,7 @@
+         if (use_syslog && !std_redir && !forked)
+         {
+ #if SYSLOG_CAPABILITY
+-            syslog(level, "%s%s%s",
++            padavan_log_write(&padavan_vpn_log, level, "%s%s%s",
+                    prefix,
+                    prefix_sep,
+                    m1);
+@@ -472,7 +474,7 @@
+         if (!use_syslog)
+         {
+             pgmname_syslog = string_alloc(pgmname ? pgmname : PACKAGE, NULL);
+-            openlog(pgmname_syslog, LOG_PID, LOG_OPENVPN);
++            padavan_log_open(&padavan_vpn_log, pgmname_syslog, LOG_PID, LOG_OPENVPN);
+             use_syslog = true;
+ 
+             /* Better idea: somehow pipe stdout/stderr output to msg() */
+@@ -493,7 +495,7 @@
+ #if SYSLOG_CAPABILITY
+     if (use_syslog)
+     {
+-        closelog();
++        padavan_log_close(&padavan_vpn_log);
+         use_syslog = false;
+         free(pgmname_syslog);
+         pgmname_syslog = NULL;

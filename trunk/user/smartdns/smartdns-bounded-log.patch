@@ -1,0 +1,46 @@
+--- a/src/dns_conf.c
++++ b/src/dns_conf.c
+@@ -27,6 +27,8 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <syslog.h>
++#include "../../../shared/bounded_syslog.h"
++static struct padavan_log_context smartdns_config_log = PADAVAN_LOG_CONTEXT_INIT;
+ #include <unistd.h>
+ 
+ #define DEFAULT_DNS_CACHE_SIZE 512
+@@ -1464,11 +1466,11 @@
+ {
+ 	if (ret == CONF_RET_ERR) {
+ 		tlog(TLOG_ERROR, "process config file '%s' failed at line %d.", file, lineno);
+-		syslog(LOG_NOTICE, "process config file '%s' failed at line %d.", file, lineno);
++		padavan_log_write(&smartdns_config_log, LOG_NOTICE, "process config file '%s' failed at line %d.", file, lineno);
+ 		return -1;
+ 	} else if (ret == CONF_RET_WARN) {
+ 		tlog(TLOG_WARN, "process config file '%s' failed at line %d.", file, lineno);
+-		syslog(LOG_NOTICE, "process config file '%s' failed at line %d.", file, lineno);
++		padavan_log_write(&smartdns_config_log, LOG_NOTICE, "process config file '%s' failed at line %d.", file, lineno);
+ 		return -1;
+ 	}
+ 
+@@ -1499,7 +1501,7 @@
+ 
+ 	if (access(file_path, R_OK) != 0) {
+ 		tlog(TLOG_WARN, "conf file %s is not readable.", file_path);
+-		syslog(LOG_NOTICE, "conf file %s is not readable.", file_path);
++		padavan_log_write(&smartdns_config_log, LOG_NOTICE, "conf file %s is not readable.", file_path);
+ 		return 0;
+ 	}
+ 
+@@ -1583,9 +1585,9 @@
+ {
+ 	int ret = 0;
+ 	_dns_conf_load_pre();
+-	openlog("smartdns", LOG_CONS | LOG_NDELAY, LOG_LOCAL1);
++	padavan_log_open(&smartdns_config_log, "smartdns", LOG_CONS | LOG_NDELAY, LOG_LOCAL1);
+ 	ret = load_conf(file, _config_item, _conf_printf);
+-	closelog();
++	padavan_log_close(&smartdns_config_log);
+ 	_dns_conf_load_post();
+ 	return ret;
+ }

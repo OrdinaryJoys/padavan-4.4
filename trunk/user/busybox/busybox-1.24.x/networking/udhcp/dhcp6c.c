@@ -144,7 +144,7 @@ int dhcp6c_main(int argc UNUSED_PARAM, char **argv)
 
 	if (!(opt & OPT_FOREGROUND) && !(opt & OPT_i)) {
 		bb_daemonize_or_rexec(DAEMON_CLOSE_EXTRA_FDS, argv);
-		openlog(applet_name, LOG_PID, LOG_DAEMON);
+		bb_openlog(applet_name, LOG_PID, LOG_DAEMON);
 		logmode = LOGMODE_SYSLOG;
 	}
 

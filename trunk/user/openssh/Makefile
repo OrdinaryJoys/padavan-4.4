@@ -19,8 +19,11 @@ download_test:
 
 extract_test:
 	( if [ ! -d $(SRC_NAME) ]; then \
-		tar xzf $(SRC_NAME).tar.gz; \
-		patch -d $(SRC_NAME) -p1 -i ../openssh-orig.patch; \
+		tar xzf $(SRC_NAME).tar.gz || exit 1; \
+		patch -d $(SRC_NAME) -p1 -i ../openssh-orig.patch || exit 1; \
+	fi; \
+	if ! patch -d $(SRC_NAME) -p1 -R --force --dry-run --batch --fuzz=0 -i ../openssh-bounded-log.patch >/dev/null 2>&1; then \
+		patch -d $(SRC_NAME) -p1 --batch --fuzz=0 -i ../openssh-bounded-log.patch || exit 1; \
 	fi )
 
 config_test:

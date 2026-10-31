@@ -32,6 +32,11 @@ static void *test_realloc(void *p, size_t n) {
 #define realloc test_realloc
 #include "upnphttp.c"
 #undef realloc
+/* Resource-limit tests isolate the logging backend; producer backpressure is
+ * exercised separately against actual boundedlog.c and private sockets. */
+void miniupnpd_syslog(int priority, const char *format, ...) {
+    (void)priority; (void)format;
+}
 int set_non_blocking(int fd) { return fcntl(fd,F_SETFL,O_NONBLOCK) == 0; }
 char *genRootDesc(int *len) { *len=7; return strdup("<root/>"); }
 char *genWANIPCn(int *len) { return genRootDesc(len); }

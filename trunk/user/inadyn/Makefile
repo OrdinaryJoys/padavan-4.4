@@ -12,8 +12,12 @@ download_test:
 
 extract_test:
 	( if [ ! -d $(SRC_NAME) ]; then \
-		tar -xf $(SRC_NAME).tar.xz; \
-		patch -d $(SRC_NAME) -p1 -i ../$(SRC_NAME).patch; \
+		tar -xf $(SRC_NAME).tar.xz || exit 1; \
+		patch -d $(SRC_NAME) -p1 -i ../$(SRC_NAME).patch || exit 1; \
+	fi; \
+	if ! patch -d $(SRC_NAME) -p1 -R --force --dry-run --batch --fuzz=0 -i ../inadyn-bounded-log.patch >/dev/null 2>&1; then \
+		patch -d $(SRC_NAME) -p1 --forward --dry-run --batch --fuzz=0 -i ../inadyn-bounded-log.patch >/dev/null || exit 1; \
+		patch -d $(SRC_NAME) -p1 --forward --batch --fuzz=0 -i ../inadyn-bounded-log.patch || exit 1; \
 	fi )
 
 config_test:

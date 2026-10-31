@@ -1171,7 +1171,7 @@ int inetd_main(int argc UNUSED_PARAM, char **argv)
 		 * in vforked child, making opened fds and syslog()
 		 * internal state inconsistent.
 		 * This was observed to leak file descriptors. */
-		openlog(applet_name, LOG_PID | LOG_NDELAY, LOG_DAEMON);
+		bb_openlog(applet_name, LOG_PID | LOG_NDELAY, LOG_DAEMON);
 		logmode = LOGMODE_SYSLOG;
 	}
 

@@ -832,7 +832,7 @@ udp_relay( int sockfd, struct server_ctx* ctx )
     (void) close( sockfd );
     free_server_ctx( ctx );
 
-    closelog();
+    udpxy_closelog();
 
     TRACE( (void)tmfprintf( g_flog, "Child process=[%d] exits with rc=[%d]\n",
                 getpid(), rc) );
@@ -1407,7 +1407,7 @@ udpxy_main( int argc, char* const argv[] )
         return rc;
     }
 
-    openlog( g_udpxy_app, LOG_CONS | LOG_PID, LOG_LOCAL0 );
+    udpxy_openlog( g_udpxy_app, LOG_CONS | LOG_PID, LOG_LOCAL0 );
 
     do {
         if( (argc < 2) || (port <= 0) || (rc != 0) ) {
@@ -1483,12 +1483,12 @@ udpxy_main( int argc, char* const argv[] )
             rc = ERR_INTERNAL; break;
         }
 
-        syslog( LOG_NOTICE, "%s is starting\n", g_app_info );
+        udpxy_syslog( LOG_NOTICE, "%s is starting\n", g_app_info );
         TRACE( printcmdln( g_flog, g_app_info, argc, argv ) );
 
         rc = srv_loop( ipaddr, port, mcast_addr );
 
-        syslog( LOG_NOTICE, "%s is exiting with rc=[%d]\n",
+        udpxy_syslog( LOG_NOTICE, "%s is exiting with rc=[%d]\n",
                 g_app_info, rc);
         TRACE( tmfprintf( g_flog, "%s is exiting with rc=[%d]\n",
                     g_udpxy_app, rc ) );
@@ -1505,7 +1505,7 @@ udpxy_main( int argc, char* const argv[] )
         (void) fclose(g_flog);
     }
 
-    closelog();
+    udpxy_closelog();
     free_uopt( &g_uopt );
 
     return rc;

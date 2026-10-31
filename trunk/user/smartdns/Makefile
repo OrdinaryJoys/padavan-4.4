@@ -6,7 +6,10 @@ all: extract_test config_test
 
 extract_test:
 	( if [ ! -d $(SRC_NAME) ]; then \
-		tar zxf $(SRC_NAME).tar.gz ; \
+		tar zxf $(SRC_NAME).tar.gz || exit 1; \
+	fi; \
+	if ! patch -d $(SRC_NAME) -p1 -R --force --dry-run --batch --fuzz=0 -i ../smartdns-bounded-log.patch >/dev/null 2>&1; then \
+		patch -d $(SRC_NAME) -p1 --batch --fuzz=0 -i ../smartdns-bounded-log.patch || exit 1; \
 	fi )
 
 config_test:

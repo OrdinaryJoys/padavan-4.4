@@ -516,7 +516,7 @@ int telnetd_main(int argc UNUSED_PARAM, char **argv)
 	}
 	/* Redirect log to syslog early, if needed */
 	if (IS_INETD || (opt & OPT_SYSLOG) || !(opt & OPT_FOREGROUND)) {
-		openlog(applet_name, LOG_PID, LOG_DAEMON);
+		bb_openlog(applet_name, LOG_PID, LOG_DAEMON);
 		logmode = LOGMODE_SYSLOG;
 	}
 #if ENABLE_FEATURE_TELNETD_STANDALONE

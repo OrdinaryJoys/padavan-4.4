@@ -107,6 +107,7 @@ extern bool Log2Stderr;           // Log to stderr instead of to syslog
 extern int  LogLevel;             // Log threshold, LOG_WARNING .... LOG_DEBUG 
 
 void my_log( int Serverity, int Errno, const char *FmtSt, ... );
+void igmp_log_open(void);
 
 /* ifvc.c
  */

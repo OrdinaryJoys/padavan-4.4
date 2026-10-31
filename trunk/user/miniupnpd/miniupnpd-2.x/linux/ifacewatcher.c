@@ -43,6 +43,7 @@
 #include <arpa/inet.h>
 #include <net/if.h>
 #include <syslog.h>
+#include "../boundedlog.h"
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -70,7 +71,7 @@ OpenAndConfInterfaceWatchSocket(void)
 	s = socket(PF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
 	if (s == -1)
 	{
-		syslog(LOG_ERR, "socket(PF_NETLINK, SOCK_RAW, NETLINK_ROUTE): %m");
+		miniupnpd_syslog(LOG_ERR, "socket(PF_NETLINK, SOCK_RAW, NETLINK_ROUTE): %m");
 		return -1;
 	}
 
@@ -81,7 +82,7 @@ OpenAndConfInterfaceWatchSocket(void)
 
 	if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) < 0)
 	{
-		syslog(LOG_ERR, "bind(netlink): %m");
+		miniupnpd_syslog(LOG_ERR, "bind(netlink): %m");
 		close(s);
 		return -1;
 	}
@@ -111,19 +112,19 @@ ProcessInterfaceUp(struct ifinfomsg *ifi)
 
 	if (if_indextoname(ifi->ifi_index, ifname) == NULL)
 	{
-		syslog(LOG_ERR, "if_indextoname(%d, ifname) failed", ifi->ifi_index);
+		miniupnpd_syslog(LOG_ERR, "if_indextoname(%d, ifname) failed", ifi->ifi_index);
 		return -1;
 	}
 
 	if (getifaddr(ifname, ifstraddr, 16) < 0)
 	{
-		syslog(LOG_DEBUG, "getifaddr(%s, ifaddr, 16) failed", ifname);
+		miniupnpd_syslog(LOG_DEBUG, "getifaddr(%s, ifaddr, 16) failed", ifname);
 		return 1;
 	}
 
 	if (inet_pton(AF_INET, ifstraddr, &ifaddr) != 1)
 	{
-		syslog(LOG_ERR, "inet_pton(AF_INET, \"%s\", &ifaddr) failed", ifstraddr);
+		miniupnpd_syslog(LOG_ERR, "inet_pton(AF_INET, \"%s\", &ifaddr) failed", ifstraddr);
 		return -1;
 	}
 
@@ -133,13 +134,13 @@ ProcessInterfaceUp(struct ifinfomsg *ifi)
 		if (lan_addr->addr.s_addr != ifaddr.s_addr)
 			continue;
 
-		syslog(LOG_INFO, "Interface up: %s (%s)", ifname, ifstraddr);
+		miniupnpd_syslog(LOG_INFO, "Interface up: %s (%s)", ifname, ifstraddr);
 
 		/* adding new lan_iface entry */
 		lan_iface = (struct lan_iface_s *) malloc(sizeof(struct lan_iface_s));
 		if (lan_iface == NULL)
 		{
-			syslog(LOG_ERR, "malloc(sizeof(struct lan_iface_s): %m");
+			miniupnpd_syslog(LOG_ERR, "malloc(sizeof(struct lan_iface_s): %m");
 			continue;
 		}
 
@@ -156,13 +157,13 @@ ProcessInterfaceUp(struct ifinfomsg *ifi)
 
 		/* adding multicast membership for SSDP */
 		if(AddMulticastMembership(sudp, ifaddr.s_addr, ifi->ifi_index) < 0)
-			syslog(LOG_WARNING, "Failed to add multicast membership for interface %s (%s)", ifname, ifstraddr);
+			miniupnpd_syslog(LOG_WARNING, "Failed to add multicast membership for interface %s (%s)", ifname, ifstraddr);
 		else
-			syslog(LOG_INFO, "Multicast membership added for %s (%s)", ifname, ifstraddr);
+			miniupnpd_syslog(LOG_INFO, "Multicast membership added for %s (%s)", ifname, ifstraddr);
 
 		/* create SSDP notify socket */
 		if (OpenAndConfSSDPNotifySocket(lan_iface) < 0)
-			syslog(LOG_WARNING, "Failed to open SSDP notify socket for interface %s (%s)", ifname, ifstraddr);
+			miniupnpd_syslog(LOG_WARNING, "Failed to open SSDP notify socket for interface %s (%s)", ifname, ifstraddr);
 
 #ifdef ENABLE_NATPMP
 		/* create NAT-PMP socket */
@@ -175,9 +176,9 @@ ProcessInterfaceUp(struct ifinfomsg *ifi)
 		{
 			lan_iface->snatpmp = OpenAndConfNATPMPSocket(ifaddr.s_addr);
 			if (lan_iface->snatpmp < 0)
-				syslog(LOG_ERR, "OpenAndConfNATPMPSocket(ifaddr.s_addr) failed for %s (%s)", ifname, ifstraddr);
+				miniupnpd_syslog(LOG_ERR, "OpenAndConfNATPMPSocket(ifaddr.s_addr) failed for %s (%s)", ifname, ifstraddr);
 			else
-				syslog(LOG_INFO, "Listening for NAT-PMP connection on %s:%d", ifstraddr, NATPMP_PORT);
+				miniupnpd_syslog(LOG_INFO, "Listening for NAT-PMP connection on %s:%d", ifstraddr, NATPMP_PORT);
 		}
 #endif
 	}
@@ -200,13 +201,13 @@ ProcessInterfaceDown(struct ifinfomsg *ifi)
 		return 0;
 
 	/* one of our interfaces is going down, clean up */
-	syslog(LOG_INFO, "Interface down: %s", lan_iface->iface.name);
+	miniupnpd_syslog(LOG_INFO, "Interface down: %s", lan_iface->iface.name);
 
 	/* remove multicast membership for SSDP */
 	if(DropMulticastMembership(sudp, lan_iface->lan_addr->addr.s_addr, lan_iface->iface.index) < 0)
-		syslog(LOG_WARNING, "Failed to drop multicast membership for interface %s (%s)", lan_iface->iface.name, lan_iface->lan_addr->str);
+		miniupnpd_syslog(LOG_WARNING, "Failed to drop multicast membership for interface %s (%s)", lan_iface->iface.name, lan_iface->lan_addr->str);
 	else
-		syslog(LOG_INFO, "Multicast membership dropped for %s (%s)", lan_iface->iface.name, lan_iface->lan_addr->str);
+		miniupnpd_syslog(LOG_INFO, "Multicast membership dropped for %s (%s)", lan_iface->iface.name, lan_iface->lan_addr->str);
 
 	/* closing SSDP notify socket */
 	close(lan_iface->snotify);
@@ -258,7 +259,7 @@ ProcessInterfaceWatchNotify(int s)
 	len = recvmsg(s, &hdr, 0);
 	if (len < 0)
 	{
-		syslog(LOG_ERR, "recvmsg(s, &hdr, 0): %m");
+		miniupnpd_syslog(LOG_ERR, "recvmsg(s, &hdr, 0): %m");
 		return;
 	}
 
@@ -286,10 +287,10 @@ ProcessInterfaceWatchNotify(int s)
 			ifi = (struct ifinfomsg *) NLMSG_DATA(nlhdr);
 			if(is_del) {
 				if(ProcessInterfaceDown(ifi) < 0)
-					syslog(LOG_ERR, "ProcessInterfaceDown(ifi) failed");
+					miniupnpd_syslog(LOG_ERR, "ProcessInterfaceDown(ifi) failed");
 			} else {
 				if(ProcessInterfaceUp(ifi) < 0)
-					syslog(LOG_ERR, "ProcessInterfaceUp(ifi) failed");
+					miniupnpd_syslog(LOG_ERR, "ProcessInterfaceUp(ifi) failed");
 			}
 #endif
 			break;
@@ -299,7 +300,7 @@ ProcessInterfaceWatchNotify(int s)
 			/* see /usr/include/linux/netlink.h
 			 * and /usr/include/linux/rtnetlink.h */
 			ifa = (struct ifaddrmsg *) NLMSG_DATA(nlhdr);
-			syslog(LOG_DEBUG, "%s %s index=%d fam=%d", "ProcessInterfaceWatchNotify",
+			miniupnpd_syslog(LOG_DEBUG, "%s %s index=%d fam=%d", "ProcessInterfaceWatchNotify",
 			       is_del ? "RTM_DELADDR" : "RTM_NEWADDR",
 			       ifa->ifa_index, ifa->ifa_family);
 			for(rth = IFA_RTA(ifa), rtl = IFA_PAYLOAD(nlhdr);
@@ -331,7 +332,7 @@ ProcessInterfaceWatchNotify(int s)
 				default:
 					strncpy(tmp, "*unknown*", sizeof(tmp));
 				}
-				syslog(LOG_DEBUG, " - %u - %s type=%d",
+				miniupnpd_syslog(LOG_DEBUG, " - %u - %s type=%d",
 				       ifa->ifa_index, tmp,
 				       rth->rta_type);
 			}
@@ -340,7 +341,7 @@ ProcessInterfaceWatchNotify(int s)
 			}
 			break;
 		default:
-			syslog(LOG_DEBUG, "%s type %d ignored",
+			miniupnpd_syslog(LOG_DEBUG, "%s type %d ignored",
 			       "ProcessInterfaceWatchNotify", nlhdr->nlmsg_type);
 		}
 	}

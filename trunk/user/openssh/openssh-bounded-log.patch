@@ -1,0 +1,37 @@
+--- a/log.c
++++ b/log.c
+@@ -51,6 +51,10 @@
+ # include <vis.h>
+ #endif
+ 
++#include "../../shared/bounded_syslog.h"
++
++static struct padavan_log_context padavan_ssh_log = PADAVAN_LOG_CONTEXT_INIT;
++
+ #include "log.h"
+ #include "match.h"
+ 
+@@ -268,8 +272,8 @@
+ 	openlog_r(argv0 ? argv0 : __progname, LOG_PID, log_facility, &sdata);
+ 	closelog_r(&sdata);
+ #else
+-	openlog(argv0 ? argv0 : __progname, LOG_PID, log_facility);
+-	closelog();
++	padavan_log_open(&padavan_ssh_log, argv0 ? argv0 : __progname, LOG_PID, log_facility);
++	padavan_log_close(&padavan_ssh_log);
+ #endif
+ }
+ 
+@@ -416,9 +420,9 @@
+ 		syslog_r(pri, &sdata, "%.500s", fmtbuf);
+ 		closelog_r(&sdata);
+ #else
+-		openlog(progname, LOG_PID, log_facility);
+-		syslog(pri, "%.500s", fmtbuf);
+-		closelog();
++		padavan_log_open(&padavan_ssh_log, progname, LOG_PID, log_facility);
++		padavan_log_write(&padavan_ssh_log, pri, "%.500s", fmtbuf);
++		padavan_log_close(&padavan_ssh_log);
+ #endif
+ 	}
+ 	errno = saved_errno;

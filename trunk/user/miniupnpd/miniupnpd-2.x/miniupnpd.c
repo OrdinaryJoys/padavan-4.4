@@ -32,6 +32,7 @@
 #include <fcntl.h>
 #include <sys/file.h>
 #include <syslog.h>
+#include "boundedlog.h"
 #include <sys/time.h>
 #include <time.h>
 #include <signal.h>
@@ -199,7 +200,7 @@ tomato_load(void)
 					}
 					*b = 0;
 					rhost = NULL;
-					syslog(LOG_DEBUG, "Read redirection [%s] from file: %s port %hu to %s port %hu, timestamp: %u (%u)",
+					miniupnpd_syslog(LOG_DEBUG, "Read redirection [%s] from file: %s port %hu to %s port %hu, timestamp: %u (%u)",
 						a + 1, proto, eport, iaddr, iport, timestamp, leaseduration);
 					upnp_redirect(rhost, eport, iaddr, iport, proto, a + 1, leaseduration);
 				}
@@ -319,7 +320,7 @@ OpenAndConfHTTPSocket(unsigned short * port)
 	if(s < 0 && ipv6 && errno == EAFNOSUPPORT)
 	{
 		/* the system doesn't support IPV6 */
-		syslog(LOG_WARNING, "socket(PF_INET6, ...) failed with EAFNOSUPPORT, disabling IPv6");
+		miniupnpd_syslog(LOG_WARNING, "socket(PF_INET6, ...) failed with EAFNOSUPPORT, disabling IPv6");
 		SETFLAG(IPV6DISABLEDMASK);
 		ipv6 = 0;
 		/* Try again with IPv4 */
@@ -328,26 +329,26 @@ OpenAndConfHTTPSocket(unsigned short * port)
 #endif
 	if(s < 0)
 	{
-		syslog(LOG_ERR, "socket(http): %m");
+		miniupnpd_syslog(LOG_ERR, "socket(http): %m");
 		return -1;
 	}
 
 	if(setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &i, sizeof(i)) < 0)
 	{
-		syslog(LOG_WARNING, "setsockopt(http, SO_REUSEADDR): %m");
+		miniupnpd_syslog(LOG_WARNING, "setsockopt(http, SO_REUSEADDR): %m");
 	}
 #if 0
 	/* enable this to force IPV6 only for IPV6 socket.
 	 * see http://www.ietf.org/rfc/rfc3493.txt section 5.3 */
 	if(setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, &i, sizeof(i)) < 0)
 	{
-		syslog(LOG_WARNING, "setsockopt(http, IPV6_V6ONLY): %m");
+		miniupnpd_syslog(LOG_WARNING, "setsockopt(http, IPV6_V6ONLY): %m");
 	}
 #endif
 
 	if(!set_non_blocking(s))
 	{
-		syslog(LOG_WARNING, "set_non_blocking(http): %m");
+		miniupnpd_syslog(LOG_WARNING, "set_non_blocking(http): %m");
 	}
 
 #ifdef ENABLE_IPV6
@@ -381,7 +382,7 @@ OpenAndConfHTTPSocket(unsigned short * port)
 		if(setsockopt(s, SOL_SOCKET, SO_BINDTODEVICE,
 		              lan_addrs.lh_first->ifname,
 		              strlen(lan_addrs.lh_first->ifname)) < 0)
-			syslog(LOG_WARNING, "setsockopt(http, SO_BINDTODEVICE, %s): %m",
+			miniupnpd_syslog(LOG_WARNING, "setsockopt(http, SO_BINDTODEVICE, %s): %m",
 			       lan_addrs.lh_first->ifname);
 	}
 #endif /* defined(SO_BINDTODEVICE) && !defined(MULTIPLE_EXTERNAL_IP) */
@@ -394,14 +395,14 @@ OpenAndConfHTTPSocket(unsigned short * port)
 	if(bind(s, (struct sockaddr *)&listenname, listenname_len) < 0)
 #endif
 	{
-		syslog(LOG_ERR, "bind(http): %m");
+		miniupnpd_syslog(LOG_ERR, "bind(http): %m");
 		close(s);
 		return -1;
 	}
 
 	if(listen(s, 5) < 0)
 	{
-		syslog(LOG_ERR, "listen(http): %m");
+		miniupnpd_syslog(LOG_ERR, "listen(http): %m");
 		close(s);
 		return -1;
 	}
@@ -412,7 +413,7 @@ OpenAndConfHTTPSocket(unsigned short * port)
 			struct sockaddr_in6 sockinfo;
 			socklen_t len = sizeof(struct sockaddr_in6);
 			if (getsockname(s, (struct sockaddr *)&sockinfo, &len) < 0) {
-				syslog(LOG_ERR, "getsockname(): %m");
+				miniupnpd_syslog(LOG_ERR, "getsockname(): %m");
 			} else {
 				*port = ntohs(sockinfo.sin6_port);
 			}
@@ -421,7 +422,7 @@ OpenAndConfHTTPSocket(unsigned short * port)
 			struct sockaddr_in sockinfo;
 			socklen_t len = sizeof(struct sockaddr_in);
 			if (getsockname(s, (struct sockaddr *)&sockinfo, &len) < 0) {
-				syslog(LOG_ERR, "getsockname(): %m");
+				miniupnpd_syslog(LOG_ERR, "getsockname(): %m");
 			} else {
 				*port = ntohs(sockinfo.sin_port);
 			}
@@ -449,7 +450,7 @@ ProcessIncomingHTTP(int shttpl, const char * protocol)
 	{
 		/* ignore EAGAIN, EWOULDBLOCK, EINTR, we just try again later */
 		if(errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
-			syslog(LOG_ERR, "accept(http): %m");
+			miniupnpd_syslog(LOG_ERR, "accept(http): %m");
 	}
 	else
 	{
@@ -458,12 +459,12 @@ ProcessIncomingHTTP(int shttpl, const char * protocol)
 
 		sockaddr_to_string((struct sockaddr *)&clientname, addr_str, sizeof(addr_str));
 #ifdef DEBUG
-		syslog(LOG_DEBUG, "%s connection from %s", protocol, addr_str);
+		miniupnpd_syslog(LOG_DEBUG, "%s connection from %s", protocol, addr_str);
 #endif /* DEBUG */
 		if(get_lan_for_peer((struct sockaddr *)&clientname) == NULL)
 		{
 			/* The peer is not a LAN ! */
-			syslog(LOG_DEBUG,
+			miniupnpd_syslog(LOG_DEBUG,
 			       "%s peer %s is not from a LAN, closing the connection",
 			       protocol, addr_str);
 			close(shttp);
@@ -506,7 +507,7 @@ ProcessIncomingHTTP(int shttpl, const char * protocol)
 			else
 			{
 				if(errno != ENOSPC)
-					syslog(LOG_ERR, "New_upnphttp() failed");
+					miniupnpd_syslog(LOG_ERR, "New_upnphttp() failed");
 				close(shttp);
 			}
 		}
@@ -547,32 +548,32 @@ OpenAndConfNFqueue(){
 
         /* Get a queue connection handle from the module */
         if (!(nfqHandle = nfq_open())) {
-		syslog(LOG_ERR, "Error in nfq_open(): %m");
+		miniupnpd_syslog(LOG_ERR, "Error in nfq_open(): %m");
                 return -1;
         }
 
         /* Unbind the handler from processing any IP packets
            Not totally sure why this is done, or if it's necessary... */
         if ((e = nfq_unbind_pf(nfqHandle, AF_INET)) < 0) {
-		syslog(LOG_ERR, "Error in nfq_unbind_pf(): %m");
+		miniupnpd_syslog(LOG_ERR, "Error in nfq_unbind_pf(): %m");
                 return -1;
         }
 
         /* Bind this handler to process IP packets... */
         if (nfq_bind_pf(nfqHandle, AF_INET) < 0) {
-		syslog(LOG_ERR, "Error in nfq_bind_pf(): %m");
+		miniupnpd_syslog(LOG_ERR, "Error in nfq_bind_pf(): %m");
                 return -1;
         }
 
         /*      Install a callback on queue -Q */
         if (!(myQueue = nfq_create_queue(nfqHandle,  nfqueue, &nfqueue_cb, NULL))) {
-		syslog(LOG_ERR, "Error in nfq_create_queue(): %m");
+		miniupnpd_syslog(LOG_ERR, "Error in nfq_create_queue(): %m");
                 return -1;
         }
 
         /*      Turn on packet copy mode */
         if (nfq_set_mode(myQueue, NFQNL_COPY_PACKET, 0xffff) < 0) {
-		syslog(LOG_ERR, "Error setting packet copy mode (): %m");
+		miniupnpd_syslog(LOG_ERR, "Error setting packet copy mode (): %m");
                 return -1;
         }
 
@@ -640,7 +641,7 @@ static int nfqueue_cb(
 		nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
 
 	} else {
-		syslog(LOG_ERR,"nfq_get_msg_packet_hdr failed");
+		miniupnpd_syslog(LOG_ERR,"nfq_get_msg_packet_hdr failed");
 		return 1;
 		/* from nfqueue source: 0 = ok, >0 = soft error, <0 hard error */
 	}
@@ -676,13 +677,13 @@ OpenAndConfCtlUnixSocket(const char * path)
 	if(bind(s, (struct sockaddr *)&localun,
 	        sizeof(struct sockaddr_un)) < 0)
 	{
-		syslog(LOG_ERR, "bind(sctl): %m");
+		miniupnpd_syslog(LOG_ERR, "bind(sctl): %m");
 		close(s);
 		s = -1;
 	}
 	else if(listen(s, 5) < 0)
 	{
-		syslog(LOG_ERR, "listen(sctl): %m");
+		miniupnpd_syslog(LOG_ERR, "listen(sctl): %m");
 		close(s);
 		s = -1;
 	}
@@ -771,7 +772,7 @@ sigterm(int sig)
 #if 0
 	/* calling syslog() is forbidden in signal handler according to
 	 * signal(3) */
-	syslog(LOG_NOTICE, "received signal %d, good-bye", sig);
+	miniupnpd_syslog(LOG_NOTICE, "received signal %d, good-bye", sig);
 #endif
 
 	quitting = 1;
@@ -786,7 +787,7 @@ sigusr1(int sig)
 #if 0
 	/* calling syslog() is forbidden in signal handler according to
 	 * signal(3) */
-	syslog(LOG_INFO, "received signal %d, public ip address change", sig);
+	miniupnpd_syslog(LOG_INFO, "received signal %d, public ip address change", sig);
 #endif
 
 	should_send_public_address_change_notif = 1;
@@ -816,19 +817,19 @@ set_startup_time(int sysuptime)
 		fd = open("/proc/uptime", O_RDONLY);
 		if(fd < 0)
 		{
-			syslog(LOG_ERR, "open(\"/proc/uptime\" : %m");
+			miniupnpd_syslog(LOG_ERR, "open(\"/proc/uptime\" : %m");
 		}
 		else
 		{
 			memset(buff, 0, sizeof(buff));
 			if(read(fd, buff, sizeof(buff) - 1) < 0)
 			{
-				syslog(LOG_ERR, "read(\"/proc/uptime\" : %m");
+				miniupnpd_syslog(LOG_ERR, "read(\"/proc/uptime\" : %m");
 			}
 			else
 			{
 				uptime = atoi(buff);
-				syslog(LOG_INFO, "system uptime is %d seconds", uptime);
+				miniupnpd_syslog(LOG_INFO, "system uptime is %d seconds", uptime);
 			}
 			close(fd);
 			startup_time -= uptime;
@@ -846,10 +847,10 @@ set_startup_time(int sysuptime)
 				if(ptr)
 					memcpy(&startup_time, ptr, sizeof(startup_time));
 				else
-					syslog(LOG_ERR, "cannot find boot_time kstat");
+					miniupnpd_syslog(LOG_ERR, "cannot find boot_time kstat");
 			}
 			else
-				syslog(LOG_ERR, "cannot open kstats for unix/0/system_misc: %m");
+				miniupnpd_syslog(LOG_ERR, "cannot open kstats for unix/0/system_misc: %m");
 			kstat_close(kc);
 		}
 #else
@@ -858,7 +859,7 @@ set_startup_time(int sysuptime)
 		int name[2] = { CTL_KERN, KERN_BOOTTIME };
 		if(sysctl(name, 2, &boottime, &size, NULL, 0) < 0)
 		{
-			syslog(LOG_ERR, "sysctl(\"kern.boottime\") failed");
+			miniupnpd_syslog(LOG_ERR, "sysctl(\"kern.boottime\") failed");
 		}
 		else
 		{
@@ -1600,22 +1601,22 @@ init(int argc, char * * argv, struct runtime_vars * v)
 		openlog_option |= LOG_PERROR;	/* also log on stderr */
 	}
 
-	openlog("miniupnpd", openlog_option, LOG_MINIUPNPD);
+	miniupnpd_openlog("miniupnpd", openlog_option, LOG_MINIUPNPD);
 
 	if(!debug_flag)
 	{
 		/* speed things up and ignore LOG_INFO and LOG_DEBUG */
-		setlogmask(LOG_UPTO(LOG_NOTICE));
+		miniupnpd_setlogmask(LOG_UPTO(LOG_NOTICE));
 	}
 
 	if(checkforrunning(pidfilename) < 0)
 	{
-		syslog(LOG_ERR, "MiniUPnPd is already running. EXITING");
+		miniupnpd_syslog(LOG_ERR, "MiniUPnPd is already running. EXITING");
 		return 1;
 	}
 
 #ifdef TOMATO
-	syslog(LOG_NOTICE, "version " MINIUPNPD_VERSION " started");
+	miniupnpd_syslog(LOG_NOTICE, "version " MINIUPNPD_VERSION " started");
 #endif /* TOMATO */
 
 	set_startup_time(GETFLAG(SYSUPTIMEMASK));
@@ -1639,12 +1640,12 @@ init(int argc, char * * argv, struct runtime_vars * v)
 
 	if(sigaction(SIGTERM, &sa, NULL) < 0)
 	{
-		syslog(LOG_ERR, "Failed to set %s handler. EXITING", "SIGTERM");
+		miniupnpd_syslog(LOG_ERR, "Failed to set %s handler. EXITING", "SIGTERM");
 		return 1;
 	}
 	if(sigaction(SIGINT, &sa, NULL) < 0)
 	{
-		syslog(LOG_ERR, "Failed to set %s handler. EXITING", "SIGINT");
+		miniupnpd_syslog(LOG_ERR, "Failed to set %s handler. EXITING", "SIGINT");
 		return 1;
 	}
 #ifdef TOMATO
@@ -1656,12 +1657,12 @@ init(int argc, char * * argv, struct runtime_vars * v)
 	if(sigaction(SIGPIPE, &sa, NULL) < 0)
 #endif	/* TOMATO */
 	{
-		syslog(LOG_ERR, "Failed to ignore SIGPIPE signals");
+		miniupnpd_syslog(LOG_ERR, "Failed to ignore SIGPIPE signals");
 	}
 	sa.sa_handler = sigusr1;
 	if(sigaction(SIGUSR1, &sa, NULL) < 0)
 	{
-		syslog(LOG_NOTICE, "Failed to set %s handler", "SIGUSR1");
+		miniupnpd_syslog(LOG_NOTICE, "Failed to set %s handler", "SIGUSR1");
 	}
 
 	/* initialize random number generator */
@@ -1670,7 +1671,7 @@ init(int argc, char * * argv, struct runtime_vars * v)
 	/* initialize redirection engine (and pinholes) */
 	if(init_redirect() < 0)
 	{
-		syslog(LOG_ERR, "Failed to init redirection engine. EXITING");
+		miniupnpd_syslog(LOG_ERR, "Failed to init redirection engine. EXITING");
 		return 1;
 	}
 #ifdef ENABLE_UPNPPINHOLE
@@ -1684,7 +1685,7 @@ init(int argc, char * * argv, struct runtime_vars * v)
 
 #ifdef ENABLE_LEASEFILE
 	/*remove(lease_file);*/
-	syslog(LOG_INFO, "Reloading rules from lease file");
+	miniupnpd_syslog(LOG_INFO, "Reloading rules from lease file");
 	reload_from_lease_file();
 #endif
 
@@ -1861,11 +1862,11 @@ main(int argc, char * * argv)
 	   !GETFLAG(ENABLEUPNPMASK)
 #endif
 	   ) {
-		syslog(LOG_ERR, "Why did you run me anyway?");
+		miniupnpd_syslog(LOG_ERR, "Why did you run me anyway?");
 		return 0;
 	}
 
-	syslog(LOG_NOTICE, "version " MINIUPNPD_VERSION " starting%s%sext if %s BOOTID=%u",
+	miniupnpd_syslog(LOG_NOTICE, "version " MINIUPNPD_VERSION " starting%s%sext if %s BOOTID=%u",
 #ifdef ENABLE_NATPMP
 #ifdef ENABLE_PCP
 	       GETFLAG(ENABLENATPMPMASK) ? " NAT-PMP/PCP " : " ",
@@ -1890,18 +1891,18 @@ main(int argc, char * * argv)
 #endif /* ENABLE_IPV6 */
 		if(shttpl < 0)
 		{
-			syslog(LOG_ERR, "Failed to open socket for HTTP. EXITING");
+			miniupnpd_syslog(LOG_ERR, "Failed to open socket for HTTP. EXITING");
 			return 1;
 		}
 		v.port = listen_port;
-		syslog(LOG_NOTICE, "HTTP listening on port %d", v.port);
+		miniupnpd_syslog(LOG_NOTICE, "HTTP listening on port %d", v.port);
 #if defined(V6SOCKETS_ARE_V6ONLY) && defined(ENABLE_IPV6)
 		if(!GETFLAG(IPV6DISABLEDMASK))
 		{
 			shttpl_v4 =  OpenAndConfHTTPSocket(&listen_port, 0);
 			if(shttpl_v4 < 0)
 			{
-				syslog(LOG_ERR, "Failed to open socket for HTTP on port %d (IPv4). EXITING", v.port);
+				miniupnpd_syslog(LOG_ERR, "Failed to open socket for HTTP on port %d (IPv4). EXITING", v.port);
 				return 1;
 			}
 		}
@@ -1916,16 +1917,16 @@ main(int argc, char * * argv)
 #endif /* ENABLE_IPV6 */
 		if(shttpl < 0)
 		{
-			syslog(LOG_ERR, "Failed to open socket for HTTPS. EXITING");
+			miniupnpd_syslog(LOG_ERR, "Failed to open socket for HTTPS. EXITING");
 			return 1;
 		}
 		v.https_port = listen_port;
-		syslog(LOG_NOTICE, "HTTPS listening on port %d", v.https_port);
+		miniupnpd_syslog(LOG_NOTICE, "HTTPS listening on port %d", v.https_port);
 #if defined(V6SOCKETS_ARE_V6ONLY) && defined(ENABLE_IPV6)
 		shttpsl_v4 =  OpenAndConfHTTPSocket(&listen_port, 0);
 		if(shttpsl_v4 < 0)
 		{
-			syslog(LOG_ERR, "Failed to open socket for HTTPS on port %d (IPv4). EXITING", v.https_port);
+			miniupnpd_syslog(LOG_ERR, "Failed to open socket for HTTPS on port %d (IPv4). EXITING", v.https_port);
 			return 1;
 		}
 #endif /* V6SOCKETS_ARE_V6ONLY */
@@ -1934,11 +1935,11 @@ main(int argc, char * * argv)
 		if(!GETFLAG(IPV6DISABLEDMASK)) {
 			if(find_ipv6_addr(lan_addrs.lh_first ? lan_addrs.lh_first->ifname : NULL,
 			                  ipv6_addr_for_http_with_brackets, sizeof(ipv6_addr_for_http_with_brackets)) > 0) {
-				syslog(LOG_NOTICE, "HTTP IPv6 address given to control points : %s",
+				miniupnpd_syslog(LOG_NOTICE, "HTTP IPv6 address given to control points : %s",
 				       ipv6_addr_for_http_with_brackets);
 			} else {
 				memcpy(ipv6_addr_for_http_with_brackets, "[::1]", 6);
-				syslog(LOG_WARNING, "no HTTP IPv6 address, disabling IPv6");
+				miniupnpd_syslog(LOG_WARNING, "no HTTP IPv6 address, disabling IPv6");
 				SETFLAG(IPV6DISABLEDMASK);
 			}
 		}
@@ -1948,9 +1949,9 @@ main(int argc, char * * argv)
 		sudp = OpenAndConfSSDPReceiveSocket(0);
 		if(sudp < 0)
 		{
-			syslog(LOG_NOTICE, "Failed to open socket for receiving SSDP. Trying to use MiniSSDPd");
+			miniupnpd_syslog(LOG_NOTICE, "Failed to open socket for receiving SSDP. Trying to use MiniSSDPd");
 			if(SubmitServicesToMiniSSDPD(lan_addrs.lh_first->str, v.port) < 0) {
-				syslog(LOG_ERR, "Failed to connect to MiniSSDPd. EXITING");
+				miniupnpd_syslog(LOG_ERR, "Failed to connect to MiniSSDPd. EXITING");
 				return 1;
 			}
 		}
@@ -1960,7 +1961,7 @@ main(int argc, char * * argv)
 			sudpv6 = OpenAndConfSSDPReceiveSocket(1);
 			if(sudpv6 < 0)
 			{
-				syslog(LOG_WARNING, "Failed to open socket for receiving SSDP (IP v6).");
+				miniupnpd_syslog(LOG_WARNING, "Failed to open socket for receiving SSDP (IP v6).");
 			}
 		}
 #endif
@@ -1968,7 +1969,7 @@ main(int argc, char * * argv)
 		/* open socket for sending notifications */
 		if(OpenAndConfSSDPNotifySockets(snotify) < 0)
 		{
-			syslog(LOG_ERR, "Failed to open sockets for sending SSDP notify "
+			miniupnpd_syslog(LOG_ERR, "Failed to open sockets for sending SSDP notify "
 		                "messages. EXITING");
 			return 1;
 		}
@@ -1980,7 +1981,7 @@ main(int argc, char * * argv)
 			sifacewatcher = OpenAndConfInterfaceWatchSocket();
 			if (sifacewatcher < 0)
 			{
-				syslog(LOG_ERR, "Failed to open socket for receiving network interface notifications");
+				miniupnpd_syslog(LOG_ERR, "Failed to open socket for receiving network interface notifications");
 			}
 		}
 #endif
@@ -1993,16 +1994,16 @@ main(int argc, char * * argv)
 		if(OpenAndConfNATPMPSockets(snatpmp) < 0)
 #ifdef ENABLE_PCP
 		{
-			syslog(LOG_ERR, "Failed to open sockets for NAT-PMP/PCP.");
+			miniupnpd_syslog(LOG_ERR, "Failed to open sockets for NAT-PMP/PCP.");
 		} else {
-			syslog(LOG_NOTICE, "Listening for NAT-PMP/PCP traffic on port %u",
+			miniupnpd_syslog(LOG_NOTICE, "Listening for NAT-PMP/PCP traffic on port %u",
 			       NATPMP_PORT);
 		}
 #else
 		{
-			syslog(LOG_ERR, "Failed to open sockets for NAT PMP.");
+			miniupnpd_syslog(LOG_ERR, "Failed to open sockets for NAT PMP.");
 		} else {
-			syslog(LOG_NOTICE, "Listening for NAT-PMP traffic on port %u",
+			miniupnpd_syslog(LOG_NOTICE, "Listening for NAT-PMP traffic on port %u",
 			       NATPMP_PORT);
 		}
 #endif
@@ -2024,10 +2025,10 @@ main(int argc, char * * argv)
 	if ( nfqueue != -1 && n_nfqix > 0) {
 		nfqh = OpenAndConfNFqueue();
 		if(nfqh < 0) {
-			syslog(LOG_ERR, "Failed to open fd for NFQUEUE.");
+			miniupnpd_syslog(LOG_ERR, "Failed to open fd for NFQUEUE.");
 			return 1;
 		} else {
-			syslog(LOG_NOTICE, "Opened NFQUEUE %d",nfqueue);
+			miniupnpd_syslog(LOG_NOTICE, "Opened NFQUEUE %d",nfqueue);
 		}
 	}
 #endif
@@ -2047,7 +2048,7 @@ main(int argc, char * * argv)
 		/* send public address change notifications if needed */
 		if(should_send_public_address_change_notif)
 		{
-			syslog(LOG_INFO, "should send external iface address change notification(s)");
+			miniupnpd_syslog(LOG_INFO, "should send external iface address change notification(s)");
 #ifdef ENABLE_NATPMP
 			if(GETFLAG(ENABLENATPMPMASK))
 				SendNATPMPPublicAddressChangeNotification(snatpmp, addr_count);
@@ -2067,7 +2068,7 @@ main(int argc, char * * argv)
 		 * needed */
 		if(gettimeofday(&timeofday, 0) < 0)
 		{
-			syslog(LOG_ERR, "gettimeofday(): %m");
+			miniupnpd_syslog(LOG_ERR, "gettimeofday(): %m");
 			timeout.tv_sec = v.notify_interval;
 			timeout.tv_usec = 0;
 		}
@@ -2123,7 +2124,7 @@ main(int argc, char * * argv)
 		if(nextruletoclean_timestamp
 		  && ((unsigned int)timeofday.tv_sec >= nextruletoclean_timestamp))
 		{
-			syslog(LOG_DEBUG, "cleaning expired Port Mappings");
+			miniupnpd_syslog(LOG_DEBUG, "cleaning expired Port Mappings");
 			get_upnp_rules_state_list(0);
 		}
 		if(nextruletoclean_timestamp
@@ -2131,7 +2132,7 @@ main(int argc, char * * argv)
 		{
 			timeout.tv_sec = nextruletoclean_timestamp - timeofday.tv_sec;
 			timeout.tv_usec = 0;
-			syslog(LOG_DEBUG, "setting timeout to %u sec",
+			miniupnpd_syslog(LOG_DEBUG, "setting timeout to %u sec",
 			       (unsigned)timeout.tv_sec);
 		}
 #ifdef ENABLE_UPNPPINHOLE
@@ -2208,7 +2209,7 @@ main(int argc, char * * argv)
 #ifdef DEBUG
 		if(i > 1)
 		{
-			syslog(LOG_DEBUG, "%d active incoming HTTP connections", i);
+			miniupnpd_syslog(LOG_DEBUG, "%d active incoming HTTP connections", i);
 		}
 #endif
 #ifdef ENABLE_NATPMP
@@ -2250,7 +2251,7 @@ main(int argc, char * * argv)
 			i = get_next_scheduled_send(&next_send);
 			if(i > 0) {
 #ifdef DEBUG
-				syslog(LOG_DEBUG, "%d queued sendto", i);
+				miniupnpd_syslog(LOG_DEBUG, "%d queued sendto", i);
 #endif
 				i = get_sendto_fds(&writeset, &max_fd, &timeofday);
 				if(timeofday.tv_sec > next_send.tv_sec ||
@@ -2288,13 +2289,13 @@ main(int argc, char * * argv)
 			}
 #endif	/* TOMATO */
 			if(errno == EINTR) continue; /* interrupted by a signal, start again */
-			syslog(LOG_ERR, "select(all): %m");
-			syslog(LOG_ERR, "Failed to select open sockets. EXITING");
+			miniupnpd_syslog(LOG_ERR, "select(all): %m");
+			miniupnpd_syslog(LOG_ERR, "Failed to select open sockets. EXITING");
 			return 1;	/* very serious cause of error */
 		}
 		i = try_sendto(&writeset);
 		if(i < 0) {
-			syslog(LOG_DEBUG, "try_sendto failed to send %d packets", -i);
+			miniupnpd_syslog(LOG_DEBUG, "try_sendto failed to send %d packets", -i);
 		}
 #ifdef USE_MINIUPNPDCTL
 		for(ectl = ctllisthead.lh_first; ectl;)
@@ -2345,11 +2346,11 @@ main(int argc, char * * argv)
 			/*syslog(LOG_DEBUG, "sctl!");*/
 			s = accept(sctl, (struct sockaddr *)&clientname,
 			           &clientnamelen);
-			syslog(LOG_DEBUG, "sctl! : '%s'", clientname.sun_path);
+			miniupnpd_syslog(LOG_DEBUG, "sctl! : '%s'", clientname.sun_path);
 			tmp = malloc(sizeof(struct ctlelem));
 			if (tmp == NULL)
 			{
-				syslog(LOG_ERR, "Unable to allocate memory for ctlelem in main()");
+				miniupnpd_syslog(LOG_ERR, "Unable to allocate memory for ctlelem in main()");
 				close(s);
 			}
 			else
@@ -2394,7 +2395,7 @@ main(int argc, char * * argv)
 					if(lan_addr == NULL) {
 						char sender_str[64];
 						sockaddr_to_string((struct sockaddr *)&senderaddr, sender_str, sizeof(sender_str));
-						syslog(LOG_DEBUG, "NAT-PMP packet sender %s not from a LAN, ignoring",
+						miniupnpd_syslog(LOG_DEBUG, "NAT-PMP packet sender %s not from a LAN, ignoring",
 						       sender_str);
 						continue;
 					}
@@ -2417,7 +2418,7 @@ main(int argc, char * * argv)
 				if(lan_addr == NULL) {
 					char sender_str[64];
 					sockaddr_to_string((struct sockaddr *)&senderaddr, sender_str, sizeof(sender_str));
-					syslog(LOG_DEBUG, "NAT-PMP packet sender %s not from a LAN, ignoring",
+					miniupnpd_syslog(LOG_DEBUG, "NAT-PMP packet sender %s not from a LAN, ignoring",
 					       sender_str);
 					continue;
 				}
@@ -2461,7 +2462,7 @@ main(int argc, char * * argv)
 #ifdef ENABLE_IPV6
 		if(sudpv6 >= 0 && FD_ISSET(sudpv6, &readset))
 		{
-			syslog(LOG_INFO, "Received UDP Packet (IPv6)");
+			miniupnpd_syslog(LOG_INFO, "Received UDP Packet (IPv6)");
 #ifdef ENABLE_HTTPS
 			ProcessSSDPRequest(sudpv6, (unsigned short)v.port, (unsigned short)v.https_port);
 #else
@@ -2545,7 +2546,7 @@ main(int argc, char * * argv)
 	}	/* end of main loop */
 
 shutdown:
-	syslog(LOG_NOTICE, "shutting down MiniUPnPd");
+	miniupnpd_syslog(LOG_NOTICE, "shutting down MiniUPnPd");
 	/* send good-bye */
 	if (GETFLAG(ENABLEUPNPMASK))
 	{
@@ -2555,7 +2556,7 @@ shutdown:
 		if(SendSSDPGoodbye(snotify, addr_count * 2) < 0)
 #endif
 		{
-			syslog(LOG_DEBUG, "Failed to broadcast good-bye notifications");
+			miniupnpd_syslog(LOG_DEBUG, "Failed to broadcast good-bye notifications");
 		}
 	}
 	/* try to send pending packets */
@@ -2606,7 +2607,7 @@ shutdown:
 		sctl = -1;
 		if(unlink("/var/run/miniupnpd.ctl") < 0)
 		{
-			syslog(LOG_ERR, "unlink() %m");
+			miniupnpd_syslog(LOG_ERR, "unlink() %m");
 		}
 	}
 #endif
@@ -2624,7 +2625,7 @@ shutdown:
 	/* remove pidfile */
 	if(pidfilename && (unlink(pidfilename) < 0))
 	{
-		syslog(LOG_ERR, "Failed to remove pidfile %s: %m", pidfilename);
+		miniupnpd_syslog(LOG_ERR, "Failed to remove pidfile %s: %m", pidfilename);
 	}
 
 	/* delete lists */
@@ -2642,7 +2643,7 @@ shutdown:
 	free(snatpmp);
 #endif
 	free(snotify);
-	closelog();
+	miniupnpd_closelog();
 #ifndef DISABLE_CONFIG_FILE
 	freeoptions();
 #endif

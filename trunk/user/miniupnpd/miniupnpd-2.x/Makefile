@@ -97,7 +97,7 @@ CFLAGS += -m64 -mcmodel=medlow
 .endif
 .endif
 
-STDOBJS = miniupnpd.o upnphttp.o upnpdescgen.o upnpsoap.o \
+STDOBJS = boundedlog.o miniupnpd.o upnphttp.o upnpdescgen.o upnpsoap.o \
           upnpredirect.o getifaddr.o daemonize.o upnpglobalvars.o \
           options.o upnppermissions.o minissdp.o natpmp.o pcpserver.o \
           upnpevents.o upnputils.o getconnstatus.o \

@@ -56,7 +56,7 @@ int read_config_file(char *filename, char *keyword, char *value)
                 /* ignore long lines */
                 if (buffer[(len = strlen(buffer)) - 1] != '\n') {
                         if (len >= MAX_CONFIG_STRING_SIZE - 2) {
-                                syslog(LOG_ERR, "Long config file line ignored.");
+                                pptpd_syslog(LOG_ERR, "Long config file line ignored.");
                                 char *p;
                                 do
                                         p = fgets(buffer, MAX_CONFIG_STRING_SIZE - 1, in);
@@ -83,7 +83,7 @@ int read_config_file(char *filename, char *keyword, char *value)
                 /* Non-blank lines starting with a space are an error */
 
                 if (*buff_ptr == ' ' || *buff_ptr == '\t') {
-                        syslog(LOG_ERR, "Config file line starts with a space: %s", buff_ptr);
+                        pptpd_syslog(LOG_ERR, "Config file line starts with a space: %s", buff_ptr);
                         continue;
                 }
 

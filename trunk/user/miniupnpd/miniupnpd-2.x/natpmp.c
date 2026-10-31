@@ -8,6 +8,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <syslog.h>
+#include "boundedlog.h"
 #include <errno.h>
 #include <time.h>
 #include <sys/types.h>
@@ -36,18 +37,18 @@ int OpenAndConfNATPMPSocket(in_addr_t addr)
 	snatpmp = socket(PF_INET, SOCK_DGRAM, 0/*IPPROTO_UDP*/);
 	if(snatpmp<0)
 	{
-		syslog(LOG_ERR, "%s: socket(): %m",
+		miniupnpd_syslog(LOG_ERR, "%s: socket(): %m",
 		       "OpenAndConfNATPMPSocket");
 		return -1;
 	}
 	if(setsockopt(snatpmp, SOL_SOCKET, SO_REUSEADDR, &i, sizeof(i)) < 0)
 	{
-		syslog(LOG_WARNING, "%s: setsockopt(SO_REUSEADDR): %m",
+		miniupnpd_syslog(LOG_WARNING, "%s: setsockopt(SO_REUSEADDR): %m",
 		       "OpenAndConfNATPMPSocket");
 	}
 	if(!set_non_blocking(snatpmp))
 	{
-		syslog(LOG_WARNING, "%s: set_non_blocking(): %m",
+		miniupnpd_syslog(LOG_WARNING, "%s: set_non_blocking(): %m",
 		       "OpenAndConfNATPMPSocket");
 	}
 	{
@@ -59,7 +60,7 @@ int OpenAndConfNATPMPSocket(in_addr_t addr)
 		natpmp_addr.sin_addr.s_addr = addr;
 		if(bind(snatpmp, (struct sockaddr *)&natpmp_addr, sizeof(natpmp_addr)) < 0)
 		{
-			syslog(LOG_ERR, "%s: bind(): %m",
+			miniupnpd_syslog(LOG_ERR, "%s: bind(): %m",
 			       "OpenAndConfNATPMPSocket");
 			close(snatpmp);
 			return -1;
@@ -104,7 +105,7 @@ static void FillPublicAddressResponse(unsigned char * resp, in_addr_t senderaddr
 			resp[3] = 3;	/* Network Failure (e.g. NAT box itself
 			                 * has not obtained a DHCP lease) */
 		} else if(getifaddr(ext_if_name, tmp, INET_ADDRSTRLEN, NULL, NULL) < 0) {
-			syslog(LOG_DEBUG, "Failed to get IP for interface %s", ext_if_name);
+			miniupnpd_syslog(LOG_DEBUG, "Failed to get IP for interface %s", ext_if_name);
 			resp[3] = 3;	/* Network Failure (e.g. NAT box itself
 			                 * has not obtained a DHCP lease) */
 		} else {
@@ -159,7 +160,7 @@ int ReceiveNATPMPOrPCPPacket(int s, struct sockaddr * senderaddr,
 		if(errno != EAGAIN &&
 		   errno != EWOULDBLOCK &&
 		   errno != EINTR) {
-			syslog(LOG_ERR, "recvmsg(natpmp): %m");
+			miniupnpd_syslog(LOG_ERR, "recvmsg(natpmp): %m");
 		}
 		return n;
 	}
@@ -168,7 +169,7 @@ int ReceiveNATPMPOrPCPPacket(int s, struct sockaddr * senderaddr,
 		memset(receiveraddr, 0, sizeof(struct sockaddr_in6));
 	}
 	if ((msg.msg_flags & MSG_TRUNC) || (msg.msg_flags & MSG_CTRUNC)) {
-		syslog(LOG_WARNING, "%s: truncated message",
+		miniupnpd_syslog(LOG_WARNING, "%s: truncated message",
 		       "ReceiveNATPMPOrPCPPacket");
 	}
 	for(h = CMSG_FIRSTHDR(&msg); h;
@@ -176,7 +177,7 @@ int ReceiveNATPMPOrPCPPacket(int s, struct sockaddr * senderaddr,
 		if(h->cmsg_level == IPPROTO_IPV6 && h->cmsg_type == IPV6_PKTINFO) {
 			char tmp[INET6_ADDRSTRLEN];
 			struct in6_pktinfo *ipi6 = (struct in6_pktinfo *)CMSG_DATA(h);
-			syslog(LOG_DEBUG, "%s: packet destination: %s scope_id=%u",
+			miniupnpd_syslog(LOG_DEBUG, "%s: packet destination: %s scope_id=%u",
 			       "ReceiveNATPMPOrPCPPacket",
 			       inet_ntop(AF_INET6, &ipi6->ipi6_addr, tmp, sizeof(tmp)),
 			       ipi6->ipi6_ifindex);
@@ -200,7 +201,7 @@ int ReceiveNATPMPOrPCPPacket(int s, struct sockaddr * senderaddr,
 		if(errno != EAGAIN &&
 		   errno != EWOULDBLOCK &&
 		   errno != EINTR) {
-			syslog(LOG_ERR, "recvfrom(natpmp): %m");
+			miniupnpd_syslog(LOG_ERR, "recvfrom(natpmp): %m");
 		}
 		return n;
 	}
@@ -223,14 +224,14 @@ void ProcessIncomingNATPMPPacket(int s, unsigned char *msg_buff, int len,
 
 	if(!inet_ntop(AF_INET, &senderaddr->sin_addr,
 			senderaddrstr, sizeof(senderaddrstr))) {
-		syslog(LOG_ERR, "inet_ntop(natpmp): %m");
+		miniupnpd_syslog(LOG_ERR, "inet_ntop(natpmp): %m");
 	}
 
-	syslog(LOG_INFO, "NAT-PMP request received from %s:%hu %dbytes",
+	miniupnpd_syslog(LOG_INFO, "NAT-PMP request received from %s:%hu %dbytes",
 	       senderaddrstr, ntohs(senderaddr->sin_port), n);
 
 	if(n<2 || ((((req[1]-1)&~1)==0) && n<12)) {
-		syslog(LOG_WARNING, "discarding NAT-PMP request (too short) %dBytes",
+		miniupnpd_syslog(LOG_WARNING, "discarding NAT-PMP request (too short) %dBytes",
 		       n);
 		return;
 	}
@@ -247,12 +248,12 @@ void ProcessIncomingNATPMPPacket(int s, unsigned char *msg_buff, int len,
 	WRITENU32(resp+4, time(NULL) - startup_time);
 	if(req[0] > 0) {
 		/* invalid version */
-		syslog(LOG_WARNING, "unsupported NAT-PMP version : %u",
+		miniupnpd_syslog(LOG_WARNING, "unsupported NAT-PMP version : %u",
 		       (unsigned)req[0]);
 		resp[3] = 1;	/* unsupported version */
 	} else switch(req[1]) {
 	case 0:	/* Public address request */
-		syslog(LOG_INFO, "NAT-PMP public address request");
+		miniupnpd_syslog(LOG_INFO, "NAT-PMP public address request");
 		FillPublicAddressResponse(resp, senderaddr->sin_addr.s_addr);
 		resplen = 12;
 		break;
@@ -272,7 +273,7 @@ void ProcessIncomingNATPMPPacket(int s, unsigned char *msg_buff, int len,
 			eport = READNU16(req+6);
 			lifetime = READNU32(req+8);
 			proto = (req[1]==1)?IPPROTO_UDP:IPPROTO_TCP;
-			syslog(LOG_INFO, "NAT-PMP port mapping request : "
+			miniupnpd_syslog(LOG_INFO, "NAT-PMP port mapping request : "
 			                 "%hu->%s:%hu %s lifetime=%us",
 			                 eport, senderaddrstr, iport,
 			                 (req[1]==1)?"udp":"tcp", lifetime);
@@ -298,7 +299,7 @@ void ProcessIncomingNATPMPPacket(int s, unsigned char *msg_buff, int len,
 						  &iport2, &proto2,
 						  desc, sizeof(desc),
 				          0, 0, &timestamp, 0, 0) >= 0) {
-					syslog(LOG_DEBUG, "%d %d %hu->'%s':%hu '%s'",
+					miniupnpd_syslog(LOG_DEBUG, "%d %d %hu->'%s':%hu '%s'",
 					       index, proto2, eport2, iaddr2, iport2, desc);
 					if(0 == strcmp(iaddr2, senderaddrstr)
 					  && 0 == memcmp(desc, "NAT-PMP", 7)) {
@@ -306,12 +307,12 @@ void ProcessIncomingNATPMPPacket(int s, unsigned char *msg_buff, int len,
 						if((iport == 0) || ((iport == iport2) && (proto == proto2))) {
 							r = _upnp_delete_redir(eport2, proto2);
 							if(r < 0) {
-								syslog(LOG_DEBUG, "Failed to remove NAT-PMP mapping eport %hu, protocol %s",
+								miniupnpd_syslog(LOG_DEBUG, "Failed to remove NAT-PMP mapping eport %hu, protocol %s",
 								       eport2, (proto2==IPPROTO_TCP)?"TCP":"UDP");
 								resp[3] = 2;	/* Not Authorized/Refused */
 								break;
 							} else {
-								syslog(LOG_INFO, "NAT-PMP %s port %hu mapping removed",
+								miniupnpd_syslog(LOG_INFO, "NAT-PMP %s port %hu mapping removed",
 								       proto2==IPPROTO_TCP?"TCP":"UDP", eport2);
 								index--;
 							}
@@ -332,11 +333,11 @@ void ProcessIncomingNATPMPPacket(int s, unsigned char *msg_buff, int len,
 						eport_first = eport;
 					} else if(eport == eport_first) { /* no eport available */
 						if(any_eport_allowed == 0) { /* all eports rejected by permissions */
-							syslog(LOG_ERR, "No allowed eport for NAT-PMP %hu %s->%s:%hu",
+							miniupnpd_syslog(LOG_ERR, "No allowed eport for NAT-PMP %hu %s->%s:%hu",
 							       eport, (proto==IPPROTO_TCP)?"tcp":"udp", senderaddrstr, iport);
 							resp[3] = 2;	/* Not Authorized/Refused */
 						} else { /* at least one eport allowed (but none available) */
-							syslog(LOG_ERR, "Failed to find available eport for NAT-PMP %hu %s->%s:%hu",
+							miniupnpd_syslog(LOG_ERR, "Failed to find available eport for NAT-PMP %hu %s->%s:%hu",
 							       eport, (proto==IPPROTO_TCP)?"tcp":"udp", senderaddrstr, iport);
 							resp[3] = 4;	/* Out of resources */
 						}
@@ -350,7 +351,7 @@ void ProcessIncomingNATPMPPacket(int s, unsigned char *msg_buff, int len,
 					any_eport_allowed = 1;	/* at lease one eport is allowed */
 #ifdef CHECK_PORTINUSE
 					if (port_in_use(ext_if_name, eport, proto, senderaddrstr, iport) > 0) {
-						syslog(LOG_INFO, "port %hu protocol %s already in use",
+						miniupnpd_syslog(LOG_INFO, "port %hu protocol %s already in use",
 						       eport, (proto==IPPROTO_TCP)?"tcp":"udp");
 						eport++;
 						if(eport == 0) eport++; /* skip port zero */
@@ -365,11 +366,11 @@ void ProcessIncomingNATPMPPacket(int s, unsigned char *msg_buff, int len,
 						if(strcmp(senderaddrstr, iaddr_old)==0
 						    && iport==iport_old) {
 							/* redirection already existing */
-							syslog(LOG_INFO, "port %hu %s already redirected to %s:%hu, replacing",
+							miniupnpd_syslog(LOG_INFO, "port %hu %s already redirected to %s:%hu, replacing",
 							       eport, (proto==IPPROTO_TCP)?"tcp":"udp", iaddr_old, iport_old);
 							/* remove and then add again */
 							if(_upnp_delete_redir(eport, proto) < 0) {
-								syslog(LOG_ERR, "failed to remove port mapping");
+								miniupnpd_syslog(LOG_ERR, "failed to remove port mapping");
 								break;
 							}
 						} else {
@@ -392,7 +393,7 @@ void ProcessIncomingNATPMPPacket(int s, unsigned char *msg_buff, int len,
 					if(upnp_redirect_internal(NULL, eport, senderaddrstr,
 					                          iport, proto, desc,
 					                          timestamp) < 0) {
-						syslog(LOG_DEBUG, "Failed to add NAT-PMP %hu %s->%s:%hu '%s'",
+						miniupnpd_syslog(LOG_DEBUG, "Failed to add NAT-PMP %hu %s->%s:%hu '%s'",
 						       eport, (proto==IPPROTO_TCP)?"tcp":"udp", senderaddrstr, iport, desc);
 						resp[3] = 3;  /* Failure */
 					}
@@ -411,9 +412,9 @@ void ProcessIncomingNATPMPPacket(int s, unsigned char *msg_buff, int len,
 	n = sendto_or_schedule(s, resp, resplen, 0,
 	           (struct sockaddr *)senderaddr, sizeof(*senderaddr));
 	if(n<0) {
-		syslog(LOG_DEBUG, "sendto(natpmp): %m");
+		miniupnpd_syslog(LOG_DEBUG, "sendto(natpmp): %m");
 	} else if(n<resplen) {
-		syslog(LOG_ERR, "sendto(natpmp): sent only %d bytes out of %d",
+		miniupnpd_syslog(LOG_ERR, "sendto(natpmp): sent only %d bytes out of %d",
 		       n, resplen);
 	}
 }
@@ -438,7 +439,7 @@ void SendNATPMPPublicAddressChangeNotification(int * sockets, int n_sockets)
 	FillPublicAddressResponse(notif, 0);
 	if(notif[3])
 	{
-		syslog(LOG_WARNING, "%s: cannot get public IP address, stopping",
+		miniupnpd_syslog(LOG_WARNING, "%s: cannot get public IP address, stopping",
 		       "SendNATPMPPublicAddressChangeNotification");
 		return;
 	}
@@ -466,7 +467,7 @@ void SendNATPMPPublicAddressChangeNotification(int * sockets, int n_sockets)
 		           (struct sockaddr *)&sockname, sizeof(struct sockaddr_in));
 		if(n < 0)
 		{
-			syslog(LOG_ERR, "%s: sendto(s_udp=%d): %m",
+			miniupnpd_syslog(LOG_ERR, "%s: sendto(s_udp=%d): %m",
 			       "SendNATPMPPublicAddressChangeNotification", sockets[j]);
 			return;
 		}
@@ -476,7 +477,7 @@ void SendNATPMPPublicAddressChangeNotification(int * sockets, int n_sockets)
 		           (struct sockaddr *)&sockname, sizeof(struct sockaddr_in));
 		if(n < 0)
 		{
-			syslog(LOG_ERR, "%s: sendto(s_udp=%d): %m",
+			miniupnpd_syslog(LOG_ERR, "%s: sendto(s_udp=%d): %m",
 			       "SendNATPMPPublicAddressChangeNotification", sockets[j]);
 			return;
 		}

@@ -73,7 +73,7 @@ int read_pptp_packet(int clientFd, void *packet, struct pptp_out_call_rply *rply
         /* read a packet and parse header */
         if ((bytes_read = read_pptp_header(clientFd, packet, &pptp_ctrl_type)) <= 0) {
                 /* error reading packet */
-                syslog(LOG_ERR, "CTRL: couldn't read packet header (%s)", bytes_read ? "retry" : "exit");
+                pptpd_syslog(LOG_ERR, "CTRL: couldn't read packet header (%s)", bytes_read ? "retry" : "exit");
                 return bytes_read;
         }
 
@@ -111,7 +111,7 @@ int read_pptp_packet(int clientFd, void *packet, struct pptp_out_call_rply *rply
                 break;
 
         default:
-                syslog(LOG_ERR, "CTRL: PPTP Control Message type %d not supported.", pptp_ctrl_type);
+                pptpd_syslog(LOG_ERR, "CTRL: PPTP Control Message type %d not supported.", pptp_ctrl_type);
                 pptp_ctrl_type = -1;
         }
 
@@ -138,14 +138,14 @@ ssize_t send_pptp_packet(int clientFd, void *packet, size_t packet_size)
 
         if ((bytes_written = write(clientFd, packet, packet_size)) == -1) {
                 /* write failed */
-                syslog(LOG_ERR, "CTRL: Couldn't write packet to client.");
+                pptpd_syslog(LOG_ERR, "CTRL: Couldn't write packet to client.");
                 return -1;
 
         } else {
                 /* debugging */
                 if (pptpctrl_debug) {
-                        syslog(LOG_DEBUG, "CTRL: I wrote %lu bytes to the client.", (unsigned long) packet_size);
-                        syslog(LOG_DEBUG, "CTRL: Sent packet to client");
+                        pptpd_syslog(LOG_DEBUG, "CTRL: I wrote %lu bytes to the client.", (unsigned long) packet_size);
+                        pptpd_syslog(LOG_DEBUG, "CTRL: Sent packet to client");
                 }
                 return bytes_written;
         }
@@ -217,7 +217,7 @@ ssize_t read_pptp_header(int clientFd, unsigned char *packet, int *pptp_ctrl_typ
                 bytes_ttl = buffered;
                 buffered = 0;
                 if (pptpctrl_debug)
-                        syslog(LOG_DEBUG, "CTRL: Read in previous incomplete ctrl packet");
+                        pptpd_syslog(LOG_DEBUG, "CTRL: Read in previous incomplete ctrl packet");
         } else
                 bytes_ttl = 0;
 
@@ -235,12 +235,12 @@ ssize_t read_pptp_header(int clientFd, unsigned char *packet, int *pptp_ctrl_typ
                                                 return(0);
                                         memcpy(buffer, packet, bytes_ttl);
                                 }
-                                syslog(LOG_ERR, "CTRL: Error reading ctrl packet length (bytes_ttl=%lu): %s", (unsigned long) bytes_ttl, strerror(errno));
+                                pptpd_syslog(LOG_ERR, "CTRL: Error reading ctrl packet length (bytes_ttl=%lu): %s", (unsigned long) bytes_ttl, strerror(errno));
                                 return -1;
                         }
                         /* FALLTHRU */
                 case 0:
-                        syslog(LOG_ERR, "CTRL: EOF or bad error reading ctrl packet length.");
+                        pptpd_syslog(LOG_ERR, "CTRL: EOF or bad error reading ctrl packet length.");
                         return 0;
                 default:
                         bytes_ttl += bytes_this;
@@ -252,7 +252,7 @@ ssize_t read_pptp_header(int clientFd, unsigned char *packet, int *pptp_ctrl_typ
                                         return(0);
                                 memcpy(buffer, packet, bytes_ttl);
                                 if (pptpctrl_debug)
-                                        syslog(LOG_DEBUG, "CTRL: Incomplete ctrl packet length, retry later");
+                                        pptpd_syslog(LOG_DEBUG, "CTRL: Incomplete ctrl packet length, retry later");
                                 return -1;
                         }
                 }
@@ -267,7 +267,7 @@ ssize_t read_pptp_header(int clientFd, unsigned char *packet, int *pptp_ctrl_typ
          */
         length = htons(*(u_int16_t *) packet);
         if (length <= 10 || length > PPTP_MAX_CTRL_PCKT_SIZE) {
-                syslog(LOG_ERR, "CTRL: 11 < Control packet (length=%d) < "
+                pptpd_syslog(LOG_ERR, "CTRL: 11 < Control packet (length=%d) < "
                                 "PPTP_MAX_CTRL_PCKT_SIZE (%d)",
                                 length, PPTP_MAX_CTRL_PCKT_SIZE);
                 /* we loose sync (unless we malloc something big, which isn't a good
@@ -289,12 +289,12 @@ ssize_t read_pptp_header(int clientFd, unsigned char *packet, int *pptp_ctrl_typ
                                         return(0);
                                 memcpy(buffer, packet, bytes_ttl);
                         }
-                        syslog(LOG_ERR, "CTRL: Error reading ctrl packet (bytes_ttl=%lu,length=%d): %s", (unsigned long) bytes_ttl, length, strerror(errno));
+                        pptpd_syslog(LOG_ERR, "CTRL: Error reading ctrl packet (bytes_ttl=%lu,length=%d): %s", (unsigned long) bytes_ttl, length, strerror(errno));
                         return -1;
                 }
                 /* FALLTHRU */
         case 0:
-                syslog(LOG_ERR, "CTRL: EOF or bad error reading ctrl packet.");
+                pptpd_syslog(LOG_ERR, "CTRL: EOF or bad error reading ctrl packet.");
                 return 0;
         default:
                 bytes_ttl += bytes_this;
@@ -306,7 +306,7 @@ ssize_t read_pptp_header(int clientFd, unsigned char *packet, int *pptp_ctrl_typ
                                 return(0);
                         memcpy(buffer, packet, bytes_ttl);
                         if (pptpctrl_debug)
-                                syslog(LOG_DEBUG, "CTRL: Incomplete ctrl packet, retry later");
+                                pptpd_syslog(LOG_DEBUG, "CTRL: Incomplete ctrl packet, retry later");
                         return -1;
                 }
         }
@@ -319,7 +319,7 @@ ssize_t read_pptp_header(int clientFd, unsigned char *packet, int *pptp_ctrl_typ
         /* Packet sanity check on magic cookie */
         if (ntohl(header->magic) != PPTP_MAGIC_COOKIE) {
                 /* Oops! Not a valid Control Message */
-                syslog(LOG_ERR, "CTRL: Bad magic cookie - lost syncronization, closing control connection.");
+                pptpd_syslog(LOG_ERR, "CTRL: Bad magic cookie - lost syncronization, closing control connection.");
                 /* draft states loss of syncronization must result in
                  * immediate closing of the control connection
                  */
@@ -328,7 +328,7 @@ ssize_t read_pptp_header(int clientFd, unsigned char *packet, int *pptp_ctrl_typ
         /* Woohoo! Looks like we got a valid PPTP packet */
         *pptp_ctrl_type = (int) (ntohs(header->ctrl_type));
         if (pptpctrl_debug)
-                syslog(LOG_DEBUG, "CTRL: Received PPTP Control Message (type: %d)", *pptp_ctrl_type);
+                pptpd_syslog(LOG_DEBUG, "CTRL: Received PPTP Control Message (type: %d)", *pptp_ctrl_type);
         return bytes_ttl;
 }
 
@@ -346,7 +346,7 @@ ssize_t read_pptp_header(int clientFd, unsigned char *packet, int *pptp_ctrl_typ
 
 #define DEBUG_PACKET(what) \
         if(pptpctrl_debug) \
-                syslog(LOG_DEBUG, "CTRL: Made a " what " packet")
+                pptpd_syslog(LOG_DEBUG, "CTRL: Made a " what " packet")
 
 /*
  * deal_start_ctrl_conn
@@ -421,7 +421,7 @@ void deal_out_call(unsigned char *packet, struct pptp_out_call_rply *rply_packet
 
         if ((pac_call_id = getcall()) == htons(-1)) {
                 /* XXX should reject call */
-                syslog(LOG_ERR, "CTRL: No free Call IDs!");
+                pptpd_syslog(LOG_ERR, "CTRL: No free Call IDs!");
                 pac_call_id = 0;
         }
         MAKE_CTRL_HEADER(out_call_rply, OUT_CALL_RPLY);
@@ -441,7 +441,7 @@ void deal_out_call(unsigned char *packet, struct pptp_out_call_rply *rply_packet
          */
         out_call_rply.pckt_recv_size = out_call_rqst->pckt_recv_size;
         if(pptpctrl_debug)
-                syslog(LOG_DEBUG, "CTRL: Set parameters to %d maxbps, %d window size",
+                pptpd_syslog(LOG_DEBUG, "CTRL: Set parameters to %d maxbps, %d window size",
                         ntohl(out_call_rply.speed), ntohs(out_call_rply.pckt_recv_size));
         out_call_rply.pckt_delay = htons(PCKT_PROCESS_DELAY);
         out_call_rply.channel_id = htonl(CHANNEL_ID);
@@ -503,7 +503,7 @@ void deal_call_clr(unsigned char *packet, struct pptp_out_call_rply *rply_packet
          */
         if ((pac_call_id = freecall()) == htons(-1)) {
                 /* XXX should return an error */
-                syslog(LOG_ERR, "CTRL: Could not free Call ID [call clear]!");
+                pptpd_syslog(LOG_ERR, "CTRL: Could not free Call ID [call clear]!");
         }
         MAKE_CTRL_HEADER(call_disconn_ntfy, CALL_DISCONN_NTFY);
         call_disconn_ntfy.call_id = pac_call_id;
@@ -544,9 +544,9 @@ void deal_set_link_info(unsigned char *packet)
                    packets ... this is not complaint with the RFC but
                    still works. */
                 if (pptpctrl_debug)
-                        syslog(LOG_DEBUG, "CTRL: Ignored a SET LINK INFO packet with real ACCMs! (intentional non-compliance with section 2.15 of RFC 2637, ACCM is negotiated by PPP LCP asyncmap)");
+                        pptpd_syslog(LOG_DEBUG, "CTRL: Ignored a SET LINK INFO packet with real ACCMs! (intentional non-compliance with section 2.15 of RFC 2637, ACCM is negotiated by PPP LCP asyncmap)");
         } else if (pptpctrl_debug)
-                syslog(LOG_DEBUG, "CTRL: Got a SET LINK INFO packet with standard ACCMs");
+                pptpd_syslog(LOG_DEBUG, "CTRL: Got a SET LINK INFO packet with standard ACCMs");
 }
 
 void make_echo_req_packet(struct pptp_out_call_rply *rply_packet, ssize_t * rply_size, u_int32_t echo_id)
@@ -582,7 +582,7 @@ void make_call_admin_shutdown(struct pptp_out_call_rply *rply_packet, ssize_t * 
          */
         if ((pac_call_id = freecall()) == htons(-1)) {
                 /* XXX should return an error */
-                syslog(LOG_ERR, "CTRL: Could not free Call ID [admin shutdown]!");
+                pptpd_syslog(LOG_ERR, "CTRL: Could not free Call ID [admin shutdown]!");
         }
         MAKE_CTRL_HEADER(call_disconn_ntfy, CALL_DISCONN_NTFY);
         call_disconn_ntfy.call_id = pac_call_id;
@@ -676,7 +676,7 @@ u_int16_t getcall()
                 _pac_init = 1;
         }
         if(_pac_call_id != htons(-1))
-                syslog(LOG_ERR, "CTRL: Asked to allocate call id when call open, not handled well");
+                pptpd_syslog(LOG_ERR, "CTRL: Asked to allocate call id when call open, not handled well");
         _pac_call_id = htons(i);
         i++;
         return _pac_call_id;
@@ -699,7 +699,7 @@ u_int16_t freecall()
         }
         ret = _pac_call_id;
         if(_pac_call_id == htons(-1))
-                syslog(LOG_ERR, "CTRL: Asked to free call when no call open, not handled well");
+                pptpd_syslog(LOG_ERR, "CTRL: Asked to free call when no call open, not handled well");
         _pac_call_id = htons(-1);
         return ret;
 }

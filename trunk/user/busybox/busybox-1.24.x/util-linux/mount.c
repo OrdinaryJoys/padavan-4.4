@@ -1172,7 +1172,7 @@ static int daemonize(void)
 	xdup2(0, 1);
 	xdup2(0, 2);
 	setsid();
-	openlog(applet_name, LOG_PID, LOG_DAEMON);
+	bb_openlog(applet_name, LOG_PID, LOG_DAEMON);
 	logmode = LOGMODE_SYSLOG;
 	return 1;
 }

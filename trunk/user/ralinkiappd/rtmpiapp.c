@@ -23,6 +23,17 @@
 /* Include */
 
 #include "rt_config.h"
+#include "../shared/bounded_syslog.h"
+
+static struct padavan_log_context iapp_syslog = PADAVAN_LOG_CONTEXT_INIT;
+void iapp_log(int priority, const char *format, ...)
+{
+    va_list arguments;
+    va_start(arguments, format);
+    padavan_log_vwrite(&iapp_syslog, priority, format, arguments);
+    va_end(arguments);
+}
+
 #include "rtmpiapp.h"
 #include "iappdefs.h"
 
@@ -3233,7 +3244,7 @@ STATUS IAPP_Init(INT32 Argc, CHAR *pArgv[])
 	/* End of if */
 
 #ifdef SYSLOG
-	openlog("iappd", LOG_PID|LOG_NDELAY, LOG_DAEMON);
+	padavan_log_open(&iapp_syslog, "iappd", LOG_PID|LOG_NDELAY, LOG_DAEMON);
 #endif
 
 	IAPP_Task((VOID *)pCtrlBK);

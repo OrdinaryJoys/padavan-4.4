@@ -16,7 +16,7 @@ SOURCE=ROOT/'trunk/user/dnsmasq/dnsmasq-2.93'
 
 DRIVER=r'''
 #include <assert.h>
-int fixture_fail_after,fixture_allocations,fixture_clock_jump,fixture_clock_calls,fixture_phase,fixture_opens[4];
+int fixture_fail_after,fixture_allocations,fixture_clock_jump,fixture_clock_calls,fixture_clock_add_ms,fixture_phase,fixture_opens[4];
 static int fixture_effects,fixture_scripts;
 unsigned int fixture_cache_pool_nodes(void);
 static void fixture_update_configs(struct dhcp_config *p){(void)p;fixture_effects++;}
@@ -91,9 +91,10 @@ REPLAY=r'''
     if(fault&&!strcmp(fault,"missing")){assert(target&&unlink(target)==0);}
     fixture_fail_after=getenv("K2P_RELOAD_ALLOC_FAIL")?atoi(getenv("K2P_RELOAD_ALLOC_FAIL")):0;
     fixture_clock_jump=getenv("K2P_RELOAD_CLOCK_JUMP")?atoi(getenv("K2P_RELOAD_CLOCK_JUMP")):0;
+    fixture_clock_add_ms=getenv("K2P_RELOAD_CLOCK_MS")?atoi(getenv("K2P_RELOAD_CLOCK_MS")):11000;
     fixture_allocations=fixture_clock_calls=0;memset(fixture_opens,0,sizeof(fixture_opens));fixture_phase=1;
     if(getenv("K2P_RELOAD_EVENT")){
-      int fds[2];assert(pipe(fds)==0);send_event(fds[1],EVENT_RELOAD,0,NULL);close(fds[1]);
+      int fds[2];assert(pipe(fds)==0);send_event(fds[1],getenv("K2P_RELOAD_INITIAL")?EVENT_INIT:EVENT_RELOAD,0,NULL);close(fds[1]);
       async_event(fds[0],2);close(fds[0]);accepted=fixture_effects!=0;
     }else accepted=clear_cache_and_reload(2);
     fixture_print("attempt",accepted);
@@ -108,7 +109,8 @@ REPLAY=r'''
 '''
 
 ALLOC_SHIM=r'''
-extern int fixture_fail_after,fixture_allocations,fixture_clock_jump,fixture_clock_calls,fixture_phase,fixture_opens[4];
+#include <assert.h>
+extern int fixture_fail_after,fixture_allocations,fixture_clock_jump,fixture_clock_calls,fixture_clock_add_ms,fixture_phase,fixture_opens[4];
 void fixture_before_validate(void);
 static void *fixture_malloc(size_t size){
  if(fixture_fail_after&&++fixture_allocations==fixture_fail_after){errno=ENOMEM;return NULL;}
@@ -119,7 +121,7 @@ static void *fixture_calloc(size_t n,size_t size){
  return calloc(n,size);
 }
 static int fixture_clock(clockid_t id,struct timespec *now){
- int result=clock_gettime(id,now);if(!result&&fixture_clock_jump&&++fixture_clock_calls>=fixture_clock_jump)now->tv_sec+=11;
+ int result=clock_gettime(id,now);if(!result&&fixture_clock_jump&&++fixture_clock_calls>=fixture_clock_jump){now->tv_sec+=fixture_clock_add_ms/1000;now->tv_nsec+=(fixture_clock_add_ms%1000)*1000000L;if(now->tv_nsec>=1000000000L){now->tv_sec++;now->tv_nsec-=1000000000L;}}
  return result;
 }
 #define malloc fixture_malloc
@@ -146,7 +148,10 @@ class DNSReloadTransactionTests(unittest.TestCase):
         text+='\nunsigned int fixture_cache_pool_nodes(void) {struct crec *c;struct nameblock *b;unsigned int count=0; for(c=config_spare;c;c=c->next)count++;for(b=hostblocks;b;b=b->next)count++;return count;}\n'
         path.write_text(text)
         path=cls.tree/'src/reload_file.c';text=path.read_text();text=text.replace('#include "reload_file.h"','#include "reload_file.h"\n'+ALLOC_SHIM,1)
-        text=text.replace('int dns_reload_validate(void)\n{','int dns_reload_validate(void)\n{\n  fixture_before_validate();',1);path.write_text(text)
+        text=text.replace('int dns_reload_validate(void)\n{','int dns_reload_validate(void)\n{\n  fixture_before_validate();',1)
+        text=text.replace('  reload.publishing = 1;','  reload.publishing = 1;\n  if(fixture_phase==1&&getenv("K2P_RELOAD_AFTER_VALIDATE")){fixture_clock_jump=1;fixture_clock_add_ms=11000;assert(dns_reload_ok());}',1)
+        text=text.replace('static int reload_memory_limit(size_t *limit)\n{','static int reload_memory_limit(size_t *limit)\n{\n  if(fixture_phase==1&&getenv("K2P_RELOAD_MEMORY")){*limit=sizeof(reload)+(size_t)atol(getenv("K2P_RELOAD_MEMORY"));return 1;}',1)
+        path.write_text(text)
         path=cls.tree/'src/runtime_file.c';text=path.read_text();text=text.replace('#include "runtime_file.h"','#include "runtime_file.h"\nextern int fixture_record_open(const char *,int,...);\n#define open(...) fixture_record_open(__VA_ARGS__)',1);path.write_text(text)
         options='-DNO_DHCP6 -DNO_TFTP -DNO_INOTIFY -DNO_AUTH -DNO_LOOP'
         result=subprocess.run(['make','-j4','CC=clang','COPTS='+options,
@@ -169,7 +174,7 @@ class DNSReloadTransactionTests(unittest.TestCase):
 
     def tearDown(self):self.temp.cleanup()
 
-    def replay(self,key=None,fault=None,bad=None,allocation=None,clock=None,event=False,cycles=None,race=False,directory_files=None):
+    def replay(self,key=None,fault=None,bad=None,allocation=None,clock=None,event=False,cycles=None,race=False,directory_files=None,initial=False,clock_ms=None,memory=None,after_validate=False):
         env={**os.environ,'K2P_RELOAD_FIXTURE':'1','ASAN_OPTIONS':'detect_leaks='+('1' if sys.platform.startswith('linux') else '0')}
         for name,path in self.paths.items():
             path.write_text(self.old[name]);env['K2P_RELOAD_'+name]=str(path)
@@ -187,7 +192,11 @@ class DNSReloadTransactionTests(unittest.TestCase):
         if fault:env['K2P_RELOAD_FAULT']=fault
         if allocation:env['K2P_RELOAD_ALLOC_FAIL']=str(allocation)
         if clock:env['K2P_RELOAD_CLOCK_JUMP']=str(clock)
-        if event:env['K2P_RELOAD_EVENT']='1'
+        if event or initial:env['K2P_RELOAD_EVENT']='1'
+        if initial:env['K2P_RELOAD_INITIAL']='1'
+        if clock_ms is not None:env['K2P_RELOAD_CLOCK_MS']=str(clock_ms)
+        if memory is not None:env['K2P_RELOAD_MEMORY']=str(memory)
+        if after_validate:env['K2P_RELOAD_AFTER_VALIDATE']='1'
         if cycles:env['K2P_RELOAD_CYCLES']=str(cycles)
         config=self.root/'main'
         config.write_text('no-hosts\nno-resolv\nlog-facility='+str(self.root/'log')+'\n'+
@@ -246,7 +255,7 @@ class DNSReloadTransactionTests(unittest.TestCase):
     def test_single_sixteen_mib_hosts_snapshot_remains_supported(self):
         body=('#'+(' '*62)+'\n')*(262144)
         self.assertEqual(len(body),16*1024*1024)
-        rows,_=self.replay(key='H1',bad=body);self.assertEqual(rows[1]['accepted'],1)
+        rows,_=self.replay(key='H1',bad=body,initial=True);self.assertEqual(rows[1]['accepted'],1)
         self.assertEqual(rows[1]['first'],'none')
     def test_aggregate_input_budget_rejects_without_partial_models(self):
         body=('#'+(' '*62)+'\n')*(262144)
@@ -254,6 +263,16 @@ class DNSReloadTransactionTests(unittest.TestCase):
     def test_expanded_directory_file_count_is_bounded_and_preserves_old(self):self.assert_rejected(directory_files=130)
     def test_regular_directory_members_commit_without_rereading(self):
         rows,_=self.replay(directory_files=3);self.assert_state(rows[1],True)
+    def test_hot_reload_expires_at_half_second_but_preserves_whole_old_group(self):self.assert_rejected(clock=5,clock_ms=500,event=True)
+    def test_real_initial_event_retains_ten_second_preparation_budget(self):
+        rows,_=self.replay(clock=5,clock_ms=500,initial=True);self.assert_state(rows[1],True)
+    def test_low_combined_model_snapshot_budget_rejects_before_publication(self):
+        self.assert_rejected(key='OP',bad=self.new['OP']+'#\n'*16000,memory=16384)
+    def test_each_closed_snapshot_releases_charge_before_next_file(self):
+        rows,_=self.replay(bad={'DH':self.new['DH']+'#\n'*16000,'OP':self.new['OP']+'#\n'*16000},memory=65536)
+        self.assert_state(rows[1],True)
+    def test_expiry_after_final_validation_completes_the_atomic_publication(self):
+        rows,_=self.replay(after_validate=True);self.assert_state(rows[1],True)
     def test_repeated_success_reuses_valid_live_models(self):self.replay(cycles=40)
 
 
@@ -330,6 +349,65 @@ int main(int argc,char **argv){struct hostsfile initial={NULL,"/fixture",10,0},*
         for number in (1,2):
             with self.subTest(number=number):self.run_probe(number)
     def test_scandir_failure_with_no_output_vector_is_safe(self):self.run_probe(0,'fail')
+
+
+class ReloadMemoryAdmissionTests(unittest.TestCase):
+    """Actual Linux-admission arithmetic, fake sysinfo only; no host RAM claim."""
+    @classmethod
+    def setUpClass(cls):
+        cls.temp=tempfile.TemporaryDirectory(prefix='k2p-reload-admission-')
+        root=Path(cls.temp.name)
+        body=function((SOURCE/'src/reload_file.c').read_text(),'reload_memory_limit')
+        prelude=r"""
+#include <stdint.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#ifndef __linux__
+#define __linux__ 1
+#endif
+#define DNS_RELOAD_MODEL_BYTES (32U*1024U*1024U)
+#define DNS_RUNTIME_HOSTS_BYTES (16U*1024U*1024U)
+#define DNS_RELOAD_SYSTEM_HEADROOM_BYTES (16U*1024U*1024U)
+struct {unsigned char bytes[1024];} reload;
+struct sysinfo {unsigned long freeram;unsigned int mem_unit;};
+static int fixture_rc;static unsigned long fixture_free;static unsigned int fixture_unit;
+static int sysinfo(struct sysinfo *info){memset(info,0,sizeof(*info));info->freeram=fixture_free;info->mem_unit=fixture_unit;return fixture_rc;}
+"""
+        main=r"""
+int main(int argc,char **argv){size_t limit=0;int accepted;if(argc!=4)return 2;
+ fixture_rc=atoi(argv[1]);fixture_free=(unsigned long)strtoull(argv[2],NULL,10);fixture_unit=(unsigned int)strtoul(argv[3],NULL,10);
+ accepted=reload_memory_limit(&limit);printf("{\"accepted\":%d,\"limit\":%llu}\n",accepted,(unsigned long long)limit);return 0;}
+"""
+        path=root/'probe.c';path.write_text(prelude+body+'\n'+main);cls.binaries=[]
+        for compiler in ['clang']+([shutil.which('gcc-16')] if shutil.which('gcc-16') else []):
+            output=root/Path(compiler).name
+            flags=['-fsanitize=address,undefined'] if compiler=='clang' else []
+            result=subprocess.run([compiler,'-std=c99','-Wall','-Wextra','-Werror',*flags,str(path),'-o',str(output)],capture_output=True,text=True)
+            if result.returncode:raise AssertionError(result.stdout+result.stderr)
+            cls.binaries.append(output)
+    @classmethod
+    def tearDownClass(cls):cls.temp.cleanup()
+    def check_limit(self,free,unit=1,rc=0):
+        rows=[]
+        for binary in self.binaries:
+            result=subprocess.run([str(binary),str(rc),str(free),str(unit)],capture_output=True,text=True,timeout=5,env={**os.environ,'ASAN_OPTIONS':'detect_leaks=0'})
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr);rows.append(json.loads(result.stdout))
+        self.assertTrue(all(row==rows[0] for row in rows));return rows[0]
+    def test_available_ram_caps_at_original_model_plus_snapshot_and_fixed_context(self):
+        self.assertEqual(self.check_limit(1024**3),{'accepted':1,'limit':48*1024*1024+1024})
+    def test_low_available_ram_has_one_fixed_reserve_without_double_subtraction(self):
+        self.assertEqual(self.check_limit(17*1024*1024+1024),{'accepted':1,'limit':1024*1024+1024})
+    def test_no_room_above_system_reserve_and_context_is_rejected(self):
+        for free in (0,16*1024*1024-1,16*1024*1024+1024):
+            with self.subTest(free=free):self.assertEqual(self.check_limit(free),{'accepted':0,'limit':0})
+    def test_sysinfo_failure_and_zero_memory_unit_are_rejected(self):
+        self.assertEqual(self.check_limit(1024**3,rc=-1),{'accepted':0,'limit':0})
+        self.assertEqual(self.check_limit(1024**3,unit=0),{'accepted':0,'limit':0})
+    def test_memory_unit_scaling_and_overflow_are_checked(self):
+        self.assertEqual(self.check_limit((17*1024*1024+1024)//1024,unit=1024),{'accepted':1,'limit':1024*1024+1024})
+        self.assertEqual(self.check_limit(2**64-1,unit=2**32-1),{'accepted':0,'limit':0})
 
 
 if __name__=='__main__':unittest.main()

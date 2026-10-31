@@ -73,7 +73,7 @@ void FAST_FUNC bb_verror_msg(const char *s, va_list p, const char* strerr)
 	}
 #if ENABLE_FEATURE_SYSLOG
 	if (logmode & LOGMODE_SYSLOG) {
-		syslog(syslog_level, "%s", msg + applet_len);
+		bb_syslog(syslog_level, "%s", msg + applet_len);
 	}
 #endif
 	free(msg);
@@ -133,7 +133,7 @@ void FAST_FUNC bb_verror_msg(const char *s, va_list p, const char* strerr)
 	}
 # if ENABLE_FEATURE_SYSLOG
 	if (logmode & LOGMODE_SYSLOG) {
-		syslog(LOG_ERR, "%s", msgc);
+		bb_syslog(LOG_ERR, "%s", msgc);
 	}
 # endif
 	free(msgc);

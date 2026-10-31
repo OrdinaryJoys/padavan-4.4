@@ -22,6 +22,7 @@
 #endif
 
 #include "our_syslog.h"
+struct padavan_log_context pptpd_log_context = PADAVAN_LOG_CONTEXT_INIT;
 #include "our_getopt.h"
 
 #include <fcntl.h>
@@ -155,7 +156,7 @@ int main(int argc, char **argv)
         char tmp[MAX_CONFIG_STRING_SIZE], *tmpstr;
 
         /* open a connection to the syslog daemon */
-        openlog("pptpd", LOG_PID, PPTP_FACILITY);
+        pptpd_openlog("pptpd", LOG_PID, PPTP_FACILITY);
 
         /* process command line options */
         while (1) {
@@ -206,7 +207,7 @@ int main(int argc, char **argv)
                 case 'l': /* --listen */
                         tmpstr = lookup(optarg);
                         if (!tmpstr) {
-                                syslog(LOG_ERR, "MGR: Invalid listening address: %s!", optarg);
+                                pptpd_syslog(LOG_ERR, "MGR: Invalid listening address: %s!", optarg);
                                 return 1;
                         }
                         if (bindaddr) free(bindaddr);
@@ -280,7 +281,7 @@ int main(int argc, char **argv)
                         {
                                 FILE *f;
                                 if (!(f = fopen(optarg, "r"))) {
-                                        syslog(LOG_ERR, "MGR: Config file not found!");
+                                        pptpd_syslog(LOG_ERR, "MGR: Config file not found!");
                                         return 1;
                                 }
                                 fclose(f);
@@ -332,7 +333,7 @@ int main(int argc, char **argv)
         if (!bindaddr && read_config_file(configFile, LISTEN_KEYWORD, tmp) > 0) {
                 tmpstr = lookup(tmp);
                 if(!tmpstr) {
-                        syslog(LOG_ERR, "MGR: Invalid listening address: %s!", tmp);
+                        pptpd_syslog(LOG_ERR, "MGR: Invalid listening address: %s!", tmp);
                         return 1;
                 }
                 bindaddr = strdup(tmpstr);
@@ -391,20 +392,20 @@ int main(int argc, char **argv)
         if (!ppp_binary) ppp_binary = strdup(PPP_BINARY);
         /* check that the PPP binary is executable */
         if (access(ppp_binary, X_OK) < 0) {
-                syslog(LOG_ERR, "MGR: PPP binary %s not executable",
+                pptpd_syslog(LOG_ERR, "MGR: PPP binary %s not executable",
                        ppp_binary);
                 return 1;
         }
         /* check that the PPP options file is readable */
         if (pppdoptstr && access(pppdoptstr, R_OK) < 0) {
-                syslog(LOG_ERR, "MGR: PPP options file %s not readable",
+                pptpd_syslog(LOG_ERR, "MGR: PPP options file %s not readable",
                        pppdoptstr);
                 return 1;
         }
 #ifdef BCRELAY
         /* check that the bcrelay binary is executable */
         if (bcrelay && access(BCRELAY_BIN, X_OK) < 0) {
-                syslog(LOG_ERR, "MGR: bcrelay binary %s not executable", 
+                pptpd_syslog(LOG_ERR, "MGR: bcrelay binary %s not executable",
                        BCRELAY_BIN);
                 return 1;
         }
@@ -412,7 +413,7 @@ int main(int argc, char **argv)
 
         if (!foreground) {
 #if HAVE_DAEMON
-                closelog();
+                pptpd_closelog();
                 if (freopen("/dev/null", "r", stdin) == NULL) {
                         syslog_perror("freopen");
                 }
@@ -421,7 +422,7 @@ int main(int argc, char **argv)
                 }
                 /* returns to child only */
                 /* pid will have changed */
-                openlog("pptpd", LOG_PID, PPTP_FACILITY);
+                pptpd_openlog("pptpd", LOG_PID, PPTP_FACILITY);
 #else   /* !HAVE_DAEMON */
                 my_daemon(argc, argv);
                 /* returns to child if !HAVE_FORK
@@ -432,7 +433,7 @@ int main(int argc, char **argv)
 
 #ifdef BCRELAY
       if (bcrelay) {
-             syslog(LOG_DEBUG, "CTRL: BCrelay incoming interface is %s", bcrelay);
+             pptpd_syslog(LOG_DEBUG, "CTRL: BCrelay incoming interface is %s", bcrelay);
              /* Launch BCrelay  */
 #ifndef HAVE_FORK
              switch(bcrelayfork = vfork()){
@@ -440,13 +441,13 @@ int main(int argc, char **argv)
              switch(bcrelayfork = fork()){
 #endif
              case -1:        /* fork() error */
-                   syslog(LOG_ERR, "CTRL: Error forking to exec bcrelay");
+                   pptpd_syslog(LOG_ERR, "CTRL: Error forking to exec bcrelay");
                    _exit(1);
 
              case 0:         /* child */
-                   syslog(LOG_DEBUG, "CTRL (BCrelay Launcher): Launching BCrelay with pid %i", bcrelayfork);
+                   pptpd_syslog(LOG_DEBUG, "CTRL (BCrelay Launcher): Launching BCrelay with pid %i", bcrelayfork);
                    launch_bcrelay();
-                   syslog(LOG_ERR, "CTRL (BCrelay Launcher): Failed to launch BCrelay.");
+                   pptpd_syslog(LOG_ERR, "CTRL (BCrelay Launcher): Failed to launch BCrelay.");
                    _exit(1);
              }
        } /* End bcrelay */
@@ -464,7 +465,7 @@ int main(int argc, char **argv)
         
 #ifdef BCRELAY
         if (bcrelayfork > 0) {
-                syslog(LOG_DEBUG, "CTRL: Closing child BCrelay with pid %i", bcrelayfork);
+                pptpd_syslog(LOG_DEBUG, "CTRL: Closing child BCrelay with pid %i", bcrelayfork);
                 kill(bcrelayfork, SIGTERM);
         }
 #endif
@@ -479,7 +480,7 @@ static void log_pid(char *pid_file) {
 
         pid = getpid();
         if ((f = fopen(pid_file, "w")) == NULL) {
-                syslog(LOG_ERR, "PPTPD: failed to open(%s), errno=%d\n",
+                pptpd_syslog(LOG_ERR, "PPTPD: failed to open(%s), errno=%d\n",
                         pid_file, errno);
                 return;
         }
@@ -499,7 +500,7 @@ static void my_daemon(int argc, char **argv)
 
         new_argv = malloc((argc + 2) * sizeof(char **));
         fdr = open("/dev/null", O_RDONLY);
-        syslog(LOG_INFO, "MGR: Option parse OK, re-execing as daemon");
+        pptpd_syslog(LOG_INFO, "MGR: Option parse OK, re-execing as daemon");
         fflush(stderr);
         if ((pid = vfork()) == 0) {
                 if (fdr != 0) { dup2(fdr, 0); close(fdr); }
@@ -520,7 +521,7 @@ static void my_daemon(int argc, char **argv)
 #else
         int pid;
 
-        closelog();
+        pptpd_closelog();
         if ((pid = fork()) < 0) {
                 syslog_perror("fork");
                 exit(1);
@@ -533,7 +534,7 @@ static void my_daemon(int argc, char **argv)
         chdir("/");
         umask(0);
         /* pid will have changed */
-        openlog("pptpd", LOG_PID, PPTP_FACILITY);
+        pptpd_openlog("pptpd", LOG_PID, PPTP_FACILITY);
 #endif
 }
 #endif
@@ -578,7 +579,7 @@ static int isIpRange(char *str)
         int dots = 0;
 
 #if DEBUG_IP_PARSER
-        syslog(LOG_DEBUG, "MGR: Checking if %s is a valid IP range", str);
+        pptpd_syslog(LOG_DEBUG, "MGR: Checking if %s is a valid IP range", str);
 #endif
         do {
                 if (*str == '-')
@@ -587,13 +588,13 @@ static int isIpRange(char *str)
                         dots++;
                 else if (!strchr("0123456789", *str)) {
 #if DEBUG_IP_PARSER
-                        syslog(LOG_DEBUG, "MGR: Not an IP range: character %c is not valid", *str);
+                        pptpd_syslog(LOG_DEBUG, "MGR: Not an IP range: character %c is not valid", *str);
 #endif
                         return 0;
                 }
         } while (*++str);
 #if DEBUG_IP_PARSER
-        syslog(LOG_DEBUG, "MGR: Dashes = %d (wanted: 1), Dots = %d (wanted: 4)", dashes, dots);
+        pptpd_syslog(LOG_DEBUG, "MGR: Dashes = %d (wanted: 1), Dots = %d (wanted: 4)", dashes, dots);
 #endif
         return (dashes == 1 && dots == 3);
 }
@@ -642,7 +643,7 @@ static void processIPStr(int type, char *ipstr)
                 }
 
 #if DEBUG_IP_PARSER
-                syslog(LOG_DEBUG, "MGR: Parsing segment: %s", tmpstr2);
+                pptpd_syslog(LOG_DEBUG, "MGR: Parsing segment: %s", tmpstr2);
 #endif
 
                 if (!isIpRange(tmpstr2)) {
@@ -650,15 +651,15 @@ static void processIPStr(int type, char *ipstr)
                          * Check if the IP address is valid, use it if so
                          */
                         if ((tmpstr7 = lookup(tmpstr2)) == NULL) {
-                                syslog(LOG_ERR, "MGR: Bad IP address (%s) in config file!", tmpstr2);
+                                pptpd_syslog(LOG_ERR, "MGR: Bad IP address (%s) in config file!", tmpstr2);
                                 exit(1);
                         }
                         if (num == pptp_connections) {
-                                syslog(LOG_WARNING, "MGR: connections limit (%d) reached, extra IP addresses ignored", pptp_connections);
+                                pptpd_syslog(LOG_WARNING, "MGR: connections limit (%d) reached, extra IP addresses ignored", pptp_connections);
                                 return;
                         }
 #if DEBUG_IP_PARSER
-                        syslog(LOG_DEBUG, "MGR: Setting IP %d = %s", num, tmpstr7);
+                        pptpd_syslog(LOG_DEBUG, "MGR: Setting IP %d = %s", num, tmpstr7);
 #endif
                         if (type == LOCAL)
                                 slot_set_local(num, tmpstr7);
@@ -680,7 +681,7 @@ static void processIPStr(int type, char *ipstr)
 
                         if ((tmpstr3 = strchr(tmpstr2, '-')) == NULL ||
                             strchr(tmpstr3 + 1, '-') != NULL) {
-                                syslog(LOG_ERR, "MGR: Confused in IP parse routines (multiple hyphens)");
+                                pptpd_syslog(LOG_ERR, "MGR: Confused in IP parse routines (multiple hyphens)");
                                 continue;
                         }
                         /* should be left with "192 168 0 234-238"
@@ -694,76 +695,76 @@ static void processIPStr(int type, char *ipstr)
                                 ipd[pos] = ' ';
                                 sscanf(ipd, "%3s %3s", ipl, ipu);
 #if DEBUG_IP_PARSER
-                                syslog(LOG_DEBUG, "MGR: (lower upper) = (%s %s)", ipl, ipu);
+                                pptpd_syslog(LOG_DEBUG, "MGR: (lower upper) = (%s %s)", ipl, ipu);
 #endif
                                 lower = atoi(ipl);
                                 upper = atoi(ipu);
 #if DEBUG_IP_PARSER
-                                syslog(LOG_DEBUG, "MGR: Range = %d to %d on 4th segment", lower, upper);
+                                pptpd_syslog(LOG_DEBUG, "MGR: Range = %d to %d on 4th segment", lower, upper);
 #endif
                                 sprintf(ip_pre, "%.3s.%.3s.%.3s.", ipa, ipb, ipc);
                                 ip_post[0] = '\0';
 #if DEBUG_IP_PARSER
-                                syslog(LOG_DEBUG, "MGR: Pre = %s Post = %s", ip_pre, ip_post);
+                                pptpd_syslog(LOG_DEBUG, "MGR: Pre = %s Post = %s", ip_pre, ip_post);
 #endif
                         } else if ((tmpstr6 = strchr(ipc, '-')) != NULL) {
                                 pos = tmpstr6 - ipc;
                                 ipc[pos] = ' ';
                                 sscanf(ipc, "%3s %3s", ipl, ipu);
 #if DEBUG_IP_PARSER
-                                syslog(LOG_DEBUG, "MGR: (lower upper) = (%s %s)", ipl, ipu);
+                                pptpd_syslog(LOG_DEBUG, "MGR: (lower upper) = (%s %s)", ipl, ipu);
 #endif
                                 lower = atoi(ipl);
                                 upper = atoi(ipu);
 #if DEBUG_IP_PARSER
-                                syslog(LOG_DEBUG, "MGR: Range = %d to %d on 3rd segment", lower, upper);
+                                pptpd_syslog(LOG_DEBUG, "MGR: Range = %d to %d on 3rd segment", lower, upper);
 #endif
                                 sprintf(ip_pre, "%.3s.%.3s.", ipa, ipb);
                                 sprintf(ip_post, ".%.3s", ipd);
 #if DEBUG_IP_PARSER
-                                syslog(LOG_DEBUG, "MGR: Pre = %s Post = %s", ip_pre, ip_post);
+                                pptpd_syslog(LOG_DEBUG, "MGR: Pre = %s Post = %s", ip_pre, ip_post);
 #endif
                         } else if ((tmpstr6 = strchr(ipb, '-')) != NULL) {
                                 pos = tmpstr6 - ipb;
                                 ipb[pos] = ' ';
                                 sscanf(ipb, "%3s %3s", ipl, ipu);
 #if DEBUG_IP_PARSER
-                                syslog(LOG_DEBUG, "MGR: (lower upper) = (%s %s)", ipl, ipu);
+                                pptpd_syslog(LOG_DEBUG, "MGR: (lower upper) = (%s %s)", ipl, ipu);
 #endif
                                 lower = atoi(ipl);
                                 upper = atoi(ipu);
 #if DEBUG_IP_PARSER
-                                syslog(LOG_DEBUG, "MGR: Range = %d to %d on 2nd segment", lower, upper);
+                                pptpd_syslog(LOG_DEBUG, "MGR: Range = %d to %d on 2nd segment", lower, upper);
 #endif
                                 sprintf(ip_pre, "%.3s.", ipa);
                                 sprintf(ip_post, ".%.3s.%.3s", ipc, ipd);
 #if DEBUG_IP_PARSER
-                                syslog(LOG_DEBUG, "MGR: Pre = %s Post = %s", ip_pre, ip_post);
+                                pptpd_syslog(LOG_DEBUG, "MGR: Pre = %s Post = %s", ip_pre, ip_post);
 #endif
                         } else if ((tmpstr6 = strchr(ipa, '-')) != NULL) {
                                 pos = tmpstr6 - ipa;
                                 ipa[pos] = ' ';
                                 sscanf(ipa, "%3s %3s", ipl, ipu);
 #if DEBUG_IP_PARSER
-                                syslog(LOG_DEBUG, "MGR: (lower upper) = (%s %s)", ipl, ipu);
+                                pptpd_syslog(LOG_DEBUG, "MGR: (lower upper) = (%s %s)", ipl, ipu);
 #endif
                                 lower = atoi(ipl);
                                 upper = atoi(ipu);
 #if DEBUG_IP_PARSER
-                                syslog(LOG_DEBUG, "MGR: Range = %d to %d on 1st segment", lower, upper);
+                                pptpd_syslog(LOG_DEBUG, "MGR: Range = %d to %d on 1st segment", lower, upper);
 #endif
                                 ip_pre[0] = '\0';
                                 sprintf(ip_post, ".%.3s.%.3s.%.3s", ipb, ipc, ipd);
 #if DEBUG_IP_PARSER
-                                syslog(LOG_DEBUG, "MGR: Pre = %s Post = %s", ip_pre, ip_post);
+                                pptpd_syslog(LOG_DEBUG, "MGR: Pre = %s Post = %s", ip_pre, ip_post);
 #endif
                         } else {
-                                syslog(LOG_ERR, "MGR: Confused in IP parse routines (lost hyphen)");
+                                pptpd_syslog(LOG_ERR, "MGR: Confused in IP parse routines (lost hyphen)");
                                 continue;
                         }
 
                         if (upper < lower) {
-                                syslog(LOG_ERR, "MGR: Bad %s IP range: %s",
+                                pptpd_syslog(LOG_ERR, "MGR: Bad %s IP range: %s",
                                        (type == LOCAL) ? "local" : "remote",
                                        ipstr);
                                 exit(1);
@@ -773,15 +774,15 @@ static void processIPStr(int type, char *ipstr)
                                 sprintf(tmpstr5, "%s%d%s", ip_pre, n, ip_post);
                                 /* Check if the ip address is valid */
                                 if ((tmpstr7 = validip(tmpstr5)) == NULL) {
-                                        syslog(LOG_ERR, "MGR: Bad IP address (%s) in config file!", tmpstr5);
+                                        pptpd_syslog(LOG_ERR, "MGR: Bad IP address (%s) in config file!", tmpstr5);
                                         exit(1);
                                 }
                                 if (num == pptp_connections) {
-                                        syslog(LOG_WARNING, "MGR: connections limit (%d) reached, extra IP addresses ignored", pptp_connections);
+                                        pptpd_syslog(LOG_WARNING, "MGR: connections limit (%d) reached, extra IP addresses ignored", pptp_connections);
                                         return;
                                 }
 #if DEBUG_IP_PARSER
-                                syslog(LOG_DEBUG, "MGR: Setting IP %d = %s", num, tmpstr7);
+                                pptpd_syslog(LOG_DEBUG, "MGR: Setting IP %d = %s", num, tmpstr7);
 #endif
                                 if (type == LOCAL)
                                         slot_set_local(num, tmpstr7);
@@ -793,12 +794,12 @@ static void processIPStr(int type, char *ipstr)
         }
         if (num == 1 && type == LOCAL && pptp_connections > 1) {
 #if DEBUG_IP_PARSER
-                syslog(LOG_DEBUG, "MGR: Setting all %d local IPs to %s", pptp_connections, slot_get_local(0));
+                pptpd_syslog(LOG_DEBUG, "MGR: Setting all %d local IPs to %s", pptp_connections, slot_get_local(0));
 #endif
                 for (n = 1; n < pptp_connections; n++)
                         slot_set_local(n, slot_get_local(0));
         } else if (pptp_connections > num) {
-                syslog(LOG_INFO, "MGR: Maximum of %d connections reduced to %d, not enough IP addresses given", 
+                pptpd_syslog(LOG_INFO, "MGR: Maximum of %d connections reduced to %d, not enough IP addresses given",
                        pptp_connections, num);
                 pptp_connections = num;
         }
@@ -814,8 +815,8 @@ static void launch_bcrelay() {
   int an = 0;
 
       if (bcrelay) {
-           syslog(LOG_DEBUG, "MGR: BCrelay incoming interface is %s", bcrelay);
-           syslog(LOG_DEBUG, "MGR: BCrelay outgoing interface is regexp ppp[0-9].*");
+           pptpd_syslog(LOG_DEBUG, "MGR: BCrelay incoming interface is %s", bcrelay);
+           pptpd_syslog(LOG_DEBUG, "MGR: BCrelay outgoing interface is regexp ppp[0-9].*");
 
            bcrelay_argv[an++] = BCRELAY_BIN;
            bcrelay_argv[an++] = "-i";

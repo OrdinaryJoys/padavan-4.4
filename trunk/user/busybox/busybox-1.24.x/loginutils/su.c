@@ -88,25 +88,25 @@ int su_main(int argc UNUSED_PARAM, char **argv)
 		if (!tty) {
 			tty = "none";
 		}
-		openlog(applet_name, 0, LOG_AUTH);
+		bb_openlog(applet_name, 0, LOG_AUTH);
 	}
 
 	pw = xgetpwnam(opt_username);
 
 	if (cur_uid == 0 || ask_and_check_password(pw) > 0) {
 		if (ENABLE_FEATURE_SU_SYSLOG)
-			syslog(LOG_NOTICE, "%c %s %s:%s",
+			bb_syslog(LOG_NOTICE, "%c %s %s:%s",
 				'+', tty, old_user, opt_username);
 	} else {
 		if (ENABLE_FEATURE_SU_SYSLOG)
-			syslog(LOG_NOTICE, "%c %s %s:%s",
+			bb_syslog(LOG_NOTICE, "%c %s %s:%s",
 				'-', tty, old_user, opt_username);
 		bb_do_delay(LOGIN_FAIL_DELAY);
 		bb_error_msg_and_die("incorrect password");
 	}
 
 	if (ENABLE_FEATURE_CLEAN_UP && ENABLE_FEATURE_SU_SYSLOG) {
-		closelog();
+		bb_closelog();
 	}
 
 	if (!opt_shell && (flags & SU_OPT_mp)) {

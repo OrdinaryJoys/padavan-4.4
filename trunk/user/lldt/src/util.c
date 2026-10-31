@@ -22,10 +22,12 @@
 #include <stdlib.h>
 
 #include <syslog.h>
+#include "../../shared/bounded_syslog.h"
 
 #include "globals.h"
 
 static bool_t use_syslog;
+static struct padavan_log_context lldt_log_context = PADAVAN_LOG_CONTEXT_INIT;
 
 void
 cpy_hton64(void* destination, void* source)
@@ -68,7 +70,7 @@ die(const char *msg, ...)
     va_start(ap, msg);
     if (use_syslog)
     {
-	vsyslog(LOG_ERR, msg, ap);
+	padavan_log_vwrite(&lldt_log_context, LOG_ERR, msg, ap);
     }
     else
     {
@@ -89,7 +91,7 @@ warn(const char *msg, ...)
     va_start(ap, msg);
     if (use_syslog)
     {
-	vsyslog(LOG_WARNING, msg, ap);
+	padavan_log_vwrite(&lldt_log_context, LOG_WARNING, msg, ap);
     }
     else
     {
@@ -108,7 +110,7 @@ dbgprintf(const char *msg, ...)
 
     va_start(ap, msg);
     if (use_syslog)
-	vsyslog(LOG_INFO, msg, ap);
+	padavan_log_vwrite(&lldt_log_context, LOG_INFO, msg, ap);
     else
 	vfprintf(stdout, msg, ap);
     va_end(ap);
@@ -140,7 +142,7 @@ util_use_syslog(void)
 {
     if (!use_syslog)
     {
-	openlog(g_Progname, LOG_PID | LOG_CONS, LOG_DAEMON);
+	padavan_log_open(&lldt_log_context, g_Progname, LOG_PID | LOG_CONS, LOG_DAEMON);
 	use_syslog = TRUE;
     }
 }

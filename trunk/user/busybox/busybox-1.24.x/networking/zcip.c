@@ -244,7 +244,7 @@ int zcip_main(int argc UNUSED_PARAM, char **argv)
 	xmove_fd(xsocket(AF_PACKET, SOCK_PACKET, htons(ETH_P_ARP)), sock_fd);
 	if (!FOREGROUND) {
 		// do it before all bb_xx_msg calls
-		openlog(applet_name, 0, LOG_DAEMON);
+		bb_openlog(applet_name, 0, LOG_DAEMON);
 		logmode |= LOGMODE_SYSLOG;
 	}
 	bb_logenv_override();

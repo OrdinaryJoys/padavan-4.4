@@ -13,6 +13,7 @@
 #endif
 
 #include "our_syslog.h"
+struct padavan_log_context pptpd_log_context = PADAVAN_LOG_CONTEXT_INIT;
 
 #include <fcntl.h>
 #include <errno.h>
@@ -128,7 +129,7 @@ int main(int argc, char **argv)
         }
 
         /* open a connection to the syslog daemon */
-        openlog("pptpd", LOG_PID, PPTP_FACILITY);
+        pptpd_openlog("pptpd", LOG_PID, PPTP_FACILITY);
 
         /* autoreap if supported */
         signal(SIGCHLD, SIG_IGN);
@@ -155,21 +156,21 @@ int main(int argc, char **argv)
 #endif
         if (pptpctrl_debug) {
 #ifdef VRF
-                syslog(LOG_DEBUG, "CTRL: VRF used = %s", vrf ? vrf : "NONE");
+                pptpd_syslog(LOG_DEBUG, "CTRL: VRF used = %s", vrf ? vrf : "NONE");
 #endif
                 if (*pppLocal)
-                        syslog(LOG_DEBUG, "CTRL: local address = %s", pppLocal);
+                        pptpd_syslog(LOG_DEBUG, "CTRL: local address = %s", pppLocal);
                 if (*pppRemote)
-                        syslog(LOG_DEBUG, "CTRL: remote address = %s", pppRemote);
+                        pptpd_syslog(LOG_DEBUG, "CTRL: remote address = %s", pppRemote);
                 if (*speed)
-                        syslog(LOG_DEBUG, "CTRL: pppd speed = %s", speed);
+                        pptpd_syslog(LOG_DEBUG, "CTRL: pppd speed = %s", speed);
                 if (*pppdxfig)
-                        syslog(LOG_DEBUG, "CTRL: pppd options file = %s", pppdxfig);
+                        pptpd_syslog(LOG_DEBUG, "CTRL: pppd options file = %s", pppdxfig);
         }
 
         addrlen = sizeof(addr);
         if (getsockname(clientSocket, (struct sockaddr *) &addr, &addrlen) != 0) {
-                syslog(LOG_ERR, "CTRL: getsockname() failed");
+                pptpd_syslog(LOG_ERR, "CTRL: getsockname() failed");
                 syslog_perror("getsockname");
                 close(clientSocket);
                 bail(0);        /* NORETURN */
@@ -178,7 +179,7 @@ int main(int argc, char **argv)
 
         addrlen = sizeof(addr);
         if (getpeername(clientSocket, (struct sockaddr *) &addr, &addrlen) != 0) {
-                syslog(LOG_ERR, "CTRL: getpeername() failed");
+                pptpd_syslog(LOG_ERR, "CTRL: getpeername() failed");
                 syslog_perror("getpeername");
                 close(clientSocket);
                 bail(0);        /* NORETURN */
@@ -188,7 +189,7 @@ int main(int argc, char **argv)
         /* Set non-blocking */
         if ((flags = fcntl(clientSocket, F_GETFL, arg /* ignored */)) == -1 ||
             fcntl(clientSocket, F_SETFL, flags|OUR_NB_MODE) == -1) {
-                syslog(LOG_ERR, "CTRL: Failed to set client socket non-blocking");
+                pptpd_syslog(LOG_ERR, "CTRL: Failed to set client socket non-blocking");
                 syslog_perror("fcntl");
                 close(clientSocket);
                 bail(0);        /* NORETURN */
@@ -205,12 +206,12 @@ int main(int argc, char **argv)
         NOTE_VALUE(PAC, call_id_pair, htons(-1));
         NOTE_VALUE(PNS, call_id_pair, htons(-1));
 
-        syslog(LOG_INFO, "CTRL: Client %s control connection started", inet_ntoa(addr.sin_addr));
+        pptpd_syslog(LOG_INFO, "CTRL: Client %s control connection started", inet_ntoa(addr.sin_addr));
         pptp_handle_ctrl_connection(pppaddrs, inetaddrs);
-        syslog(LOG_DEBUG, "CTRL: Reaping child PPP[%i]", pppfork);
+        pptpd_syslog(LOG_DEBUG, "CTRL: Reaping child PPP[%i]", pppfork);
         if (pppfork > 0)
                 waitpid(pppfork, NULL, 0);
-        syslog(LOG_INFO, "CTRL: Client %s control connection finished", inet_ntoa(addr.sin_addr));
+        pptpd_syslog(LOG_INFO, "CTRL: Client %s control connection finished", inet_ntoa(addr.sin_addr));
 
         bail(0);                /* NORETURN */
         return 1;               /* make gcc happy */
@@ -285,13 +286,13 @@ static void pptp_handle_ctrl_connection(char **pppaddrs, struct in_addr *inetadd
                 switch (select(maxfd + 1, &fds, NULL, NULL, &idleTime)) {
                 case -1:        /* Error with select() */
                         if (errno != EINTR)
-                                syslog(LOG_ERR, "CTRL: Error with select(), quitting");
+                                pptpd_syslog(LOG_ERR, "CTRL: Error with select(), quitting");
                         goto leave_clear_call;
 
                 case 0:
                         if (decaps_hdlc(-1, NULL, 0)) {
                                 if(decaps_hdlc(-1, encaps_gre, gre_fd))
-                                        syslog(LOG_ERR, "CTRL: GRE re-xmit failed");
+                                        pptpd_syslog(LOG_ERR, "CTRL: GRE re-xmit failed");
                         } else if (encaps_gre(-1, NULL, 0))
                                 /* Pending ack and nothing else to do */
                                 encaps_gre(gre_fd, NULL, 0);    /* send ack with no payload */
@@ -317,15 +318,15 @@ static void pptp_handle_ctrl_connection(char **pppaddrs, struct in_addr *inetadd
 
                 /* send from pty off via GRE */
                 if (pty_fd != -1 && FD_ISSET(pty_fd, &fds) && decaps_hdlc(pty_fd, encaps_gre, gre_fd) < 0) {
-                        syslog(LOG_ERR, "CTRL: PTY read or GRE write failed (pty,gre)=(%d,%d)", pty_fd, gre_fd);
+                        pptpd_syslog(LOG_ERR, "CTRL: PTY read or GRE write failed (pty,gre)=(%d,%d)", pty_fd, gre_fd);
                         break;
                 }
                 /* send from GRE off to pty */
                 if (gre_fd != -1 && FD_ISSET(gre_fd, &fds) && decaps_gre(gre_fd, encaps_hdlc, pty_fd) < 0) {
                         if (gre_fd == 6 && pty_fd == 5) {
-                                syslog(LOG_ERR, "CTRL: GRE-tunnel has collapsed (GRE read or PTY write failed (gre,pty)=(%d,%d))", gre_fd, pty_fd);
+                                pptpd_syslog(LOG_ERR, "CTRL: GRE-tunnel has collapsed (GRE read or PTY write failed (gre,pty)=(%d,%d))", gre_fd, pty_fd);
                         } else {
-                                syslog(LOG_ERR, "CTRL: GRE read or PTY write failed (gre,pty)=(%d,%d)", gre_fd, pty_fd);
+                                pptpd_syslog(LOG_ERR, "CTRL: GRE read or PTY write failed (gre,pty)=(%d,%d)", gre_fd, pty_fd);
                         }
                         break;
                 }
@@ -336,7 +337,7 @@ static void pptp_handle_ctrl_connection(char **pppaddrs, struct in_addr *inetadd
                         send_packet = TRUE;
                         switch (read_pptp_packet(clientSocket, (unsigned char *) packet, rply_packet, &rply_size)) {
                         case 0:
-                                syslog(LOG_ERR, "CTRL: CTRL read failed");
+                                pptpd_syslog(LOG_ERR, "CTRL: CTRL read failed");
                                 goto leave_drop_call;
 
                         case -1:
@@ -345,17 +346,17 @@ static void pptp_handle_ctrl_connection(char **pppaddrs, struct in_addr *inetadd
 
                         case STOP_CTRL_CONN_RQST:
                                 if (pptpctrl_debug)
-                                        syslog(LOG_DEBUG, "CTRL: Received STOP CTRL CONN request (disconnecting)");
+                                        pptpd_syslog(LOG_DEBUG, "CTRL: Received STOP CTRL CONN request (disconnecting)");
                                 if (gre_fd != -1 || pty_fd != -1)
-                                        syslog(LOG_WARNING, "CTRL: Request to close control connection when call is open, closing");
+                                        pptpd_syslog(LOG_WARNING, "CTRL: Request to close control connection when call is open, closing");
                                 send_pptp_packet(clientSocket, rply_packet, rply_size);
                                 goto leave_drop_call;
 
                         case CALL_CLR_RQST:
                                 if(pptpctrl_debug)
-                                        syslog(LOG_DEBUG, "CTRL: Received CALL CLR request (closing call)");
+                                        pptpd_syslog(LOG_DEBUG, "CTRL: Received CALL CLR request (closing call)");
                                 if (gre_fd == -1 || pty_fd == -1)
-                                        syslog(LOG_WARNING, "CTRL: Request to close call but call not open");
+                                        pptpd_syslog(LOG_WARNING, "CTRL: Request to close call but call not open");
                                 if (gre_fd != -1) {
                                         FD_CLR(gre_fd, &fds);
                                         close(gre_fd);
@@ -374,7 +375,7 @@ static void pptp_handle_ctrl_connection(char **pppaddrs, struct in_addr *inetadd
                                 NOTE_VALUE(PAC, call_id_pair, rply_packet->call_id);
                                 NOTE_VALUE(PNS, call_id_pair, rply_packet->call_id_peer);
                                 if (gre_fd != -1 || pty_fd != -1) {
-                                        syslog(LOG_WARNING, "CTRL: Request to open call when call is already open, closing");
+                                        pptpd_syslog(LOG_WARNING, "CTRL: Request to open call when call is already open, closing");
                                         if (gre_fd != -1) {
                                                 FD_CLR(gre_fd, &fds);
                                                 close(gre_fd);
@@ -393,7 +394,7 @@ static void pptp_handle_ctrl_connection(char **pppaddrs, struct in_addr *inetadd
                                       ntohs(rply_packet->call_id_peer),
                                       ntohs(rply_packet->call_id));
                                 /* start the call, by launching pppd */
-                                syslog(LOG_INFO, "CTRL: Starting call (launching pppd, opening GRE)");
+                                pptpd_syslog(LOG_INFO, "CTRL: Starting call (launching pppd, opening GRE)");
                                 pty_fd = startCall(pppaddrs, inetaddrs);
                                 if (pty_fd > maxfd) maxfd = pty_fd;
                                 if ((gre_fd = pptp_gre_init(call_id_pair, pty_fd, inetaddrs)) > maxfd)
@@ -404,7 +405,7 @@ static void pptp_handle_ctrl_connection(char **pppaddrs, struct in_addr *inetadd
                                 if (echo_wait == TRUE && packet->identifier == echo_count)
                                         echo_wait = FALSE;
                                 else
-                                        syslog(LOG_WARNING, "CTRL: Unexpected ECHO REPLY packet");
+                                        pptpd_syslog(LOG_WARNING, "CTRL: Unexpected ECHO REPLY packet");
                                 /* FALLTHRU */
                         case SET_LINK_INFO:
                                 send_packet = FALSE;
@@ -419,7 +420,7 @@ static void pptp_handle_ctrl_connection(char **pppaddrs, struct in_addr *inetadd
                         case CALL_DISCONN_NTFY:
                         case STOP_CTRL_CONN_RPLY:
                                 /* These don't generate replies.  Also they come from things we don't send in this section. */
-                                syslog(LOG_WARNING, "CTRL: Got a reply to a packet we didn't send");
+                                pptpd_syslog(LOG_WARNING, "CTRL: Got a reply to a packet we didn't send");
                                 send_packet = FALSE;
                                 break;
 
@@ -429,7 +430,7 @@ static void pptp_handle_ctrl_connection(char **pppaddrs, struct in_addr *inetadd
                 } else if (echo_wait != TRUE && (time(NULL) - last_time) > IDLE_WAIT) {
                         echo_count++;
                         if (pptpctrl_debug)
-                                syslog(LOG_DEBUG, "CTRL: Sending ECHO REQ id %d", echo_count);
+                                pptpd_syslog(LOG_DEBUG, "CTRL: Sending ECHO REQ id %d", echo_count);
                         time(&echo_time);
                         make_echo_req_packet(rply_packet, &rply_size, echo_count);
                         echo_wait = TRUE;
@@ -438,13 +439,13 @@ static void pptp_handle_ctrl_connection(char **pppaddrs, struct in_addr *inetadd
 
                 /* send reply packet - this may block, but it should be very rare */
                 if (send_packet == TRUE && send_pptp_packet(clientSocket, rply_packet, rply_size) < 0) {
-                        syslog(LOG_ERR, "CTRL: Error sending GRE, aborting call");
+                        pptpd_syslog(LOG_ERR, "CTRL: Error sending GRE, aborting call");
                         goto leave_clear_call;
                 }
 
                 /* waiting for echo reply and curtime - echo_time > max wait */
                 if (echo_wait == TRUE && (time(NULL) - echo_time) > MAX_ECHO_WAIT) {
-                        syslog(LOG_INFO, "CTRL: Session timed out, ending call");
+                        pptpd_syslog(LOG_INFO, "CTRL: Session timed out, ending call");
                         goto leave_clear_call;
                 }
         }
@@ -479,7 +480,7 @@ leave_clear_call:
 static void bail(int sigraised)
 {
         if (sigraised)
-                syslog(LOG_INFO, "CTRL: Exiting on signal %d", sigraised);
+                pptpd_syslog(LOG_INFO, "CTRL: Exiting on signal %d", sigraised);
 
         /* send a disconnect to the other end */
         /* ignore any errors */
@@ -493,7 +494,7 @@ static void bail(int sigraised)
                 int retry = 0;
 
                 if (pptpctrl_debug)
-                        syslog(LOG_DEBUG, "CTRL: Exiting with active call");
+                        pptpd_syslog(LOG_DEBUG, "CTRL: Exiting with active call");
 
                 make_call_admin_shutdown(rply_packet, &rply_size);
                 if(send_pptp_packet(clientSocket, rply_packet, rply_size) < 0)
@@ -515,26 +516,26 @@ static void bail(int sigraised)
                                 send_pptp_packet(clientSocket, rply_packet, rply_size);
                                 goto skip;
                         case CALL_CLR_RQST:
-                                syslog(LOG_WARNING, "CTRL: Got call clear request after call manually shutdown - buggy client");
+                                pptpd_syslog(LOG_WARNING, "CTRL: Got call clear request after call manually shutdown - buggy client");
                                 break;
                         case STOP_CTRL_CONN_RPLY:
                                 goto skip;
                         case -1:
-                                syslog(LOG_WARNING, "CTRL: Retryable error in disconnect sequence");
+                                pptpd_syslog(LOG_WARNING, "CTRL: Retryable error in disconnect sequence");
                                 retry++;
                                 break;
                         case 0:
-                                syslog(LOG_WARNING, "CTRL: Fatal error reading control message in disconnect sequence");
+                                pptpd_syslog(LOG_WARNING, "CTRL: Fatal error reading control message in disconnect sequence");
                                 goto skip;
                         default:
-                                syslog(LOG_WARNING, "CTRL: Unexpected control message %d in disconnect sequence", pkt);
+                                pptpd_syslog(LOG_WARNING, "CTRL: Unexpected control message %d in disconnect sequence", pkt);
                                 retry++;
                                 break;
                         }
                         tv.tv_sec = 5;  /* wait 5 secs for another reply then quit */
                         tv.tv_usec = 0;
                         if (retry > 100) {
-                                syslog(LOG_WARNING, "CTRL: Too many retries (%d) - giving up", retry);
+                                pptpd_syslog(LOG_WARNING, "CTRL: Too many retries (%d) - giving up", retry);
                                 break;
                         }
                 }
@@ -544,7 +545,7 @@ static void bail(int sigraised)
         }
 
         if (pptpctrl_debug)
-                syslog(LOG_DEBUG, "CTRL: Exiting now");
+                pptpd_syslog(LOG_DEBUG, "CTRL: Exiting now");
 }
 
 /*
@@ -574,7 +575,7 @@ static int startCall(char **pppaddrs, struct in_addr *inetaddrs)
 
         /* userspace ppp doesn't need to waste a real pty/tty pair */
         if (socketpair(AF_LOCAL, SOCK_STREAM, 0, sockfd)) {
-                syslog(LOG_ERR, "CTRL: socketpair() error");
+                pptpd_syslog(LOG_ERR, "CTRL: socketpair() error");
                 syslog_perror("socketpair");
                 exit(1);
         }
@@ -583,7 +584,7 @@ static int startCall(char **pppaddrs, struct in_addr *inetaddrs)
 #else
         /* Finds an open pty/tty pair */
         if (openpty(&pty_fd, &tty_fd, NULL, NULL, NULL) != 0) {
-                syslog(LOG_ERR, "CTRL: openpty() error");
+                pptpd_syslog(LOG_ERR, "CTRL: openpty() error");
                 syslog_perror("openpty");
                 exit(1);
         } else {
@@ -593,21 +594,21 @@ static int startCall(char **pppaddrs, struct in_addr *inetaddrs)
                    pppd will do this, but might not do it before we
                    try to send data. */
                 if (tcgetattr(tty_fd, &tios) < 0) {
-                        syslog(LOG_ERR, "CTRL: tcgetattr() error");
+                        pptpd_syslog(LOG_ERR, "CTRL: tcgetattr() error");
                         syslog_perror("tcgetattr");
                         exit(1);
                 }
                 tios.c_lflag &= ~(ECHO | ECHONL);
                 if (tcsetattr(tty_fd, TCSAFLUSH, &tios) < 0) {
-                        syslog(LOG_ERR, "CTRL: tcsetattr() error");
+                        pptpd_syslog(LOG_ERR, "CTRL: tcsetattr() error");
                         syslog_perror("tcsetattr");
                         exit(1);
                 }
         }
 #endif
         if (pptpctrl_debug) {
-                syslog(LOG_DEBUG, "CTRL: pty_fd = %d", pty_fd);
-                syslog(LOG_DEBUG, "CTRL: tty_fd = %d", tty_fd);
+                pptpd_syslog(LOG_DEBUG, "CTRL: pty_fd = %d", pty_fd);
+                pptpd_syslog(LOG_DEBUG, "CTRL: tty_fd = %d", tty_fd);
         }
         /* Launch the PPPD  */
 #ifndef HAVE_FORK
@@ -616,17 +617,17 @@ static int startCall(char **pppaddrs, struct in_addr *inetaddrs)
         switch(pppfork=fork()){
 #endif
         case -1:        /* fork() error */
-                syslog(LOG_ERR, "CTRL: Error forking to exec pppd");
+                pptpd_syslog(LOG_ERR, "CTRL: Error forking to exec pppd");
                 _exit(1);
 
         case 0:         /* child */
                 if (dup2(tty_fd, 0) == -1) {
-                  syslog(LOG_ERR, "CTRL: child tty_fd dup2 to stdin, %s",
+                  pptpd_syslog(LOG_ERR, "CTRL: child tty_fd dup2 to stdin, %s",
                          strerror(errno));
                   exit(1);
                 }
                 if (dup2(tty_fd, 1) == -1) {
-                  syslog(LOG_ERR, "CTRL: child tty_fd dup2 to stdout, %s",
+                  pptpd_syslog(LOG_ERR, "CTRL: child tty_fd dup2 to stdout, %s",
                          strerror(errno));
                   exit(1);
                 }
@@ -649,7 +650,7 @@ static int startCall(char **pppaddrs, struct in_addr *inetaddrs)
                 close(clientSocket);
 #endif
                 launch_pppd(pppaddrs, inetaddrs);
-                syslog(LOG_ERR, "CTRL: PPPD launch failed! (launch_pppd did not fork)");
+                pptpd_syslog(LOG_ERR, "CTRL: PPPD launch failed! (launch_pppd did not fork)");
                 _exit(1);
         }
         
@@ -679,7 +680,7 @@ static void launch_pppd(char **pppaddrs, struct in_addr *inetaddrs)
         pppd_argv[an++] = ppp_binary;
 
         if (pptpctrl_debug) {
-                syslog(LOG_DEBUG, 
+                pptpd_syslog(LOG_DEBUG,
                        "CTRL (PPPD Launcher): program binary = %s", 
                        pppd_argv[an - 1]);
         }
@@ -742,7 +743,7 @@ static void launch_pppd(char **pppaddrs, struct in_addr *inetaddrs)
         }
 
         if (pptpctrl_debug) {
-                syslog(LOG_DEBUG, "CTRL (PPPD Launcher): Connection speed = %s", pppd_argv[an - 1]);
+                pptpd_syslog(LOG_DEBUG, "CTRL (PPPD Launcher): Connection speed = %s", pppd_argv[an - 1]);
         }
 #else
 
@@ -769,9 +770,9 @@ static void launch_pppd(char **pppaddrs, struct in_addr *inetaddrs)
 
         if (pptpctrl_debug) {
                 if (*pppaddrs[0])
-                        syslog(LOG_DEBUG, "CTRL (PPPD Launcher): local address = %s", pppaddrs[0]);
+                        pptpd_syslog(LOG_DEBUG, "CTRL (PPPD Launcher): local address = %s", pppaddrs[0]);
                 if (*pppaddrs[1])
-                        syslog(LOG_DEBUG, "CTRL (PPPD Launcher): remote address = %s", pppaddrs[1]);
+                        pptpd_syslog(LOG_DEBUG, "CTRL (PPPD Launcher): remote address = %s", pppaddrs[1]);
         }
         
         if (*pppaddrs[0] || *pppaddrs[1]) {
@@ -803,7 +804,7 @@ static void launch_pppd(char **pppaddrs, struct in_addr *inetaddrs)
         /* run pppd now */
         execvp(pppd_argv[0], pppd_argv);
         /* execvp() failed */
-        syslog(LOG_ERR, 
+        pptpd_syslog(LOG_ERR,
                "CTRL (PPPD Launcher): Failed to launch PPP daemon. %s",
                strerror(errno));
 }

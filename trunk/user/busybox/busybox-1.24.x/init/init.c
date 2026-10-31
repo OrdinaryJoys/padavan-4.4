@@ -230,10 +230,10 @@ static void message(int where, const char *fmt, ...)
 	msg[l] = '\0';
 	if (where & L_LOG) {
 		/* Log the message to syslogd */
-		openlog(applet_name, 0, LOG_DAEMON);
+		bb_openlog(applet_name, 0, LOG_DAEMON);
 		/* don't print "\r" */
-		syslog(LOG_INFO, "%s", msg + 1);
-		closelog();
+		bb_syslog(LOG_INFO, "%s", msg + 1);
+		bb_closelog();
 	}
 	msg[l++] = '\n';
 	msg[l] = '\0';

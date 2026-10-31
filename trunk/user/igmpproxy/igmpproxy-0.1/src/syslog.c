@@ -32,6 +32,14 @@
 */
 
 #include "igmpproxy.h"
+#include "../../../shared/bounded_syslog.h"
+
+static struct padavan_log_context igmp_log_context = PADAVAN_LOG_CONTEXT_INIT;
+
+void igmp_log_open(void)
+{
+    padavan_log_open(&igmp_log_context, "igmpproxy", LOG_PID, LOG_USER);
+}
 
 int LogLevel = LOG_ERR;
 bool Log2Stderr = false;
@@ -41,9 +49,13 @@ void my_log( int Severity, int Errno, const char *FmtSt, ... )
     char LogMsg[ 128 ];
 
     va_list ArgPt;
-    unsigned Ln;
+    size_t Ln;
+    int formatted, saved_errno = errno;
     va_start( ArgPt, FmtSt );
-    Ln = vsnprintf( LogMsg, sizeof( LogMsg ), FmtSt, ArgPt );
+    formatted = vsnprintf( LogMsg, sizeof( LogMsg ), FmtSt, ArgPt );
+    Ln = formatted < 0 ? 0 : (size_t)formatted;
+    if (Ln >= sizeof(LogMsg)) Ln = sizeof(LogMsg) - 1;
+    LogMsg[Ln] = 0;
     if( Errno > 0 )
         snprintf( LogMsg + Ln, sizeof( LogMsg ) - Ln,
                 "; Errno(%d): %s", Errno, strerror(Errno) );
@@ -53,10 +65,11 @@ void my_log( int Severity, int Errno, const char *FmtSt, ... )
         if (Log2Stderr)
             fprintf(stderr, "%s\n", LogMsg);
         else {
-            syslog(Severity, "%s", LogMsg);
+            padavan_log_write(&igmp_log_context, Severity, "%s", LogMsg);
 	}
     }
 
+    errno = saved_errno;
     if( Severity <= LOG_ERR )
         exit( -1 );
 }

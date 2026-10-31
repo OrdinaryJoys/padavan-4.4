@@ -1,42 +1,20 @@
-/*
- * our_syslog.h
- *
- * Syslog replacement functions
- */
-
+/* Component-local bounded logging; each PPTPd executable owns its context. */
 #ifndef _PPTPD_SYSLOG_H
 #define _PPTPD_SYSLOG_H
-
-/*
- *      only enable this if you are debugging and running by hand
- *      If init runs us you may not have an fd-2,  and thus your write all over
- *      someones FD and the die :-(
- */
-#undef USE_STDERR
-
-#ifdef USE_STDERR
-
-/*
- *      Send all errors to stderr
- */
-
-#define openlog(a,b,c) ({})
-#define syslog(a,b,c...) ({fprintf(stderr, "pptpd syslog: " b "\n" , ## c);})
-#define closelog() ({})
-
-#define syslog_perror   perror
-
-#else
-
-/*
- * Send all errors to syslog
- */
-
-#include <errno.h>
-#include <syslog.h>
-
-#define syslog_perror(s)        syslog(LOG_ERR, "%s: %s", s, strerror(errno))
-
+#include "../../shared/bounded_syslog.h"
+extern struct padavan_log_context pptpd_log_context;
+static inline void pptpd_openlog(const char *ident,int options,int facility)
+{ padavan_log_open(&pptpd_log_context,ident,options,facility); }
+static inline void pptpd_closelog(void)
+{ padavan_log_close(&pptpd_log_context); }
+static inline int pptpd_setlogmask(int mask)
+{ return padavan_log_mask(&pptpd_log_context,mask); }
+static inline void pptpd_syslog(int priority,const char *format,...)
+{
+    va_list arguments;
+    va_start(arguments,format);
+    padavan_log_vwrite(&pptpd_log_context,priority,format,arguments);
+    va_end(arguments);
+}
+#define syslog_perror(s) pptpd_syslog(LOG_ERR,"%s: %s",(s),strerror(errno))
 #endif
-
-#endif  /* !_PPTPD_SYSLOG_H */

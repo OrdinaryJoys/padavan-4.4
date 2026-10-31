@@ -44,6 +44,7 @@ static char const RCSID[] =
 
 #ifdef HAVE_SYSLOG_H
 #include <syslog.h>
+#include "../../bounded_ppp_log.h"
 #endif
 
 #include <errno.h>
@@ -129,7 +130,7 @@ etherType(PPPoEPacket *packet)
 {
     UINT16_t type = (UINT16_t) ntohs(packet->ethHdr.h_proto);
     if (type != Eth_PPPOE_Discovery && type != Eth_PPPOE_Session) {
-	syslog(LOG_ERR, "Invalid ether type 0x%x", type);
+	ppp_syslog(LOG_ERR, "Invalid ether type 0x%x", type);
     }
     return type;
 }
@@ -396,7 +397,7 @@ openInterface(char const *ifname, UINT16_t type, unsigned char *hwaddr, UINT16_t
 	rp_fatal(buffer);
     }
 
-    syslog(LOG_INFO, "Interface=%.16s HWaddr=%02X:%02X:%02X:%02X:%02X:%02X Device=%.32s Buffer size=%d",
+    ppp_syslog(LOG_INFO, "Interface=%.16s HWaddr=%02X:%02X:%02X:%02X:%02X:%02X Device=%.32s Buffer size=%d",
 	   ifname,
 	   hwaddr[0], hwaddr[1], hwaddr[2],
 	   hwaddr[3], hwaddr[4], hwaddr[5],
@@ -642,20 +643,20 @@ receivePacket(int sock, PPPoEPacket *pkt, int *size)
 	}
     }
     if (bpfSize < sizeof(hdr)) {
-	syslog(LOG_ERR, "Truncated bpf packet header: len=%d", bpfSize);
+	ppp_syslog(LOG_ERR, "Truncated bpf packet header: len=%d", bpfSize);
 	clearPacketHeader(pkt);		/* resets bpfSize and bpfOffset */
 	return 0;
     }
     memcpy(&hdr, bpfBuffer + bpfOffset, sizeof(hdr));
     if (hdr.bh_caplen != hdr.bh_datalen) {
-	syslog(LOG_ERR, "Truncated bpf packet: caplen=%d, datalen=%d",
+	ppp_syslog(LOG_ERR, "Truncated bpf packet: caplen=%d, datalen=%d",
 	       hdr.bh_caplen, hdr.bh_datalen);
 	clearPacketHeader(pkt);		/* resets bpfSize and bpfOffset */
 	return 0;
     }
     seglen = hdr.bh_hdrlen + hdr.bh_caplen;
     if (seglen > bpfSize) {
-	syslog(LOG_ERR, "Truncated bpf packet: seglen=%d, bpfSize=%d",
+	ppp_syslog(LOG_ERR, "Truncated bpf packet: seglen=%d, bpfSize=%d",
 	       seglen, bpfSize);
 	clearPacketHeader(pkt);		/* resets bpfSize and bpfOffset */
 	return 0;

@@ -25,6 +25,8 @@
 #include<stdarg.h>
 #include<string.h>
 #include<syslog.h>
+#include "../shared/bounded_syslog.h"
+static struct padavan_log_context lanauth_log = PADAVAN_LOG_CONTEXT_INIT;
 
 #define LTC_NO_CIPHERS
 #define LTC_NO_MODES
@@ -63,7 +65,7 @@ static void usage() {
 static void fatal(char *s, ...) {
 	va_list ap;
 	va_start(ap, s);
-	vsyslog(LOG_ERR, s, ap);
+	padavan_log_vwrite(&lanauth_log, LOG_ERR, s, ap);
 	va_end(ap);
 	exit(1);
 }
@@ -121,7 +123,7 @@ int main(int argc, char **argv) {
 
 	if (!pass || !*pass) usage();
 
-	openlog("lanauth", nodaemon ? LOG_PERROR|LOG_PID : LOG_PID, LOG_DAEMON);
+	padavan_log_open(&lanauth_log, "lanauth", nodaemon ? LOG_PERROR|LOG_PID : LOG_PID, LOG_DAEMON);
 
 	signal(SIGUSR1, sigusr);
 	signal(SIGUSR2, sigusr);
@@ -145,7 +147,7 @@ int main(int argc, char **argv) {
 		}
 		switch(ch) {
 			case 0:	/* access closed */
-				syslog(LOG_NOTICE, "access closed for us");
+				padavan_log_write(&lanauth_log, LOG_NOTICE, "access closed for us");
 				close(sock);
 				sleep(60);
 			case 1: /* continue authorization */
@@ -156,12 +158,12 @@ int main(int argc, char **argv) {
 				fatal("redirect: invalid gateway lenght %d", ch);
 				read(sock, gateip, ch);
 				gateip[ch] = 0;
-				syslog(LOG_NOTICE, "gate changed to %s", gateip);
+				padavan_log_write(&lanauth_log, LOG_NOTICE, "gate changed to %s", gateip);
 				close(sock);
 				break;
 			default:
 				close(sock);
-				syslog(LOG_NOTICE, "unknown protocol %d", ch);
+				padavan_log_write(&lanauth_log, LOG_NOTICE, "unknown protocol %d", ch);
 				sleep(60);
 				break;
 		}
@@ -180,13 +182,13 @@ int main(int argc, char **argv) {
 			write(sock, digest, (ver == 1) ? 16 : 256);
 			if (!tmread(&ch, 1, 10)) {
 				close(sock);
-				syslog(LOG_NOTICE, "auth unsuccessful");
+				padavan_log_write(&lanauth_log, LOG_NOTICE, "auth unsuccessful");
 				sleep((curlevel == 0xff) ? 60 : 5);
 				break;
 			}
 			if (curlevel != ch) {
 				curlevel = ch;
-				syslog(LOG_NOTICE, "auth successful, access level = %d", curlevel);
+				padavan_log_write(&lanauth_log, LOG_NOTICE, "auth successful, access level = %d", curlevel);
 			}
 		}
 	}
@@ -228,7 +230,7 @@ static void opensock() {
 			fatal("%s: invalid ip address", gateip);
 
 		if (connect(sock, (struct sockaddr*)&sin, sizeof(sin)) == -1) {
-			syslog(LOG_NOTICE, "connect: %m");
+			padavan_log_write(&lanauth_log, LOG_NOTICE, "connect: %m");
 			sleep(30);
 			close(sock);
 			continue;
@@ -241,7 +243,7 @@ static void opensock() {
 	getsockname(sock, (struct sockaddr*)&sin, &len);
 	if (!nolip)
 		strcpy(localip, inet_ntoa(sin.sin_addr));
-	syslog(LOG_NOTICE, "connected, gateway %s, local ip %s", gateip, localip);
+	padavan_log_write(&lanauth_log, LOG_NOTICE, "connected, gateway %s, local ip %s", gateip, localip);
 }
 
 static int tmread(char *buf, int size, int timeout) {
@@ -256,12 +258,12 @@ static int tmread(char *buf, int size, int timeout) {
 	tv.tv_usec = 0;
 	int n = select(sock+1, &fds, NULL ,NULL, &tv);
 	if (n < 0 && errno == EINTR) {
-		syslog(LOG_DEBUG, "reconnecting by request");
+		padavan_log_write(&lanauth_log, LOG_DEBUG, "reconnecting by request");
 		return 0;
 	}
 	if (n < 0) fatal("select: %m");
 	if (!n) {
-		syslog(LOG_DEBUG, "no response from server, reconnecting");
+		padavan_log_write(&lanauth_log, LOG_DEBUG, "no response from server, reconnecting");
 		return 0;
 	}
 	/* wait a moment */
@@ -273,11 +275,11 @@ static int tmread(char *buf, int size, int timeout) {
 	/* read */
 	n = read(sock, buf, size);
 	if (n < 0) {
-		syslog(LOG_DEBUG, "read: %m");
+		padavan_log_write(&lanauth_log, LOG_DEBUG, "read: %m");
 		return 0;
 	}
 	if (!n) {
-		syslog(LOG_DEBUG, "server closed connection");
+		padavan_log_write(&lanauth_log, LOG_DEBUG, "server closed connection");
 		return 0;
 	}
 	return n;

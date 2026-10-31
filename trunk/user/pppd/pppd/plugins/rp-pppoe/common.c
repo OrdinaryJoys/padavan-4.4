@@ -28,6 +28,7 @@ static char const RCSID[] =
 
 #ifdef HAVE_SYSLOG_H
 #include <syslog.h>
+#include "../../bounded_ppp_log.h"
 #endif
 
 #include <string.h>
@@ -68,17 +69,17 @@ parsePacket(PPPoEPacket *packet, ParseFunc *func, void *extra)
     UINT16_t tagType, tagLen;
 
     if (packet->ver != 1) {
-	syslog(LOG_ERR, "Invalid PPPoE version (%d)", (int) packet->ver);
+	ppp_syslog(LOG_ERR, "Invalid PPPoE version (%d)", (int) packet->ver);
 	return -1;
     }
     if (packet->type != 1) {
-	syslog(LOG_ERR, "Invalid PPPoE type (%d)", (int) packet->type);
+	ppp_syslog(LOG_ERR, "Invalid PPPoE type (%d)", (int) packet->type);
 	return -1;
     }
 
     /* Do some sanity checks on packet */
     if (len > ETH_JUMBO_LEN - PPPOE_OVERHEAD) { /* 6-byte overhead for PPPoE header */
-	syslog(LOG_ERR, "Invalid PPPoE packet length (%u)", len);
+	ppp_syslog(LOG_ERR, "Invalid PPPoE packet length (%u)", len);
 	return -1;
     }
 
@@ -94,7 +95,7 @@ parsePacket(PPPoEPacket *packet, ParseFunc *func, void *extra)
 	    return 0;
 	}
 	if ((curTag - packet->payload) + tagLen + TAG_HDR_SIZE > len) {
-	    syslog(LOG_ERR, "Invalid PPPoE tag length (%u)", tagLen);
+	    ppp_syslog(LOG_ERR, "Invalid PPPoE tag length (%u)", tagLen);
 	    return -1;
 	}
 	func(tagType, tagLen, curTag+TAG_HDR_SIZE, extra);
@@ -123,17 +124,17 @@ findTag(PPPoEPacket *packet, UINT16_t type, PPPoETag *tag)
     UINT16_t tagType, tagLen;
 
     if (packet->ver != 1) {
-	syslog(LOG_ERR, "Invalid PPPoE version (%d)", (int) packet->ver);
+	ppp_syslog(LOG_ERR, "Invalid PPPoE version (%d)", (int) packet->ver);
 	return NULL;
     }
     if (packet->type != 1) {
-	syslog(LOG_ERR, "Invalid PPPoE type (%d)", (int) packet->type);
+	ppp_syslog(LOG_ERR, "Invalid PPPoE type (%d)", (int) packet->type);
 	return NULL;
     }
 
     /* Do some sanity checks on packet */
     if (len > ETH_JUMBO_LEN - 6) { /* 6-byte overhead for PPPoE header */
-	syslog(LOG_ERR, "Invalid PPPoE packet length (%u)", len);
+	ppp_syslog(LOG_ERR, "Invalid PPPoE packet length (%u)", len);
 	return NULL;
     }
 
@@ -149,7 +150,7 @@ findTag(PPPoEPacket *packet, UINT16_t type, PPPoETag *tag)
 	    return NULL;
 	}
 	if ((curTag - packet->payload) + tagLen + TAG_HDR_SIZE > len) {
-	    syslog(LOG_ERR, "Invalid PPPoE tag length (%u)", tagLen);
+	    ppp_syslog(LOG_ERR, "Invalid PPPoE tag length (%u)", tagLen);
 	    return NULL;
 	}
 	if (tagType == type) {
@@ -250,7 +251,7 @@ void
 printErr(char const *str)
 {
     fprintf(stderr, "pppoe: %s\n", str);
-    syslog(LOG_ERR, "%s", str);
+    ppp_syslog(LOG_ERR, "%s", str);
 }
 
 
@@ -407,7 +408,7 @@ clampMSS(PPPoEPacket *packet, char const *dir, int clampMss)
        checksum */
     csum = computeTCPChecksum(ipHdr, tcpHdr);
     if (csum) {
-	syslog(LOG_ERR, "Bad TCP checksum %x", (unsigned int) csum);
+	ppp_syslog(LOG_ERR, "Bad TCP checksum %x", (unsigned int) csum);
 
 	/* Upper layers will drop it */
 	return;
@@ -426,7 +427,7 @@ clampMSS(PPPoEPacket *packet, char const *dir, int clampMss)
 	case 2:
 	    if (opt[1] != 4) {
 		/* Something fishy about MSS option length. */
-		syslog(LOG_ERR,
+		ppp_syslog(LOG_ERR,
 		       "Bogus length for MSS option (%u) from %u.%u.%u.%u",
 		       (unsigned int) opt[1],
 		       (unsigned int) ipHdr[12],
@@ -440,7 +441,7 @@ clampMSS(PPPoEPacket *packet, char const *dir, int clampMss)
 	default:
 	    if (opt[1] < 2) {
 		/* Someone's trying to attack us? */
-		syslog(LOG_ERR,
+		ppp_syslog(LOG_ERR,
 		       "Bogus TCP option length (%u) from %u.%u.%u.%u",
 		       (unsigned int) opt[1],
 		       (unsigned int) ipHdr[12],
@@ -564,7 +565,7 @@ sendPADT(PPPoEConnection *conn, char const *msg)
 	fflush(conn->debugFile);
     }
 #endif
-    syslog(LOG_INFO,"Sent PADT");
+    ppp_syslog(LOG_INFO,"Sent PADT");
 }
 
 /***********************************************************************
@@ -623,7 +624,7 @@ pktLogErrs(char const *pkt,
 	str = "Generic-Error";
     }
 
-    syslog(LOG_ERR, fmt, pkt, str, (int) len, data);
+    ppp_syslog(LOG_ERR, fmt, pkt, str, (int) len, data);
     fprintf(stderr, fmt, pkt, str, (int) len, data);
     fprintf(stderr, "\n");
 }

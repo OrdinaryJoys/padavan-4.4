@@ -23,6 +23,7 @@
 #include <errno.h>
 #include <string.h>
 #include <syslog.h>
+#include "../shared/bounded_syslog.h"
 #if defined (__GLIBC__) && (__GLIBC__ < 2)
 # if defined(FREEBSD) || defined(OPENBSD)
 #  include <sys/signal.h>
@@ -42,7 +43,9 @@
 
 /* prevent deadlock that occurs when a signal handler, which interrupted a
  * call to syslog(), attempts to call syslog(). */
+static struct padavan_log_context l2tp_syslog = PADAVAN_LOG_CONTEXT_INIT;
 static int syslog_nesting = 0;
+void close_log(void) { padavan_log_close(&l2tp_syslog); }
 #define SYSLOG_CALL(code) do {      \
     if (++syslog_nesting < 2) {     \
         code;                       \
@@ -55,7 +58,7 @@ void init_log()
     static int logopen=0;
     
     if(!logopen) {
-	SYSLOG_CALL( openlog (BINARY, LOG_PID, LOG_DAEMON) );
+	SYSLOG_CALL( padavan_log_open(&l2tp_syslog, BINARY, LOG_PID, LOG_DAEMON) );
 	logopen=1;
     }
 }
@@ -70,7 +73,7 @@ void l2tp_log (int level, const char *fmt, ...)
     
     if(gconfig.syslog) {
 	init_log();
-	SYSLOG_CALL( syslog (level, "%s", buf) );
+	SYSLOG_CALL( padavan_log_write(&l2tp_syslog, level, "%s", buf) );
     } else {
 	fprintf(stderr, "xl2tpd[%d]: %s", getpid(), buf);
     }
@@ -79,13 +82,15 @@ void l2tp_log (int level, const char *fmt, ...)
 void set_error (struct call *c, int error, const char *fmt, ...)
 {
     va_list args;
+    size_t length;
     va_start (args, fmt);
     c->error = error;
     c->result = RESULT_ERROR;
     c->needclose = -1;
     vsnprintf (c->errormsg, sizeof (c->errormsg), fmt, args);
-    if (c->errormsg[strlen (c->errormsg) - 1] == '\n')
-        c->errormsg[strlen (c->errormsg) - 1] = 0;
+    length = strlen(c->errormsg);
+    if (length && c->errormsg[length - 1] == '\n')
+        c->errormsg[length - 1] = 0;
     va_end (args);
 }
 

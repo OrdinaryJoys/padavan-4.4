@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <syslog.h>
+#include "boundedlog.h"
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/types.h>
@@ -138,13 +139,13 @@ get_lan_for_peer(const struct sockaddr * peer)
 				if(get_src_for_route_to(peer, NULL, NULL, &index) < 0)
 					return NULL;
 			}
-			syslog(LOG_DEBUG, "%s looking for LAN interface index=%d",
+			miniupnpd_syslog(LOG_DEBUG, "%s looking for LAN interface index=%d",
 			       "get_lan_for_peer()", index);
 			for(lan_addr = lan_addrs.lh_first;
 			    lan_addr != NULL;
 			    lan_addr = lan_addr->list.le_next)
 			{
-				syslog(LOG_DEBUG,
+				miniupnpd_syslog(LOG_DEBUG,
 				       "ifname=%s index=%u str=%s addr=%08x mask=%08x",
 				       lan_addr->ifname, lan_addr->index,
 				       lan_addr->str,
@@ -173,11 +174,11 @@ get_lan_for_peer(const struct sockaddr * peer)
 #ifdef DEBUG
 	sockaddr_to_string(peer, dbg_str, sizeof(dbg_str));
 	if(lan_addr) {
-		syslog(LOG_DEBUG, "%s: %s found in LAN %s %s",
+		miniupnpd_syslog(LOG_DEBUG, "%s: %s found in LAN %s %s",
 		       "get_lan_for_peer()", dbg_str,
 		       lan_addr->ifname, lan_addr->str);
 	} else {
-		syslog(LOG_DEBUG, "%s: %s not found !", "get_lan_for_peer()",
+		miniupnpd_syslog(LOG_DEBUG, "%s: %s not found !", "get_lan_for_peer()",
 		       dbg_str);
 	}
 #endif /* DEBUG */

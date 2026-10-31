@@ -19,6 +19,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <syslog.h>
+#include "boundedlog.h"
 #include <ctype.h>
 #include <errno.h>
 #include <time.h>
@@ -67,13 +68,13 @@ syslogsslerr(void)
 	unsigned long err;
 	char buffer[256];
 	while((err = ERR_get_error()) != 0) {
-		syslog(LOG_ERR, "%s", ERR_error_string(err, buffer));
+		miniupnpd_syslog(LOG_ERR, "%s", ERR_error_string(err, buffer));
 	}
 }
 
 static int verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
 {
-	syslog(LOG_DEBUG, "verify_callback(%d, %p)", preverify_ok, ctx);
+	miniupnpd_syslog(LOG_DEBUG, "verify_callback(%d, %p)", preverify_ok, ctx);
 	return preverify_ok;
 }
 
@@ -84,38 +85,38 @@ int init_ssl(void)
 	SSL_load_error_strings();
 	method = TLSv1_server_method();
 	if(method == NULL) {
-		syslog(LOG_ERR, "TLSv1_server_method() failed");
+		miniupnpd_syslog(LOG_ERR, "TLSv1_server_method() failed");
 		syslogsslerr();
 		return -1;
 	}
 	ssl_ctx = SSL_CTX_new(method);
 	if(ssl_ctx == NULL) {
-		syslog(LOG_ERR, "SSL_CTX_new() failed");
+		miniupnpd_syslog(LOG_ERR, "SSL_CTX_new() failed");
 		syslogsslerr();
 		return -1;
 	}
 	/* set the local certificate */
 	if(!SSL_CTX_use_certificate_file(ssl_ctx, HTTPS_CERTFILE, SSL_FILETYPE_PEM)) {
-		syslog(LOG_ERR, "SSL_CTX_use_certificate_file(%s) failed", HTTPS_CERTFILE);
+		miniupnpd_syslog(LOG_ERR, "SSL_CTX_use_certificate_file(%s) failed", HTTPS_CERTFILE);
 		syslogsslerr();
 		return -1;
 	}
 	/* set the private key */
 	if(!SSL_CTX_use_PrivateKey_file(ssl_ctx, HTTPS_KEYFILE, SSL_FILETYPE_PEM)) {
-		syslog(LOG_ERR, "SSL_CTX_use_PrivateKey_file(%s) failed", HTTPS_KEYFILE);
+		miniupnpd_syslog(LOG_ERR, "SSL_CTX_use_PrivateKey_file(%s) failed", HTTPS_KEYFILE);
 		syslogsslerr();
 		return -1;
 	}
 	/* verify private key */
 	if(!SSL_CTX_check_private_key(ssl_ctx)) {
-		syslog(LOG_ERR, "SSL_CTX_check_private_key() failed");
+		miniupnpd_syslog(LOG_ERR, "SSL_CTX_check_private_key() failed");
 		syslogsslerr();
 		return -1;
 	}
 	/*SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_PEER|SSL_VERIFY_CLIENT_ONCE, verify_callback);*/
 	SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_NONE, verify_callback);
 	/*SSL_CTX_set_verify_depth(depth);*/
-	syslog(LOG_INFO, "using %s", SSLeay_version(SSLEAY_VERSION));
+	miniupnpd_syslog(LOG_INFO, "using %s", SSLeay_version(SSLEAY_VERSION));
 	return 0;
 }
 
@@ -302,12 +303,12 @@ InitSSL_upnphttp(struct upnphttp * h)
 	int r;
 	h->ssl = SSL_new(ssl_ctx);
 	if(h->ssl == NULL) {
-		syslog(LOG_ERR, "SSL_new() failed");
+		miniupnpd_syslog(LOG_ERR, "SSL_new() failed");
 		syslogsslerr();
 		abort();
 	}
 	if(!SSL_set_fd(h->ssl, h->socket)) {
-		syslog(LOG_ERR, "SSL_set_fd() failed");
+		miniupnpd_syslog(LOG_ERR, "SSL_set_fd() failed");
 		syslogsslerr();
 		abort();
 	}
@@ -315,9 +316,9 @@ InitSSL_upnphttp(struct upnphttp * h)
 	if(r < 0) {
 		int err;
 		err = SSL_get_error(h->ssl, r);
-		syslog(LOG_DEBUG, "SSL_accept() returned %d, SSL_get_error() %d", r, err);
+		miniupnpd_syslog(LOG_DEBUG, "SSL_accept() returned %d, SSL_get_error() %d", r, err);
 		if(err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE) {
-			syslog(LOG_ERR, "SSL_accept() failed");
+			miniupnpd_syslog(LOG_ERR, "SSL_accept() failed");
 			syslogsslerr();
 			abort();
 		}
@@ -331,7 +332,7 @@ CloseSocket_upnphttp(struct upnphttp * h)
 	/* SSL_shutdown() ? */
 	if(h->socket >= 0 && close(h->socket) < 0)
 	{
-		syslog(LOG_ERR, "CloseSocket_upnphttp: close(%d): %m", h->socket);
+		miniupnpd_syslog(LOG_ERR, "CloseSocket_upnphttp: close(%d): %m", h->socket);
 	}
 	h->socket = -1;
 	h->state = EToDelete;
@@ -399,7 +400,7 @@ ParseHttpHeaders(struct upnphttp * h)
 					unsigned long ul = strtoul(p, NULL, 10);
 					if(ul > INT_MAX) {
 						h->req_contentlen = INT_MAX;
-						syslog(LOG_WARNING, "ParseHttpHeaders() Content-Length overflow : %lu", ul);
+						miniupnpd_syslog(LOG_WARNING, "ParseHttpHeaders() Content-Length overflow : %lu", ul);
 					} else {
 						h->req_contentlen = (int)ul;
 					}
@@ -445,7 +446,7 @@ ParseHttpHeaders(struct upnphttp * h)
 					p++;
 				while(p[n]>=' ')
 					n++;
-				syslog(LOG_DEBUG, "accept-language HTTP header : '%.*s'", n, p);
+				miniupnpd_syslog(LOG_DEBUG, "accept-language HTTP header : '%.*s'", n, p);
 				/* keep only the 1st accepted language */
 				n = 0;
 				while(p[n]>' ' && p[n] != ',')
@@ -465,7 +466,7 @@ ParseHttpHeaders(struct upnphttp * h)
 					n++;
 				if(strncasecmp(p, "100-continue", 12) == 0) {
 					h->respflags |= FLAG_CONTINUE;
-					syslog(LOG_DEBUG, "\"Expect: 100-Continue\" header detected");
+					miniupnpd_syslog(LOG_DEBUG, "\"Expect: 100-Continue\" header detected");
 				}
 			}
 #ifdef ENABLE_EVENTS
@@ -627,7 +628,7 @@ sendXMLdesc(struct upnphttp * h, char * (f)(int *))
 	{
 		static const char error500[] = "<HTML><HEAD><TITLE>Error 500</TITLE>"
 		   "</HEAD><BODY>Internal Server Error</BODY></HTML>\r\n";
-		syslog(LOG_ERR, "Failed to generate XML description");
+		miniupnpd_syslog(LOG_ERR, "Failed to generate XML description");
 		h->respflags = FLAG_HTML;
 		BuildResp2_upnphttp(h, 500, "Internal Server Error",
 		                    error500, sizeof(error500)-1);
@@ -651,7 +652,7 @@ ProcessHTTPPOST_upnphttp(struct upnphttp * h)
 		if(h->req_soapActionOff > 0)
 		{
 			/* we can process the request */
-			syslog(LOG_INFO, "SOAPAction: %.*s",
+			miniupnpd_syslog(LOG_INFO, "SOAPAction: %.*s",
 			       h->req_soapActionLen, h->req_buf + h->req_soapActionOff);
 			ExecuteSoapAction(h,
 				h->req_buf + h->req_soapActionOff,
@@ -661,7 +662,7 @@ ProcessHTTPPOST_upnphttp(struct upnphttp * h)
 		{
 			static const char err400str[] =
 				"<html><body>Bad request</body></html>";
-			syslog(LOG_INFO, "No SOAPAction in HTTP headers");
+			miniupnpd_syslog(LOG_INFO, "No SOAPAction in HTTP headers");
 			h->respflags = FLAG_HTML;
 			BuildResp2_upnphttp(h, 400, "Bad Request",
 			                    err400str, sizeof(err400str) - 1);
@@ -779,11 +780,11 @@ static void
 ProcessHTTPSubscribe_upnphttp(struct upnphttp * h, const char * path)
 {
 	const char * sid;
-	syslog(LOG_DEBUG, "ProcessHTTPSubscribe %s", path);
-	syslog(LOG_DEBUG, "Callback '%.*s' Timeout=%d",
+	miniupnpd_syslog(LOG_DEBUG, "ProcessHTTPSubscribe %s", path);
+	miniupnpd_syslog(LOG_DEBUG, "Callback '%.*s' Timeout=%d",
 	       h->req_CallbackLen, h->req_buf + h->req_CallbackOff,
 	       h->req_Timeout);
-	syslog(LOG_DEBUG, "SID '%.*s'", h->req_SIDLen, h->req_buf + h->req_SIDOff);
+	miniupnpd_syslog(LOG_DEBUG, "SID '%.*s'", h->req_SIDLen, h->req_buf + h->req_SIDOff);
 #if defined(UPNP_STRICT) && (UPNP_VERSION_MAJOR > 1) || (UPNP_VERSION_MINOR > 0)
 	/*if(h->req_Timeout < 1800) {*/
 	if(h->req_Timeout == 0) {
@@ -816,12 +817,12 @@ ProcessHTTPSubscribe_upnphttp(struct upnphttp * h, const char * path)
 #ifdef UPNP_STRICT
 			/* SID: and Callback: are incompatible */
 			if(h->req_SIDOff > 0) {
-				syslog(LOG_WARNING, "Both Callback: and SID: in SUBSCRIBE");
+				miniupnpd_syslog(LOG_WARNING, "Both Callback: and SID: in SUBSCRIBE");
 				BuildResp2_upnphttp(h, 400, "Incompatible header fields", 0, 0);
 			/* "NT: upnp:event" header is mandatory */
 			} else if(h->req_NTOff <= 0 || h->req_NTLen != 10 ||
 			   0 != memcmp("upnp:event", h->req_buf + h->req_NTOff, 10)) {
-				syslog(LOG_WARNING, "Invalid NT in SUBSCRIBE %.*s",
+				miniupnpd_syslog(LOG_WARNING, "Invalid NT in SUBSCRIBE %.*s",
 				       h->req_NTLen, h->req_buf + h->req_NTOff);
 				BuildResp2_upnphttp(h, 412, "Precondition Failed", 0, 0);
 			} else
@@ -831,13 +832,13 @@ ProcessHTTPSubscribe_upnphttp(struct upnphttp * h, const char * path)
 				                               h->req_CallbackLen, h->req_Timeout);
 				h->respflags = FLAG_TIMEOUT;
 				if(sid) {
-					syslog(LOG_DEBUG, "generated sid=%s", sid);
+					miniupnpd_syslog(LOG_DEBUG, "generated sid=%s", sid);
 					h->respflags |= FLAG_SID;
 					h->res_SID = sid;
 				}
 				BuildResp_upnphttp(h, 0, 0);
 			} else {
-				syslog(LOG_WARNING, "Invalid Callback in SUBSCRIBE %.*s",
+				miniupnpd_syslog(LOG_WARNING, "Invalid Callback in SUBSCRIBE %.*s",
 				       h->req_CallbackLen, h->req_buf + h->req_CallbackOff);
 				BuildResp2_upnphttp(h, 412, "Precondition Failed", 0, 0);
 			}
@@ -850,7 +851,7 @@ with HTTP error 412 Precondition Failed. */
 #ifdef UPNP_STRICT
 			/* SID: and NT: headers are incompatibles */
 			if(h->req_NTOff > 0) {
-				syslog(LOG_WARNING, "Both NT: and SID: in SUBSCRIBE");
+				miniupnpd_syslog(LOG_WARNING, "Both NT: and SID: in SUBSCRIBE");
 				BuildResp2_upnphttp(h, 400, "Incompatible header fields", 0, 0);
 			} else {
 #endif /* UPNP_STRICT */
@@ -874,8 +875,8 @@ with HTTP error 412 Precondition Failed. */
 static void
 ProcessHTTPUnSubscribe_upnphttp(struct upnphttp * h, const char * path)
 {
-	syslog(LOG_DEBUG, "ProcessHTTPUnSubscribe %s", path);
-	syslog(LOG_DEBUG, "SID '%.*s'", h->req_SIDLen, h->req_buf + h->req_SIDOff);
+	miniupnpd_syslog(LOG_DEBUG, "ProcessHTTPUnSubscribe %s", path);
+	miniupnpd_syslog(LOG_DEBUG, "SID '%.*s'", h->req_SIDLen, h->req_buf + h->req_SIDOff);
 	/* Remove from the list */
 #ifdef UPNP_STRICT
 	if(h->req_SIDOff <= 0 || h->req_SIDLen == 0) {
@@ -949,17 +950,17 @@ ProcessHttpQuery_upnphttp(struct upnphttp * h)
 	for(i = 0; i<15 && *p != '\r'; i++)
 		HttpVer[i] = *(p++);
 	HttpVer[i] = '\0';
-	syslog(LOG_INFO, "HTTP REQUEST from %s : %s %s (%s)",
+	miniupnpd_syslog(LOG_INFO, "HTTP REQUEST from %s : %s %s (%s)",
 	       h->clientaddr_str, HttpCommand, HttpUrl, HttpVer);
 	ParseHttpHeaders(h);
 	if(h->req_contentlen > CONTENT_LENGTH_LIMIT) {
-		syslog(LOG_WARNING, "Content-Length over limit : %d", h->req_contentlen);
+		miniupnpd_syslog(LOG_WARNING, "Content-Length over limit : %d", h->req_contentlen);
 		BuildResp2_upnphttp(h, 413, "Content Too Large", 0, 0);
 		SendRespAndClose_upnphttp(h);
 		return;
 	}
 	if(h->req_HostOff > 0 && h->req_HostLen > 0) {
-		syslog(LOG_DEBUG, "Host: %.*s", h->req_HostLen, h->req_buf + h->req_HostOff);
+		miniupnpd_syslog(LOG_DEBUG, "Host: %.*s", h->req_HostLen, h->req_buf + h->req_HostOff);
 		p = h->req_buf + h->req_HostOff;
 		if(*p == '[') {
 			/* IPv6 */
@@ -970,7 +971,7 @@ ProcessHttpQuery_upnphttp(struct upnphttp * h)
 				p++;
 			}
 			if(*p != ']') {
-				syslog(LOG_NOTICE, "DNS rebinding attack suspected (Host: %.*s)", h->req_HostLen, h->req_buf + h->req_HostOff);
+				miniupnpd_syslog(LOG_NOTICE, "DNS rebinding attack suspected (Host: %.*s)", h->req_HostLen, h->req_buf + h->req_HostOff);
 				Send404(h);/* 403 */
 				return;
 			}
@@ -979,7 +980,7 @@ ProcessHttpQuery_upnphttp(struct upnphttp * h)
 		} else {
 			for(i = 0; i < h->req_HostLen; i++) {
 				if(*p != ':' && *p != '.' && (*p > '9' || *p < '0')) {
-					syslog(LOG_NOTICE, "DNS rebinding attack suspected (Host: %.*s)", h->req_HostLen, h->req_buf + h->req_HostOff);
+					miniupnpd_syslog(LOG_NOTICE, "DNS rebinding attack suspected (Host: %.*s)", h->req_HostLen, h->req_buf + h->req_HostOff);
 					Send404(h);/* 403 */
 					return;
 				}
@@ -1024,7 +1025,7 @@ ProcessHttpQuery_upnphttp(struct upnphttp * h)
 			return;
 		}
 #endif
-		syslog(LOG_INFO, "%s not found, responding ERROR 404", HttpUrl);
+		miniupnpd_syslog(LOG_INFO, "%s not found, responding ERROR 404", HttpUrl);
 		Send404(h);
 	}
 #ifdef ENABLE_EVENTS
@@ -1041,13 +1042,13 @@ ProcessHttpQuery_upnphttp(struct upnphttp * h)
 #else
 	else if(strcmp("SUBSCRIBE", HttpCommand) == 0)
 	{
-		syslog(LOG_NOTICE, "SUBSCRIBE not implemented. ENABLE_EVENTS compile option disabled");
+		miniupnpd_syslog(LOG_NOTICE, "SUBSCRIBE not implemented. ENABLE_EVENTS compile option disabled");
 		Send501(h);
 	}
 #endif
 	else
 	{
-		syslog(LOG_DEBUG, "Unsupported HTTP Command %s", HttpCommand);
+		miniupnpd_syslog(LOG_DEBUG, "Unsupported HTTP Command %s", HttpCommand);
 		Send501(h);
 	}
 }
@@ -1072,7 +1073,7 @@ append_request(struct upnphttp * h, const char * buf, int n)
 		while(capacity < needed)
 			capacity = capacity > limit / 2 ? limit : capacity * 2;
 		if(!http_resize(h, 0, capacity)) {
-			syslog(LOG_WARNING, "Unable to allocate bounded HTTP request buffer");
+			miniupnpd_syslog(LOG_WARNING, "Unable to allocate bounded HTTP request buffer");
 			return 0;
 		}
 	}
@@ -1114,7 +1115,7 @@ Process_upnphttp(struct upnphttp * h)
 				err = SSL_get_error(h->ssl, n);
 				if(err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE)
 				{
-					syslog(LOG_ERR, "SSL_read() failed");
+					miniupnpd_syslog(LOG_ERR, "SSL_read() failed");
 					syslogsslerr();
 					h->state = EToDelete;
 				}
@@ -1124,7 +1125,7 @@ Process_upnphttp(struct upnphttp * h)
 			   errno != EWOULDBLOCK &&
 			   errno != EINTR)
 			{
-				syslog(LOG_ERR, "recv (state0): %m");
+				miniupnpd_syslog(LOG_ERR, "recv (state0): %m");
 				h->state = EToDelete;
 			}
 			/* if errno is EAGAIN, EWOULDBLOCK or EINTR, try again later */
@@ -1134,7 +1135,7 @@ Process_upnphttp(struct upnphttp * h)
 		}
 		else if(n==0)
 		{
-			syslog(LOG_DEBUG, "HTTP Connection from %s closed unexpectedly",
+			miniupnpd_syslog(LOG_DEBUG, "HTTP Connection from %s closed unexpectedly",
 				inet_ntoa(h->clientaddr));
 			h->state = EToDelete;
 		}
@@ -1149,7 +1150,7 @@ Process_upnphttp(struct upnphttp * h)
 			                             h->req_buflen - scan_start);
 			if((endheaders && endheaders - h->req_buf + 4 > HEADERS_LENGTH_LIMIT) ||
 			   (!endheaders && h->req_buflen >= HEADERS_LENGTH_LIMIT)) {
-				syslog(LOG_WARNING, "HTTP headers over limit");
+				miniupnpd_syslog(LOG_WARNING, "HTTP headers over limit");
 				BuildResp2_upnphttp(h, 400, "Bad Request", 0, 0);
 				SendRespAndClose_upnphttp(h);
 				return;
@@ -1188,7 +1189,7 @@ Process_upnphttp(struct upnphttp * h)
 				err = SSL_get_error(h->ssl, n);
 				if(err != SSL_ERROR_WANT_READ && err != SSL_ERROR_WANT_WRITE)
 				{
-					syslog(LOG_ERR, "SSL_read() failed");
+					miniupnpd_syslog(LOG_ERR, "SSL_read() failed");
 					syslogsslerr();
 					h->state = EToDelete;
 				}
@@ -1198,7 +1199,7 @@ Process_upnphttp(struct upnphttp * h)
 			   errno != EWOULDBLOCK &&
 			   errno != EINTR)
 			{
-				syslog(LOG_ERR, "recv (state1): %m");
+				miniupnpd_syslog(LOG_ERR, "recv (state1): %m");
 				h->state = EToDelete;
 			}
 			/* if errno is EAGAIN, EWOULDBLOCK or EINTR, try again later */
@@ -1208,7 +1209,7 @@ Process_upnphttp(struct upnphttp * h)
 		}
 		else if(n==0)
 		{
-			syslog(LOG_DEBUG, "HTTP Connection from %s closed unexpectedly",
+			miniupnpd_syslog(LOG_DEBUG, "HTTP Connection from %s closed unexpectedly",
 				inet_ntoa(h->clientaddr));
 			h->state = EToDelete;
 		}
@@ -1230,7 +1231,7 @@ Process_upnphttp(struct upnphttp * h)
 		SendRespAndClose_upnphttp(h);
 		break;
 	default:
-		syslog(LOG_WARNING, "Unexpected state: %d", h->state);
+		miniupnpd_syslog(LOG_WARNING, "Unexpected state: %d", h->state);
 	}
 }
 
@@ -1394,7 +1395,7 @@ SendResp_upnphttp(struct upnphttp * h)
 					/* try again later */
 					return 0;
 				}
-				syslog(LOG_ERR, "SSL_write() failed");
+				miniupnpd_syslog(LOG_ERR, "SSL_write() failed");
 				syslogsslerr();
 				break;
 			} else {
@@ -1406,7 +1407,7 @@ SendResp_upnphttp(struct upnphttp * h)
 				/* try again later */
 				return 0;
 			}
-			syslog(LOG_ERR, "send(res_buf): %m");
+			miniupnpd_syslog(LOG_ERR, "send(res_buf): %m");
 			break; /* avoid infinite loop */
 #ifdef ENABLE_HTTPS
 			}
@@ -1414,7 +1415,7 @@ SendResp_upnphttp(struct upnphttp * h)
 		}
 		else if(n == 0)
 		{
-			syslog(LOG_ERR, "send(res_buf): %d bytes sent (out of %d)",
+			miniupnpd_syslog(LOG_ERR, "send(res_buf): %d bytes sent (out of %d)",
 							h->res_sent, h->res_buflen);
 			break;
 		}
@@ -1464,7 +1465,7 @@ SendRespAndClose_upnphttp(struct upnphttp * h)
 					h->state = ESendingAndClosing;
 					return;
 				}
-				syslog(LOG_ERR, "SSL_write() failed");
+				miniupnpd_syslog(LOG_ERR, "SSL_write() failed");
 				syslogsslerr();
 				break; /* avoid infinite loop */
 			} else {
@@ -1477,7 +1478,7 @@ SendRespAndClose_upnphttp(struct upnphttp * h)
 				h->state = ESendingAndClosing;
 				return;
 			}
-			syslog(LOG_ERR, "send(res_buf): %m");
+			miniupnpd_syslog(LOG_ERR, "send(res_buf): %m");
 			break; /* avoid infinite loop */
 #ifdef ENABLE_HTTPS
 			}
@@ -1485,7 +1486,7 @@ SendRespAndClose_upnphttp(struct upnphttp * h)
 		}
 		else if(n == 0)
 		{
-			syslog(LOG_ERR, "send(res_buf): %d bytes sent (out of %d)",
+			miniupnpd_syslog(LOG_ERR, "send(res_buf): %d bytes sent (out of %d)",
 							h->res_sent, h->res_buflen);
 			break;
 		}

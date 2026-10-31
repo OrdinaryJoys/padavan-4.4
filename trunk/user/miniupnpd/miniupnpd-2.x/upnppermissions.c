@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <syslog.h>
+#include "boundedlog.h"
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -251,14 +252,14 @@ check_upnp_rule_against_permissions(const struct upnpperm * permary,
 	{
 		if(match_permission(permary + i, eport, address, iport))
 		{
-			syslog(LOG_DEBUG,
+			miniupnpd_syslog(LOG_DEBUG,
 			       "UPnP permission rule %d matched : port mapping %s",
 			       i, (permary[i].type == UPNPPERM_ALLOW)?"accepted":"rejected"
 			       );
 			return (permary[i].type == UPNPPERM_ALLOW);
 		}
 	}
-	syslog(LOG_DEBUG, "no permission rule matched : accept by default (n_perms=%d)", n_perms);
+	miniupnpd_syslog(LOG_DEBUG, "no permission rule matched : accept by default (n_perms=%d)", n_perms);
 	return 1;	/* Default : accept */
 }
 

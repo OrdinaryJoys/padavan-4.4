@@ -10,8 +10,9 @@ Upstream/server/domain/dynamic-DHCP inputs: 2 MiB, 16 KiB/line, 65536 lines.
 Hosts explicitly opt into 16 MiB/262144 lines. The five-second monotonic read
 budget is cooperative between syscalls; it cannot bound a blocked kernel/FS.
 Regular symlink/hardlink aliases remain supported. Invalid input is rejected
-before server-table changes; existing DHCP clear-before-reload semantics and
-valid empty/syntactically invalid runtime-file behavior remain unchanged.
+before server-table changes. Group hosts/DHCP atomic publication has its own
+transaction regression suite; standalone runtime readers preserve valid empty
+inputs and enforce their bounded file/deadline contracts.
 """
 from pathlib import Path
 import os
@@ -87,6 +88,7 @@ static ssize_t fault_pread(int fd,void *p,size_t n,off_t offset) {
 static int fault_clock(clockid_t clock,struct timespec *stamp) {
   static int ticks;
   if(active_fault("clock")){errno=EIO;return -1;}
+  if(active_fault("group-validation")){stamp->tv_sec=0;stamp->tv_nsec=ticks++>=4?300000000L:0;return 0;}
   if(active_fault("deadline")){stamp->tv_sec=ticks++ ? 6 : 0;stamp->tv_nsec=0;return 0;}
   return clock_gettime(clock,stamp);
 }
@@ -125,6 +127,15 @@ int main(int argc,char **argv) {
   struct dns_runtime_file snapshot;const char *error;int c;size_t bytes=0;
   if(argc<3)return 98;
   fault=getenv("DNS_READER_FAULT");current_path=argv[2];
+  if(!strcmp(argv[1],"group-deadline")) {
+    long long deadline=runtime_milliseconds()+(argc>3?atoll(argv[3]):250);
+    if(!dns_runtime_file_open_limit_deadline(&snapshot,current_path,DNS_RUNTIME_FILE_BYTES,
+                                           DNS_RUNTIME_FILE_LINES,deadline,&error)) {
+      fprintf(stderr,"%s\n",error);printf("reads=%d\n",calls);return 1;
+    }
+    while((c=fgetc(snapshot.stream))!=EOF)bytes++;
+    dns_runtime_file_close(&snapshot);printf("bytes=%zu reads=%d\n",bytes,calls);return 0;
+  }
   if(!strcmp(argv[1],"descriptor")) {
     int fd=open(current_path,O_RDWR|O_APPEND),value;off_t position;
     char moved[4096];
@@ -297,6 +308,21 @@ static int callback(char *role,char *path) {
         for result in self.run_case(path=path,fault=fault):
             self.assertEqual(result.returncode,1,result.stderr)
             self.assertIn(reason,result.stderr)
+
+    def test_group_deadline_already_expired_rejects_empty_and_nonempty_before_read(self):
+        for payload in (b'',b'server=192.0.2.1\n'):
+            self.path.write_bytes(payload)
+            for binary in self.binaries:
+                result=subprocess.run([str(binary),'group-deadline',str(self.path),'-1'],capture_output=True,text=True,env=self.env,timeout=2)
+                self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+                self.assertIn('time budget exceeded',result.stderr);self.assertIn('reads=0',result.stdout)
+    def test_group_deadline_future_allows_completed_valid_snapshot(self):
+        for result in self.run_case(role='group-deadline'):
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr);self.assertIn('bytes=17',result.stdout)
+    def test_group_deadline_also_covers_postread_byte_validation(self):
+        for result in self.run_case(role='group-deadline',fault='group-validation'):
+            self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+            self.assertIn('time budget exceeded',result.stderr);self.assertIn('reads=2',result.stdout)
 
     def test_regular_empty_final_line_and_short_reads(self):
         for payload in (b'',b'server=192.0.2.1',b'server=192.0.2.1\n'):

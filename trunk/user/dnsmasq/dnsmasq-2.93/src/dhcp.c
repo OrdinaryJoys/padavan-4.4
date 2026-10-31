@@ -1009,6 +1009,7 @@ int dhcp_reload_ethers_prepare(struct dhcp_config *old_boundary)
   struct dhcp_config *original = daemon->dhcp_conf, *head = NULL, **tail = &head, *source;
   char line[DNS_RUNTIME_LINE_BYTES + 1];
   int in_old = 0, count = 0, lineno = 0;
+  unsigned int reload_work = 0;
   if (!dns_reload_active() || !dns_reload_ok()) return 0;
   if (!dns_reload_read(&input, ETHERSFILE, 0)) return 0;
   for (source = original; source && dns_reload_ok(); source = source->next)
@@ -1041,7 +1042,7 @@ int dhcp_reload_ethers_prepare(struct dhcp_config *old_boundary)
           if (inet_pton(AF_INET, ip, &address) != 1)
             { dns_reload_fail("invalid ethers address syntax"); break; }
           flags = CONFIG_ADDR;
-          for (config = head; config; config = config->next)
+          for (config = head; config && dns_reload_step(&reload_work); config = config->next)
             if ((config->flags & CONFIG_ADDR) && config->addr.s_addr == address.s_addr) break;
         }
       else
@@ -1056,9 +1057,10 @@ int dhcp_reload_ethers_prepare(struct dhcp_config *old_boundary)
               break;
             }
           flags = CONFIG_NAME;
-          for (config = head; config; config = config->next)
+          for (config = head; config && dns_reload_step(&reload_work); config = config->next)
             if ((config->flags & CONFIG_NAME) && hostname_isequal(config->hostname, host)) break;
         }
+      if (!dns_reload_ok()) { dns_reload_free(host); break; }
       if (config && (config->flags & CONFIG_FROM_ETHERS))
         {
           /* Preserve the upstream first-record-wins duplicate policy. */
@@ -1068,13 +1070,14 @@ int dhcp_reload_ethers_prepare(struct dhcp_config *old_boundary)
         }
       if (!config)
         {
-          for (config = head; config; config = config->next)
+          for (config = head; config && dns_reload_step(&reload_work); config = config->next)
             {
               struct hwaddr_config *h = config->hwaddr;
               if (h && !h->next && h->wildcard_mask == 0 && h->hwaddr_len == ETHER_ADDR_LEN &&
                   (h->hwaddr_type == ARPHRD_ETHER || h->hwaddr_type == 0) &&
                   memcmp(h->hwaddr, hardware, ETHER_ADDR_LEN) == 0) break;
             }
+          if (!dns_reload_ok()) { dns_reload_free(host); break; }
           if (!config)
             {
               if (!(config = dns_reload_malloc(sizeof(*config)))) break;
@@ -1091,11 +1094,12 @@ int dhcp_reload_ethers_prepare(struct dhcp_config *old_boundary)
       config->flags |= CONFIG_NOCLID;
       if (!config->hwaddr && !(config->hwaddr = dns_reload_malloc(sizeof(*config->hwaddr))))
         { dns_reload_free(host); break; }
-      while (config->hwaddr->next)
+      while (config->hwaddr->next && dns_reload_step(&reload_work))
         {
           struct hwaddr_config *old = config->hwaddr->next;
           config->hwaddr->next = old->next; dns_reload_free(old);
         }
+      if (!dns_reload_ok()) { dns_reload_free(host); break; }
       memcpy(config->hwaddr->hwaddr, hardware, ETHER_ADDR_LEN);
       config->hwaddr->hwaddr_len = ETHER_ADDR_LEN;
       config->hwaddr->hwaddr_type = ARPHRD_ETHER;
@@ -1103,7 +1107,7 @@ int dhcp_reload_ethers_prepare(struct dhcp_config *old_boundary)
       dns_reload_free(host); count++;
     }
   if (ferror(input.stream)) dns_reload_fail("ethers memory snapshot read failed");
-  dns_runtime_file_close(&input);
+  dns_reload_close(&input);
   if (!dns_reload_ok()) return 0;
   daemon->dhcp_conf = head;
   my_syslog(MS_DHCP | LOG_INFO, _("read %s - %d addresses"), ETHERSFILE, count);
@@ -1275,7 +1279,7 @@ static void dhcp_read_ethers_legacy(void)
 
     }
   
-  dns_runtime_file_close(&input);
+  dns_reload_close(&input);
 
   my_syslog(MS_DHCP | LOG_INFO, _("read %s - %d addresses"), ETHERSFILE, count);
 }

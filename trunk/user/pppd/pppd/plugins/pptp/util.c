@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <syslog.h>
+#include "../../bounded_ppp_log.h"
 #include <unistd.h>
 #include <stdlib.h>
 #include "util.h"
@@ -31,13 +32,13 @@ va_end(ap)
 
 /*** open log *****************************************************************/
 static void open_log(void) {
-    openlog(PROGRAM_NAME, LOG_PID, LOG_DAEMON);
+    ppp_log_open(PROGRAM_NAME, LOG_PID, LOG_DAEMON);
 }
 
 /*** close log ****************************************************************/
 static void close_log(void)
 {
-    closelog();
+    ppp_log_close();
 }
 
 /*** print a message to syslog ************************************************/
@@ -46,7 +47,7 @@ void _log(const char *func, const char *file, int line, const char *format, ...)
     if (log_level > 0)
     {
 	MAKE_STRING("log");
-	syslog(LOG_NOTICE, "%s", string);
+	ppp_syslog(LOG_NOTICE, "%s", string);
     }
 }
 
@@ -55,7 +56,7 @@ void _warn(const char *func, const char *file, int line, const char *format, ...
 {
     MAKE_STRING("warn");
     fprintf(stderr, "%s\n", string);
-    syslog(LOG_WARNING, "%s", string);
+    ppp_syslog(LOG_WARNING, "%s", string);
 }
 
 /*** print a fatal warning to syslog and exit *********************************/
@@ -63,7 +64,7 @@ void _fatal(const char *func, const char *file, int line, const char *format, ..
 {
     MAKE_STRING("fatal");
     fprintf(stderr, "%s\n", string);
-    syslog(LOG_CRIT, "%s", string);
+    ppp_syslog(LOG_CRIT, "%s", string);
     exit(1);
 }
 

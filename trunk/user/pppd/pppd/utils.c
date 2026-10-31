@@ -56,6 +56,32 @@
 #endif
 
 #include "pppd.h"
+#include "../../shared/bounded_syslog.h"
+
+static struct padavan_log_context ppp_log_context = PADAVAN_LOG_CONTEXT_INIT;
+
+void ppp_log_open(const char *ident, int options, int facility)
+{
+    padavan_log_open(&ppp_log_context, ident, options, facility);
+}
+
+void ppp_log_close(void)
+{
+    padavan_log_close(&ppp_log_context);
+}
+
+int ppp_log_mask(int mask)
+{
+    return padavan_log_mask(&ppp_log_context, mask);
+}
+
+void ppp_syslog(int priority, const char *format, ...)
+{
+    va_list arguments;
+    va_start(arguments, format);
+    padavan_log_vwrite(&ppp_log_context, priority, format, arguments);
+    va_end(arguments);
+}
 #include "fsm.h"
 #include "lcp.h"
 
@@ -657,7 +683,7 @@ log_write(level, buf)
     int level;
     char *buf;
 {
-    syslog(level, "%s", buf);
+    ppp_syslog(level, "%s", buf);
     if (log_to_fd >= 0 && (level != LOG_DEBUG || debug)) {
 	int n = strlen(buf);
 

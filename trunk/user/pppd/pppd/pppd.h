@@ -524,6 +524,7 @@ void unlock_db __P((void));
 void tty_init __P((void));
 
 /* Procedures exported from utils.c. */
+#include "bounded_ppp_log.h"
 void log_packet __P((u_char *, int, char *, int));
 				/* Format a packet and log it with syslog */
 void print_string __P((char *, int,  printer_func, void *));

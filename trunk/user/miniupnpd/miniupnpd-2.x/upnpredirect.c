@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
+#include "boundedlog.h"
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -104,7 +105,7 @@ lease_file_add(unsigned short eport,
 
 	fd = fopen( lease_file, "a");
 	if (fd==NULL) {
-		syslog(LOG_ERR, "could not open lease file: %s", lease_file);
+		miniupnpd_syslog(LOG_ERR, "could not open lease file: %s", lease_file);
 		return -1;
 	}
 
@@ -130,7 +131,7 @@ lease_file_remove(unsigned short eport, int proto)
 	if (lease_file == NULL) return 0;
 
 	if (strlen( lease_file) + 7 > sizeof(tmpfilename)) {
-		syslog(LOG_ERR, "Lease filename is too long");
+		miniupnpd_syslog(LOG_ERR, "Lease filename is too long");
 		return -1;
 	}
 
@@ -148,7 +149,7 @@ lease_file_remove(unsigned short eport, int proto)
 	tmp = mkstemp(tmpfilename);
 	if (tmp==-1) {
 		fclose(fd);
-		syslog(LOG_ERR, "could not open temporary lease file");
+		miniupnpd_syslog(LOG_ERR, "could not open temporary lease file");
 		return -1;
 	}
 	fchmod(tmp, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
@@ -166,7 +167,7 @@ lease_file_remove(unsigned short eport, int proto)
 	fclose(fd);
 
 	if (rename(tmpfilename, lease_file) < 0) {
-		syslog(LOG_ERR, "could not rename temporary lease file to %s", lease_file);
+		miniupnpd_syslog(LOG_ERR, "could not rename temporary lease file to %s", lease_file);
 		remove(tmpfilename);
 	}
 
@@ -195,46 +196,46 @@ int reload_from_lease_file()
 	if(!lease_file) return -1;
 	fd = fopen( lease_file, "r");
 	if (fd==NULL) {
-		syslog(LOG_DEBUG, "could not open lease file: %s", lease_file);
+		miniupnpd_syslog(LOG_DEBUG, "could not open lease file: %s", lease_file);
 		return -1;
 	}
 	if(unlink(lease_file) < 0) {
-		syslog(LOG_WARNING, "could not unlink file %s : %m", lease_file);
+		miniupnpd_syslog(LOG_WARNING, "could not unlink file %s : %m", lease_file);
 	}
 
 	current_time = time(NULL);
 	while(fgets(line, sizeof(line), fd)) {
-		syslog(LOG_DEBUG, "parsing lease file line '%s'", line);
+		miniupnpd_syslog(LOG_DEBUG, "parsing lease file line '%s'", line);
 		proto = line;
 		p = strchr(line, ':');
 		if(!p) {
-			syslog(LOG_ERR, "unrecognized data in lease file");
+			miniupnpd_syslog(LOG_ERR, "unrecognized data in lease file");
 			continue;
 		}
 		*(p++) = '\0';
 		iaddr = strchr(p, ':');
 		if(!iaddr) {
-			syslog(LOG_ERR, "unrecognized data in lease file");
+			miniupnpd_syslog(LOG_ERR, "unrecognized data in lease file");
 			continue;
 		}
 		*(iaddr++) = '\0';
 		eport = (unsigned short)atoi(p);
 		p = strchr(iaddr, ':');
 		if(!p) {
-			syslog(LOG_ERR, "unrecognized data in lease file");
+			miniupnpd_syslog(LOG_ERR, "unrecognized data in lease file");
 			continue;
 		}
 		*(p++) = '\0';
 		iport = (unsigned short)atoi(p);
 		p = strchr(p, ':');
 		if(!p) {
-			syslog(LOG_ERR, "unrecognized data in lease file");
+			miniupnpd_syslog(LOG_ERR, "unrecognized data in lease file");
 			continue;
 		}
 		*(p++) = '\0';
 		desc = strchr(p, ':');
 		if(!desc) {
-			syslog(LOG_ERR, "unrecognized data in lease file");
+			miniupnpd_syslog(LOG_ERR, "unrecognized data in lease file");
 			continue;
 		}
 		*(desc++) = '\0';
@@ -251,7 +252,7 @@ int reload_from_lease_file()
 
 		if(timestamp > 0) {
 			if(timestamp <= (unsigned int)current_time) {
-				syslog(LOG_NOTICE, "already expired lease in lease file");
+				miniupnpd_syslog(LOG_NOTICE, "already expired lease in lease file");
 				continue;
 			} else {
 				leaseduration = timestamp - current_time;
@@ -262,7 +263,7 @@ int reload_from_lease_file()
 		rhost = NULL;
 		r = upnp_redirect(rhost, eport, iaddr, iport, proto, desc, leaseduration);
 		if(r == -1) {
-			syslog(LOG_ERR, "Failed to redirect %hu -> %s:%hu protocol %s",
+			miniupnpd_syslog(LOG_ERR, "Failed to redirect %hu -> %s:%hu protocol %s",
 			       eport, iaddr, iport, proto);
 		} else if(r == -2) {
 			/* Add the redirection again to the lease file */
@@ -300,13 +301,13 @@ upnp_redirect(const char * rhost, unsigned short eport,
 
 	proto = proto_atoi(protocol);
 	if(inet_aton(iaddr, &address) <= 0) {
-		syslog(LOG_ERR, "inet_aton(%s) FAILED", iaddr);
+		miniupnpd_syslog(LOG_ERR, "inet_aton(%s) FAILED", iaddr);
 		return -1;
 	}
 
 	if(!check_upnp_rule_against_permissions(upnppermlist, num_upnpperm,
 	                                        eport, address, iport)) {
-		syslog(LOG_INFO, "redirection permission check failed for "
+		miniupnpd_syslog(LOG_INFO, "redirection permission check failed for "
 		                 "%hu->%s:%hu %s", eport, iaddr, iport, protocol);
 		return -3;
 	}
@@ -351,7 +352,7 @@ upnp_redirect(const char * rhost, unsigned short eport,
 		   ((rhost == NULL && rhost_old[0]=='\0') ||
 		    (rhost && (strcmp(rhost, "*") == 0) && rhost_old[0]=='\0') ||
 		    (rhost && (strcmp(rhost, rhost_old) == 0)))) {
-			syslog(LOG_INFO, "updating existing port mapping %hu %s (rhost '%s') => %s:%hu",
+			miniupnpd_syslog(LOG_INFO, "updating existing port mapping %hu %s (rhost '%s') => %s:%hu",
 				eport, protocol, rhost_old, iaddr_old, iport_old);
 			timestamp = (leaseduration > 0) ? time(NULL) + leaseduration : 0;
 			if(iport != iport_old) {
@@ -367,19 +368,19 @@ upnp_redirect(const char * rhost, unsigned short eport,
 #endif /* ENABLE_LEASEFILE */
 			return r;
 		} else {
-			syslog(LOG_INFO, "port %hu %s (rhost '%s') already redirected to %s:%hu",
+			miniupnpd_syslog(LOG_INFO, "port %hu %s (rhost '%s') already redirected to %s:%hu",
 				eport, protocol, rhost_old, iaddr_old, iport_old);
 			return -2;
 		}
 #ifdef CHECK_PORTINUSE
 	} else if (port_in_use(ext_if_name, eport, proto, iaddr, iport) > 0) {
-		syslog(LOG_INFO, "port %hu protocol %s already in use",
+		miniupnpd_syslog(LOG_INFO, "port %hu protocol %s already in use",
 		       eport, protocol);
 		return -4;
 #endif /* CHECK_PORTINUSE */
 	} else {
 		timestamp = (leaseduration > 0) ? time(NULL) + leaseduration : 0;
-		syslog(LOG_INFO, "redirecting port %hu to %s:%hu protocol %s for: %s",
+		miniupnpd_syslog(LOG_INFO, "redirecting port %hu to %s:%hu protocol %s for: %s",
 			eport, iaddr, iport, protocol, desc);
 		return upnp_redirect_internal(rhost, eport, iaddr, iport, proto,
 		                              desc, timestamp);
@@ -523,7 +524,7 @@ _upnp_delete_redir(unsigned short eport, int proto)
 int
 upnp_delete_redirection(unsigned short eport, const char * protocol)
 {
-	syslog(LOG_INFO, "removing redirect rule port %hu %s", eport, protocol);
+	miniupnpd_syslog(LOG_INFO, "removing redirect rule port %hu %s", eport, protocol);
 	return _upnp_delete_redir(eport, proto_atoi(protocol));
 }
 
@@ -624,7 +625,7 @@ get_upnp_rules_state_list(int max_rules_number_target)
 	{
 		if(tmp->to_remove)
 		{
-			syslog(LOG_INFO, "remove port mapping %hu %s because it has expired",
+			miniupnpd_syslog(LOG_INFO, "remove port mapping %hu %s because it has expired",
 			       tmp->eport, proto_itoa(tmp->proto));
 			_upnp_delete_redir(tmp->eport, tmp->proto);
 			*p = tmp->next;
@@ -666,7 +667,7 @@ remove_unused_rules(struct rule_state * list)
 		{
 			if(packets == list->packets && bytes == list->bytes)
 			{
-				syslog(LOG_DEBUG, "removing unused mapping %hu %s : still "
+				miniupnpd_syslog(LOG_DEBUG, "removing unused mapping %hu %s : still "
 				       "%" PRIu64 "packets %" PRIu64 "bytes",
 				       list->eport, proto_itoa(list->proto),
 				       packets, bytes);
@@ -679,7 +680,7 @@ remove_unused_rules(struct rule_state * list)
 		free(tmp);
 	}
 	if(n>0)
-		syslog(LOG_NOTICE, "removed %d unused rules", n);
+		miniupnpd_syslog(LOG_NOTICE, "removed %d unused rules", n);
 }
 
 /* upnp_get_portmappings_in_range()

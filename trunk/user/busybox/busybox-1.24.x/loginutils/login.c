@@ -314,7 +314,7 @@ int login_main(int argc UNUSED_PARAM, char **argv)
 	/* Was breaking "login <username>" from shell command line: */
 	/*bb_setpgrp();*/
 
-	openlog(applet_name, LOG_PID | LOG_CONS, LOG_AUTH);
+	bb_openlog(applet_name, LOG_PID | LOG_CONS, LOG_AUTH);
 
 	while (1) {
 		/* flush away any type-ahead (as getty does) */
@@ -393,7 +393,7 @@ int login_main(int argc UNUSED_PARAM, char **argv)
  pam_auth_failed:
 		/* syslog, because we don't want potential attacker
 		 * to know _why_ login failed */
-		syslog(LOG_WARNING, "pam_%s call failed: %s (%d)", failed_msg,
+		bb_syslog(LOG_WARNING, "pam_%s call failed: %s (%d)", failed_msg,
 					pam_strerror(pamh, pamret), pamret);
 		safe_strncpy(username, "UNKNOWN", sizeof(username));
 #else /* not PAM */
@@ -429,7 +429,7 @@ int login_main(int argc UNUSED_PARAM, char **argv)
 		/* TODO: doesn't sound like correct English phrase to me */
 		puts("Login incorrect");
 		if (++count == 3) {
-			syslog(LOG_WARNING, "invalid password for '%s'%s",
+			bb_syslog(LOG_WARNING, "invalid password for '%s'%s",
 						username, fromhost);
 
 			if (ENABLE_FEATURE_CLEAN_UP)
@@ -493,7 +493,7 @@ int login_main(int argc UNUSED_PARAM, char **argv)
 		motd();
 
 	if (pw->pw_uid == 0)
-		syslog(LOG_INFO, "root login%s", fromhost);
+		bb_syslog(LOG_INFO, "root login%s", fromhost);
 
 	if (ENABLE_FEATURE_CLEAN_UP)
 		free(fromhost);

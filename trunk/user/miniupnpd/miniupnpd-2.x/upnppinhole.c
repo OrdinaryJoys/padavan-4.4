@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
+#include "boundedlog.h"
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -126,7 +127,7 @@ upnp_add_inboundpinhole(const char * raddr,
 
 	r = inet_pton(AF_INET6, iaddr, &address);
 	if(r <= 0) {
-		syslog(LOG_ERR, "inet_pton(%d, %s, %p) FAILED",
+		miniupnpd_syslog(LOG_ERR, "inet_pton(%d, %s, %p) FAILED",
 		       AF_INET6, iaddr, &address);
 		return -4;
 	}
@@ -136,7 +137,7 @@ upnp_add_inboundpinhole(const char * raddr,
 
 	*uid = upnp_find_inboundpinhole(raddr, rport, iaddr, iport, proto, NULL, 0, NULL);
 	if(*uid >= 0) {
-		syslog(LOG_INFO, "Pinhole for inbound traffic from [%s]:%hu to [%s]:%hu with proto %d found uid=%d. Updating it.", raddr, rport, iaddr, iport, proto, *uid);
+		miniupnpd_syslog(LOG_INFO, "Pinhole for inbound traffic from [%s]:%hu to [%s]:%hu with proto %d found uid=%d. Updating it.", raddr, rport, iaddr, iport, proto, *uid);
 		r = upnp_update_inboundpinhole(*uid, timestamp);
 		return (r >= 0) ? 1 : r;
 	}
@@ -201,9 +202,9 @@ upnp_add_inboundpinhole_internal(const char * raddr, unsigned short rport,
 		}
 	}
 #ifdef DEBUG
-	syslog(LOG_INFO, "Adding following ip6tables rule:");
-	syslog(LOG_INFO, "  -> %s", cmd);
-	syslog(LOG_INFO, "  -> %s", cmd_raw);
+	miniupnpd_syslog(LOG_INFO, "Adding following ip6tables rule:");
+	miniupnpd_syslog(LOG_INFO, "  -> %s", cmd);
+	miniupnpd_syslog(LOG_INFO, "  -> %s", cmd_raw);
 #endif
 	/* TODO Add a better checking error.*/
 	if(system(cmd) < 0 || system(cmd_raw) < 0)
@@ -340,11 +341,11 @@ upnp_check_pinhole_working(const char * uid,
 	fd = fopen(filename, "r");
 	if (fd==NULL)
 	{
-		syslog(LOG_ERR, "Get_rule: could not open file: %s", filename);
+		miniupnpd_syslog(LOG_ERR, "Get_rule: could not open file: %s", filename);
 		return -1;
 	}
 
-	syslog(LOG_INFO, "Get_rule: Starting getting info in file %s for %s\n", filename, uid);
+	miniupnpd_syslog(LOG_INFO, "Get_rule: Starting getting info in file %s for %s\n", filename, uid);
 	buf[sizeof(buf)-1] = 0;
 	while(fgets(buf, sizeof(buf)-1, fd) != NULL && res != 1)
 	{

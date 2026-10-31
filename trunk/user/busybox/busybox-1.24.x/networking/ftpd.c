@@ -1169,7 +1169,7 @@ int ftpd_main(int argc UNUSED_PARAM, char **argv)
 		logmode = LOGMODE_NONE;
 	if (opts & OPT_S) {
 		/* LOG_NDELAY is needed since we may chroot later */
-		openlog(applet_name, LOG_PID | LOG_NDELAY, LOG_DAEMON);
+		bb_openlog(applet_name, LOG_PID | LOG_NDELAY, LOG_DAEMON);
 		logmode |= LOGMODE_SYSLOG;
 	}
 	if (logmode)

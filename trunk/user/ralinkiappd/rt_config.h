@@ -126,11 +126,12 @@ extern INT32 RTDebugLevel;
 #ifdef DBG
 #ifdef SYSLOG
 #include <syslog.h>
+void iapp_log(int priority, const char *format, ...);
 #define DBGPRINT(Level, fmt, args...)			\
 {										\
     if (Level <= RTDebugLevel)			\
     {									\
-	syslog(LOG_WARNING, fmt, ## args);			\
+	iapp_log(LOG_WARNING, fmt, ## args);			\
     }									\
 }
 #else

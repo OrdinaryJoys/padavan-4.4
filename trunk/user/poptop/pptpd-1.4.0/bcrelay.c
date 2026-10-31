@@ -101,6 +101,7 @@
 
 #include "defaults.h"
 #include "our_syslog.h"
+struct padavan_log_context pptpd_log_context = PADAVAN_LOG_CONTEXT_INIT;
 #include "our_getopt.h"
 
 //#define VERSION "1.0"
@@ -273,11 +274,11 @@ static void my_daemon(int argc, char **argv)
                         new_argv[i] = argv[i];
                 }
         }
-        syslog(LOG_DEBUG, "Option parse OK, re-execing as daemon");
+        pptpd_syslog(LOG_DEBUG, "Option parse OK, re-execing as daemon");
         fflush(stderr);
         if ((pid = vfork()) == 0) {
                 if (setsid() < 0) {                      /* shouldn't fail */
-                        syslog(LOG_ERR, "Setsid failed!");
+                        pptpd_syslog(LOG_ERR, "Setsid failed!");
                         _exit(1);
                 }
                 chdir("/");
@@ -286,20 +287,20 @@ static void my_daemon(int argc, char **argv)
                 execve(BCRELAY_BIN, new_argv, environ);
                 exit(1);
         } else if (pid > 0) {
-                syslog(LOG_DEBUG, "Success re-execing as daemon!");
+                pptpd_syslog(LOG_DEBUG, "Success re-execing as daemon!");
                 exit(0);
         } else {
-                syslog(LOG_ERR, "Error vforking");
+                pptpd_syslog(LOG_ERR, "Error vforking");
                 exit(1);
         }
 #else
     pid=fork();
-    if (pid<0) { syslog(LOG_ERR, "Error forking"); _exit(1); }
-    if (pid>0) { syslog(LOG_DEBUG, "Parent exits"); _exit(0); }
-    if (pid==0) { syslog(LOG_DEBUG, "Running as child"); }
+    if (pid<0) { pptpd_syslog(LOG_ERR, "Error forking"); _exit(1); }
+    if (pid>0) { pptpd_syslog(LOG_DEBUG, "Parent exits"); _exit(0); }
+    if (pid==0) { pptpd_syslog(LOG_DEBUG, "Running as child"); }
     /* child (daemon) continues */
     if (setsid() < 0) {                      /* shouldn't fail */
-      syslog(LOG_ERR, "Setsid failed!");
+      pptpd_syslog(LOG_ERR, "Setsid failed!");
       _exit(1);
     }
     chdir("/");
@@ -322,7 +323,7 @@ int main(int argc, char **argv) {
 #endif
 
         /* open a connection to the syslog daemon */
-        openlog("bcrelay", LOG_PID, PPTP_FACILITY);
+        pptpd_openlog("bcrelay", LOG_PID, PPTP_FACILITY);
 
   while (1) {
                 int option_index = 0;
@@ -366,7 +367,7 @@ int main(int argc, char **argv) {
                         // Validate the ipsec parameters
                         regcomp(&preg, "ipsec[0-9]+:[0-9]+.[0-9]+.[0-9]+.255", REG_EXTENDED);
                         if (regexec(&preg, ipsec, 0, NULL, 0)) {
-                                syslog(LOG_INFO,"Bad syntax: %s", ipsec);
+                                pptpd_syslog(LOG_INFO,"Bad syntax: %s", ipsec);
                                 fprintf(stderr, "\nBad syntax: %s\n", ipsec);
                                 showusage(argv[0]);
                                 return 0;
@@ -383,12 +384,12 @@ int main(int argc, char **argv) {
                 }
   }
   if (ifin == empty) {
-       syslog(LOG_INFO,"Incoming interface required!");
+       pptpd_syslog(LOG_INFO,"Incoming interface required!");
        showusage(argv[0]);
        _exit(1);
   }
   if (ifout == empty && ipsec == empty) {
-       syslog(LOG_INFO,"Listen-mode or outgoing or IPsec interface required!");
+       pptpd_syslog(LOG_INFO,"Listen-mode or outgoing or IPsec interface required!");
        showusage(argv[0]);
        _exit(1);
   } else {
@@ -398,9 +399,9 @@ int main(int argc, char **argv) {
   // If specified, become Daemon.
   if (vdaemon) {
 #if HAVE_DAEMON
-    closelog();
+    pptpd_closelog();
     if (freopen("/dev/null", "r", stdin) == NULL) {
-      syslog(LOG_ERR, "failed to reopen stdin");
+      pptpd_syslog(LOG_ERR, "failed to reopen stdin");
     }
     /* set noclose, we want stdout/stderr still attached if we can */
     if (daemon(0, 1) == -1) {
@@ -408,7 +409,7 @@ int main(int argc, char **argv) {
     }
     /* returns to child only */
     /* pid will have changed */
-    openlog("bcrelay", LOG_PID, PPTP_FACILITY);
+    pptpd_openlog("bcrelay", LOG_PID, PPTP_FACILITY);
 #else   /* !HAVE_DAEMON */
     my_daemon(argc, argv);
     /* returns to child if !HAVE_FORK
@@ -416,7 +417,7 @@ int main(int argc, char **argv) {
      */
 #endif
   } else {
-    syslog(LOG_INFO, "Running as child\n");
+    pptpd_syslog(LOG_INFO, "Running as child\n");
   }
   mainloop(argc,argv);
   _exit(0);
@@ -445,7 +446,7 @@ static void mainloop(int argc, char **argv)
    * Open general ethernet socket, only used to discover interfaces.
    */
   if ((s = socket(PF_PACKET, SOCK_DGRAM, htons(ETH_P_ALL))) < 0)
-    syslog(LOG_INFO,"%s: Error creating socket", *argv);
+    pptpd_syslog(LOG_INFO,"%s: Error creating socket", *argv);
 
 
   /*
@@ -456,7 +457,7 @@ static void mainloop(int argc, char **argv)
   iflist = discoverActiveInterfaces(s);
   for (i=0; iflist[i].index; ++i) {
     if ((cur_ifsnr[i].sock_nr = socket(PF_PACKET, SOCK_DGRAM, htons(ETH_P_ALL))) < 0) {
-      syslog(LOG_ERR, "mainloop: Error, socket error! (rv=%d, errno=%d)", cur_ifsnr[i].sock_nr, errno);
+      pptpd_syslog(LOG_ERR, "mainloop: Error, socket error! (rv=%d, errno=%d)", cur_ifsnr[i].sock_nr, errno);
       exit(1);
     }
     bind_to_iface(cur_ifsnr[i].sock_nr, iflist[i].index);
@@ -476,7 +477,7 @@ static void mainloop(int argc, char **argv)
       logstr += logstr_cntr;
     }
   }
-  if (vnologging == 0) syslog(LOG_INFO, "%s", log_interfaces);
+  if (vnologging == 0) pptpd_syslog(LOG_INFO, "%s", log_interfaces);
 
   // Main loop
   while (1)
@@ -504,7 +505,7 @@ static void mainloop(int argc, char **argv)
 
     if (rcg < 0)
     {
-      syslog(LOG_ERR, "Error, select error! (rv=%d, errno=%d)", rcg, errno);
+      pptpd_syslog(LOG_ERR, "Error, select error! (rv=%d, errno=%d)", rcg, errno);
       exit(1);
     }
 
@@ -526,7 +527,7 @@ static void mainloop(int argc, char **argv)
         if (fsnr == -1) {
           /* found new interface, open dedicated socket and bind it to the interface */
           if ((cur_ifsnr[i].sock_nr = socket(PF_PACKET, SOCK_DGRAM, htons(ETH_P_ALL))) < 0) {
-            syslog(LOG_ERR, "mainloop: Error, socket error! (rv=%d, errno=%d)", cur_ifsnr[i].sock_nr, errno);
+            pptpd_syslog(LOG_ERR, "mainloop: Error, socket error! (rv=%d, errno=%d)", cur_ifsnr[i].sock_nr, errno);
             exit(1);
           }
           bind_to_iface(cur_ifsnr[i].sock_nr, iflist[i].index);
@@ -570,7 +571,7 @@ static void mainloop(int argc, char **argv)
             logstr += logstr_cntr;
           }
         }
-        if (vnologging == 0) syslog(LOG_INFO, "%s", log_interfaces);
+        if (vnologging == 0) pptpd_syslog(LOG_INFO, "%s", log_interfaces);
         ifs_change = 0;
       }
       continue;
@@ -670,13 +671,13 @@ static void mainloop(int argc, char **argv)
                 if ((nrsent = sendto(cur_ifsnr[j].sock_nr, ipp_p, rlen, MSG_DONTWAIT|MSG_DONTROUTE, (struct sockaddr *)&sa, salen)) < 0)
                 {
                   if (errno == ENETDOWN) {
-                    syslog(LOG_NOTICE, "ignored ENETDOWN from sendto(), a network interface was going down?");
+                    pptpd_syslog(LOG_NOTICE, "ignored ENETDOWN from sendto(), a network interface was going down?");
                   } else if (errno == ENXIO) {
-                    syslog(LOG_NOTICE, "ignored ENXIO from sendto(), a network interface went down?");
+                    pptpd_syslog(LOG_NOTICE, "ignored ENXIO from sendto(), a network interface went down?");
                   } else if (errno == ENOBUFS) {
-                    syslog(LOG_NOTICE, "ignored ENOBUFS from sendto(), temporary shortage of buffer memory");
+                    pptpd_syslog(LOG_NOTICE, "ignored ENOBUFS from sendto(), temporary shortage of buffer memory");
                   } else {
-                    syslog(LOG_ERR, "mainloop: Error, sendto failed! (rv=%d, errno=%d)", nrsent, errno);
+                    pptpd_syslog(LOG_ERR, "mainloop: Error, sendto failed! (rv=%d, errno=%d)", nrsent, errno);
                     exit(1);
                   }
                 }
@@ -687,7 +688,7 @@ static void mainloop(int argc, char **argv)
                 }
               }
             }
-            if (vnologging == 0) syslog(LOG_INFO, "%s", log_relayed);
+            if (vnologging == 0) pptpd_syslog(LOG_INFO, "%s", log_relayed);
           } else {
             NVBCR_PRINTF(("is NOT an UDP BROADCAST (with TTL!=1 and UDP_CHKSUM!=0)\n\n"));
           }
@@ -717,7 +718,7 @@ static void mainloop(int argc, char **argv)
           if (fsnr == -1) {
             /* found new interface, open dedicated socket and bind it to the interface */
             if ((cur_ifsnr[i].sock_nr = socket(PF_PACKET, SOCK_DGRAM, htons(ETH_P_ALL))) < 0) {
-              syslog(LOG_ERR, "mainloop: Error, socket error! (rv=%d, errno=%d)", cur_ifsnr[i].sock_nr, errno);
+              pptpd_syslog(LOG_ERR, "mainloop: Error, socket error! (rv=%d, errno=%d)", cur_ifsnr[i].sock_nr, errno);
               exit(1);
             }
             bind_to_iface(cur_ifsnr[i].sock_nr, iflist[i].index);
@@ -761,7 +762,7 @@ static void mainloop(int argc, char **argv)
               logstr += logstr_cntr;
             }
           }
-          if (vnologging == 0) syslog(LOG_INFO, "%s", log_interfaces);
+          if (vnologging == 0) pptpd_syslog(LOG_INFO, "%s", log_interfaces);
           ifs_change = 0;
         }
       }
@@ -804,7 +805,7 @@ discoverActiveInterfaces(int s) {
       memset(&ifrflags, 0, sizeof(ifrflags));
       strncpy(ifrflags.ifr_name, ifs.ifc_req[i].ifr_name, strlen(ifs.ifc_req[i].ifr_name));
       if (ioctl(s, SIOCGIFFLAGS, &ifrflags) < 0) {
-        syslog(LOG_ERR, "discoverActiveInterfaces: Error, SIOCGIFFLAGS Failed! (errno=%d)", errno);
+        pptpd_syslog(LOG_ERR, "discoverActiveInterfaces: Error, SIOCGIFFLAGS Failed! (errno=%d)", errno);
         exit(1);
       }
 
@@ -832,7 +833,7 @@ discoverActiveInterfaces(int s) {
         ifr.ifr_addr.sa_family = AF_INET;
         (void)strncpy(ifr.ifr_name, iflist[cntr].ifname, strlen(iflist[cntr].ifname)+1);
         if (ioctl(s, SIOCGIFADDR, (char *)&ifr) < 0) {
-          syslog(LOG_ERR, "discoverActiveInterfaces: Error, SIOCGIFADDR Failed! (errno=%d)", errno);
+          pptpd_syslog(LOG_ERR, "discoverActiveInterfaces: Error, SIOCGIFADDR Failed! (errno=%d)", errno);
           exit(1);
         }
         sin = (struct sockaddr_in *)&ifr.ifr_addr;
@@ -848,7 +849,7 @@ discoverActiveInterfaces(int s) {
           ifr.ifr_addr.sa_family = AF_INET;
           (void)strncpy(ifr.ifr_name, iflist[cntr].ifname, strlen(iflist[cntr].ifname)+1);
           if (ioctl(s, SIOCGIFDSTADDR, (char *)&ifr) < 0) {
-            syslog(LOG_ERR, "discoverActiveInterfaces: Error, SIOCGIFDSTADDR Failed! (errno=%d)", errno);
+            pptpd_syslog(LOG_ERR, "discoverActiveInterfaces: Error, SIOCGIFDSTADDR Failed! (errno=%d)", errno);
             exit(1);
           }
           sin = (struct sockaddr_in *)&ifr.ifr_addr;
@@ -991,7 +992,7 @@ static void bind_to_iface(int fd, int ifindex)
   sll.sll_protocol        = htons(ETH_P_ALL);
 
   if (bind(fd, (struct sockaddr *) &sll, sizeof(sll)) == -1) {
-    syslog(LOG_ERR, "bind_to_iface: Error, bind failed! (rv=-1, errno=%d)", errno);
+    pptpd_syslog(LOG_ERR, "bind_to_iface: Error, bind failed! (rv=-1, errno=%d)", errno);
     exit(1);
   }
 }

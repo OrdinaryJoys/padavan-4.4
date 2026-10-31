@@ -97,7 +97,7 @@ static long long runtime_milliseconds(void)
 static int runtime_read_owned(struct dns_runtime_file *snapshot, int fd,
                               const char *path, const struct stat *before,
                               size_t byte_limit, unsigned int line_limit,
-                              const char **error)
+                              long long group_deadline, const char **error)
 {
   struct stat opened, after, named;
   unsigned char *bytes = NULL, extra;
@@ -108,7 +108,7 @@ static int runtime_read_owned(struct dns_runtime_file *snapshot, int fd,
 
   memset(snapshot, 0, sizeof(*snapshot));
   *error = "runtime DNS input has invalid reader limits";
-  if (!byte_limit || byte_limit > DNS_RUNTIME_HOSTS_BYTES ||
+  if (group_deadline < 0 || !byte_limit || byte_limit > DNS_RUNTIME_HOSTS_BYTES ||
       !line_limit || line_limit > DNS_RUNTIME_HOSTS_LINES)
     goto fail;
   *error = "runtime DNS input is not a regular file";
@@ -127,6 +127,9 @@ static int runtime_read_owned(struct dns_runtime_file *snapshot, int fd,
   if ((now = runtime_milliseconds()) < 0)
     goto fail;
   deadline = now + DNS_RUNTIME_READ_MS;
+  if (group_deadline > 0 && group_deadline < deadline) deadline = group_deadline;
+  *error = "runtime DNS input read time budget exceeded";
+  if (now >= deadline) goto fail;
   *error = "runtime DNS input allocation failed";
   if (!(bytes = malloc(size ? size : 1)))
     goto fail;
@@ -194,6 +197,9 @@ static int runtime_read_owned(struct dns_runtime_file *snapshot, int fd,
   if (line && lines == line_limit)
     goto fail;
 
+  *error = "runtime DNS input read time budget exceeded";
+  if ((now = runtime_milliseconds()) < 0 || now >= deadline) goto fail;
+
   /* Older memory-stream implementations need a nonempty buffer. A blank
    * line is equivalent to an empty file for all callers of this reader. */
   if (!size)
@@ -213,9 +219,9 @@ fail:
   return 0;
 }
 
-int dns_runtime_file_open_limit(struct dns_runtime_file *snapshot, const char *path,
+int dns_runtime_file_open_limit_deadline(struct dns_runtime_file *snapshot, const char *path,
                                 size_t byte_limit, unsigned int line_limit,
-                                const char **error)
+                                long long group_deadline, const char **error)
 {
   struct stat before;
   int fd;
@@ -230,7 +236,13 @@ int dns_runtime_file_open_limit(struct dns_runtime_file *snapshot, const char *p
   fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOCTTY);
   if (fd == -1)
     return 0;
-  return runtime_read_owned(snapshot, fd, path, &before, byte_limit, line_limit, error);
+  return runtime_read_owned(snapshot, fd, path, &before, byte_limit, line_limit, group_deadline, error);
+}
+
+int dns_runtime_file_open_limit(struct dns_runtime_file *snapshot, const char *path,
+                                size_t byte_limit, unsigned int line_limit, const char **error)
+{
+  return dns_runtime_file_open_limit_deadline(snapshot, path, byte_limit, line_limit, 0, error);
 }
 
 int dns_runtime_file_read_fd_limit(struct dns_runtime_file *snapshot, int source,
@@ -242,7 +254,7 @@ int dns_runtime_file_read_fd_limit(struct dns_runtime_file *snapshot, int source
   *error = "runtime DNS input descriptor cannot be duplicated";
   if ((fd = fcntl(source, F_DUPFD_CLOEXEC, 0)) == -1)
     return 0;
-  return runtime_read_owned(snapshot, fd, NULL, NULL, byte_limit, line_limit, error);
+  return runtime_read_owned(snapshot, fd, NULL, NULL, byte_limit, line_limit, 0, error);
 }
 
 int dns_runtime_file_open(struct dns_runtime_file *snapshot, const char *path,

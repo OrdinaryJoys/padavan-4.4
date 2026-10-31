@@ -18,6 +18,7 @@ static char const RCSID[] =
 
 #ifdef HAVE_SYSLOG_H
 #include <syslog.h>
+#include "../../bounded_ppp_log.h"
 #endif
 
 #include <string.h>
@@ -251,7 +252,7 @@ parsePADSTags(UINT16_t type, UINT16_t len, unsigned char *data,
     PPPoEConnection *conn = (PPPoEConnection *) extra;
     switch(type) {
     case TAG_SERVICE_NAME:
-	syslog(LOG_DEBUG, "PADS: Service-Name: '%.*s'", (int) len, data);
+	ppp_syslog(LOG_DEBUG, "PADS: Service-Name: '%.*s'", (int) len, data);
 	break;
     case TAG_GENERIC_ERROR:
     case TAG_AC_SYSTEM_ERROR:
@@ -452,7 +453,7 @@ waitForPADO(PPPoEConnection *conn, int timeout)
 
 	/* Check length */
 	if (ntohs(packet.length) + HDR_SIZE > len) {
-	    syslog(LOG_ERR, "Bogus PPPoE length field (%u)",
+	    ppp_syslog(LOG_ERR, "Bogus PPPoE length field (%u)",
 		   (unsigned int) ntohs(packet.length));
 	    continue;
 	}
@@ -696,7 +697,7 @@ waitForPADS(PPPoEConnection *conn, int timeout)
 
 	/* Check length */
 	if (ntohs(packet.length) + HDR_SIZE > len) {
-	    syslog(LOG_ERR, "Bogus PPPoE length field (%u)",
+	    ppp_syslog(LOG_ERR, "Bogus PPPoE length field (%u)",
 		   (unsigned int) ntohs(packet.length));
 	    continue;
 	}
@@ -733,12 +734,12 @@ waitForPADS(PPPoEConnection *conn, int timeout)
     /* Don't bother with ntohs; we'll just end up converting it back... */
     conn->session = packet.session;
 
-    syslog(LOG_INFO, "PPP session is %d (0x%x)", (int) ntohs(conn->session),
+    ppp_syslog(LOG_INFO, "PPP session is %d (0x%x)", (int) ntohs(conn->session),
 	   (unsigned int) ntohs(conn->session));
 
     /* RFC 2516 says session id MUST NOT be zero or 0xFFFF */
     if (ntohs(conn->session) == 0 || ntohs(conn->session) == 0xFFFF) {
-	syslog(LOG_ERR, "Access concentrator used a session value of %x -- the AC is violating RFC 2516", (unsigned int) ntohs(conn->session));
+	ppp_syslog(LOG_ERR, "Access concentrator used a session value of %x -- the AC is violating RFC 2516", (unsigned int) ntohs(conn->session));
     }
 }
 

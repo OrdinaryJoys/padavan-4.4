@@ -13,6 +13,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <syslog.h>
+#include "boundedlog.h"
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -337,7 +338,7 @@ GetExternalIPAddress(struct upnphttp * h, const char * action, const char * ns)
 	}
 	else if(getifaddr(ext_if_name, ext_ip_addr, INET_ADDRSTRLEN, NULL, NULL) < 0)
 	{
-		syslog(LOG_DEBUG, "Failed to get ip address for interface %s",
+		miniupnpd_syslog(LOG_DEBUG, "Failed to get ip address for interface %s",
 			ext_if_name);
 		strncpy(ext_ip_addr, "0.0.0.0", INET_ADDRSTRLEN);
 	}
@@ -443,7 +444,7 @@ AddPortMapping(struct upnphttp * h, const char * action, const char * ns)
 		}
 		else
 		{
-			syslog(LOG_DEBUG, "Failed to convert hostname '%s' to ip address", int_ip);
+			miniupnpd_syslog(LOG_DEBUG, "Failed to convert hostname '%s' to ip address", int_ip);
 			ClearNameValueList(&data);
 			SoapError(h, 402, "Invalid Args");
 			return;
@@ -455,7 +456,7 @@ AddPortMapping(struct upnphttp * h, const char * action, const char * ns)
 	{
 		if(h->clientaddr.s_addr != result_ip.s_addr)
 		{
-			syslog(LOG_INFO, "Client %s tried to redirect port to %s",
+			miniupnpd_syslog(LOG_INFO, "Client %s tried to redirect port to %s",
 			       inet_ntoa(h->clientaddr), int_ip);
 			ClearNameValueList(&data);
 			SoapError(h, 718, "ConflictInMappingEntry");
@@ -500,7 +501,7 @@ AddPortMapping(struct upnphttp * h, const char * action, const char * ns)
 		leaseduration = 604800;
 #endif
 
-	syslog(LOG_INFO, "%s: ext port %hu to %s:%hu protocol %s for: %s leaseduration=%u rhost=%s",
+	miniupnpd_syslog(LOG_INFO, "%s: ext port %hu to %s:%hu protocol %s for: %s leaseduration=%u rhost=%s",
 	       action, eport, int_ip, iport, protocol, desc, leaseduration,
 	       r_host ? r_host : "NULL");
 
@@ -629,7 +630,7 @@ AddAnyPortMapping(struct upnphttp * h, const char * action, const char * ns)
 		}
 		else
 		{
-			syslog(LOG_DEBUG, "Failed to convert hostname '%s' to ip address", int_ip);
+			miniupnpd_syslog(LOG_DEBUG, "Failed to convert hostname '%s' to ip address", int_ip);
 			ClearNameValueList(&data);
 			SoapError(h, 402, "Invalid Args");
 			return;
@@ -641,7 +642,7 @@ AddAnyPortMapping(struct upnphttp * h, const char * action, const char * ns)
 	{
 		if(h->clientaddr.s_addr != result_ip.s_addr)
 		{
-			syslog(LOG_INFO, "Client %s tried to redirect port to %s",
+			miniupnpd_syslog(LOG_INFO, "Client %s tried to redirect port to %s",
 			       inet_ntoa(h->clientaddr), int_ip);
 			ClearNameValueList(&data);
 			SoapError(h, 606, "Action not authorized");
@@ -755,7 +756,7 @@ GetSpecificPortMappingEntry(struct upnphttp * h, const char * action, const char
 	}
 	else
 	{
-		syslog(LOG_INFO, "%s: rhost='%s' %s %s found => %s:%u desc='%s'",
+		miniupnpd_syslog(LOG_INFO, "%s: rhost='%s' %s %s found => %s:%u desc='%s'",
 		       action,
 		       r_host ? r_host : "NULL", ext_port, protocol, int_ip,
 		       (unsigned int)iport, desc);
@@ -828,7 +829,7 @@ DeletePortMapping(struct upnphttp * h, const char * action, const char * ns)
 		return;
 	}
 
-	syslog(LOG_INFO, "%s: external port: %hu, protocol: %s",
+	miniupnpd_syslog(LOG_INFO, "%s: external port: %hu, protocol: %s",
 		action, eport, protocol);
 
 	/* if in secure mode, check the IP
@@ -925,7 +926,7 @@ DeletePortMappingRange(struct upnphttp * h, const char * action, const char * ns
 		return;
 	}
 
-	syslog(LOG_INFO, "%s: deleting external ports: %hu-%hu, protocol: %s",
+	miniupnpd_syslog(LOG_INFO, "%s: deleting external ports: %hu-%hu, protocol: %s",
 	       action, startport, endport, protocol);
 
 	port_list = upnp_get_portmappings_in_range(startport, endport,
@@ -941,7 +942,7 @@ DeletePortMappingRange(struct upnphttp * h, const char * action, const char * ns
 	for(i = 0; i < number; i++)
 	{
 		r = upnp_delete_redirection(port_list[i], protocol);
-		syslog(LOG_INFO, "%s: deleting external port: %hu, protocol: %s: %s",
+		miniupnpd_syslog(LOG_INFO, "%s: deleting external port: %hu, protocol: %s: %s",
 		       action, port_list[i], protocol, r < 0 ? "failed" : "ok");
 	}
 	free(port_list);
@@ -996,17 +997,17 @@ GetGenericPortMappingEntry(struct upnphttp * h, const char * action, const char 
 	{
 		/* should condition (*endptr != '\0') be also an error ? */
 		if(m_index == endptr)
-			syslog(LOG_WARNING, "%s: no digits were found in <%s>",
+			miniupnpd_syslog(LOG_WARNING, "%s: no digits were found in <%s>",
 			       "GetGenericPortMappingEntry", "NewPortMappingIndex");
 		else
-			syslog(LOG_WARNING, "%s: strtol('%s'): %m",
+			miniupnpd_syslog(LOG_WARNING, "%s: strtol('%s'): %m",
 			       "GetGenericPortMappingEntry", m_index);
 		ClearNameValueList(&data);
 		SoapError(h, 402, "Invalid Args");
 		return;
 	}
 
-	syslog(LOG_INFO, "%s: index=%d", action, (int)index);
+	miniupnpd_syslog(LOG_INFO, "%s: index=%d", action, (int)index);
 
 	rhost[0] = '\0';
 	r = upnp_get_redirection_infos_by_index((int)index, &eport, protocol, &iport,
@@ -1163,7 +1164,7 @@ http://www.upnp.org/schemas/gw/WANIPConnection-v2.xsd">
 			body = realloc(body, bodyalloc);
 			if(!body)
 			{
-				syslog(LOG_CRIT, "realloc(%p, %u) FAILED", body_sav, (unsigned)bodyalloc);
+				miniupnpd_syslog(LOG_CRIT, "realloc(%p, %u) FAILED", body_sav, (unsigned)bodyalloc);
 				ClearNameValueList(&data);
 				SoapError(h, 501, "ActionFailed");
 				free(body_sav);
@@ -1195,7 +1196,7 @@ http://www.upnp.org/schemas/gw/WANIPConnection-v2.xsd">
 		body = realloc(body, bodyalloc);
 		if(!body)
 		{
-			syslog(LOG_CRIT, "realloc(%p, %u) FAILED", body_sav, (unsigned)bodyalloc);
+			miniupnpd_syslog(LOG_CRIT, "realloc(%p, %u) FAILED", body_sav, (unsigned)bodyalloc);
 			ClearNameValueList(&data);
 			SoapError(h, 501, "ActionFailed");
 			free(body_sav);
@@ -1244,7 +1245,7 @@ SetDefaultConnectionService(struct upnphttp * h, const char * action, const char
 		} else
 #endif
 		{
-			syslog(LOG_INFO, "%s(%s) : Ignored", action, p);
+			miniupnpd_syslog(LOG_INFO, "%s(%s) : Ignored", action, p);
 			bodylen = snprintf(body, sizeof(body), resp,
 			                   action, ns, action);
 			BuildSendAndCloseSoapResp(h, body, bodylen);
@@ -1394,7 +1395,7 @@ QueryStateVariable(struct upnphttp * h, const char * action, const char * ns)
 	}
 	else
 	{
-		syslog(LOG_DEBUG, "%s: Unknown: %s", action, var_name?var_name:"");
+		miniupnpd_syslog(LOG_DEBUG, "%s: Unknown: %s", action, var_name?var_name:"");
 		SoapError(h, 404, "Invalid Var");
 	}
 
@@ -1508,7 +1509,7 @@ PinholeVerification(struct upnphttp * h, char * int_ip, unsigned short int_port)
 	struct in6_addr result_ip;
 
 	/* Pinhole InternalClient address must correspond to the action sender */
-	syslog(LOG_INFO, "Checking internal IP@ and port (Security policy purpose)");
+	miniupnpd_syslog(LOG_INFO, "Checking internal IP@ and port (Security policy purpose)");
 
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_family = AF_UNSPEC;
@@ -1529,7 +1530,7 @@ PinholeVerification(struct upnphttp * h, char * int_ip, unsigned short int_port)
 		}
 		else
 		{
-			syslog(LOG_DEBUG, "Failed to convert hostname '%s' to ip address", int_ip);
+			miniupnpd_syslog(LOG_DEBUG, "Failed to convert hostname '%s' to ip address", int_ip);
 			SoapError(h, 402, "Invalid Args");
 			return -1;
 		}
@@ -1538,7 +1539,7 @@ PinholeVerification(struct upnphttp * h, char * int_ip, unsigned short int_port)
 
 	if(inet_ntop(AF_INET6, &(h->clientaddr_v6), senderAddr, INET6_ADDRSTRLEN) == NULL)
 	{
-		syslog(LOG_ERR, "inet_ntop: %m");
+		miniupnpd_syslog(LOG_ERR, "inet_ntop: %m");
 	}
 #ifdef DEBUG
 	printf("\tPinholeVerification:\n\t\tCompare sender @: %s\n\t\t  to intClient @: %s\n", senderAddr, int_ip);
@@ -1546,7 +1547,7 @@ PinholeVerification(struct upnphttp * h, char * int_ip, unsigned short int_port)
 	if(strcmp(senderAddr, int_ip) != 0)
 	if(h->clientaddr_v6.s6_addr != result_ip.s6_addr)
 	{
-		syslog(LOG_INFO, "Client %s tried to access pinhole for internal %s and is not authorized to do it",
+		miniupnpd_syslog(LOG_INFO, "Client %s tried to access pinhole for internal %s and is not authorized to do it",
 		       senderAddr, int_ip);
 		SoapError(h, 606, "Action not authorized");
 		return 0;
@@ -1555,7 +1556,7 @@ PinholeVerification(struct upnphttp * h, char * int_ip, unsigned short int_port)
 	/* Pinhole InternalPort must be greater than or equal to 1024 */
 	if (int_port < 1024)
 	{
-		syslog(LOG_INFO, "Client %s tried to access pinhole with port < 1024 and is not authorized to do it",
+		miniupnpd_syslog(LOG_INFO, "Client %s tried to access pinhole with port < 1024 and is not authorized to do it",
 		       senderAddr);
 		SoapError(h, 606, "Action not authorized");
 		return 0;
@@ -1649,7 +1650,7 @@ AddPinhole(struct upnphttp * h, const char * action, const char * ns)
 					inet_ntop(AF_INET6,
 					          &(((struct sockaddr_in6 *)p->ai_addr)->sin6_addr),
 					          rem_ip, sizeof(rem_ip));
-					syslog(LOG_INFO, "resolved '%s' to '%s'", rem_host, rem_ip);
+					miniupnpd_syslog(LOG_INFO, "resolved '%s' to '%s'", rem_host, rem_ip);
 					rem_host = rem_ip;
 					break;
 				}
@@ -1658,7 +1659,7 @@ AddPinhole(struct upnphttp * h, const char * action, const char * ns)
 		}
 		else
 		{
-			syslog(LOG_WARNING, "AddPinhole : getaddrinfo(%s) : %s",
+			miniupnpd_syslog(LOG_WARNING, "AddPinhole : getaddrinfo(%s) : %s",
 			       rem_host, gai_strerror(err));
 #if 0
 			SoapError(h, 402, "Invalid Args");
@@ -1683,7 +1684,7 @@ AddPinhole(struct upnphttp * h, const char * action, const char * ns)
 	}
 	if(ltime < 1 || ltime > 86400)
 	{
-		syslog(LOG_WARNING, "%s: LeaseTime=%d not supported, (ip=%s)",
+		miniupnpd_syslog(LOG_WARNING, "%s: LeaseTime=%d not supported, (ip=%s)",
 		       action, ltime, int_ip);
 		SoapError(h, 402, "Invalid Args");
 		goto clear_and_exit;
@@ -1692,7 +1693,7 @@ AddPinhole(struct upnphttp * h, const char * action, const char * ns)
 	if(PinholeVerification(h, int_ip, iport) <= 0)
 		goto clear_and_exit;
 
-	syslog(LOG_INFO, "%s: (inbound) from [%s]:%hu to [%s]:%hu with proto %ld during %d sec",
+	miniupnpd_syslog(LOG_INFO, "%s: (inbound) from [%s]:%hu to [%s]:%hu with proto %ld during %d sec",
 	       action, rem_host?rem_host:"any",
 	       rport, int_ip, iport,
 	       proto, ltime);
@@ -1793,7 +1794,7 @@ UpdatePinhole(struct upnphttp * h, const char * action, const char * ns)
 		return;
 	}
 
-	syslog(LOG_INFO, "%s: (inbound) updating lease duration to %d for pinhole with ID: %d",
+	miniupnpd_syslog(LOG_INFO, "%s: (inbound) updating lease duration to %d for pinhole with ID: %d",
 	       action, ltime, uid);
 
 	n = upnp_update_inboundpinhole(uid, ltime);
@@ -1844,7 +1845,7 @@ GetOutboundPinholeTimeout(struct upnphttp * h, const char * action, const char *
 	iport = (unsigned short)atoi(int_port);
 	/*proto = atoi(protocol);*/
 
-	syslog(LOG_INFO, "%s: retrieving timeout for outbound pinhole from [%s]:%hu to [%s]:%hu protocol %s", action, int_ip, iport,rem_host, rport, protocol);
+	miniupnpd_syslog(LOG_INFO, "%s: retrieving timeout for outbound pinhole from [%s]:%hu to [%s]:%hu protocol %s", action, int_ip, iport,rem_host, rport, protocol);
 
 	/* TODO */
 	r = -1;/*upnp_check_outbound_pinhole(proto, &opt);*/
@@ -1931,12 +1932,12 @@ DeletePinhole(struct upnphttp * h, const char * action, const char * ns)
 	n = upnp_delete_inboundpinhole(uid);
 	if(n < 0)
 	{
-		syslog(LOG_INFO, "%s: (inbound) failed to remove pinhole with ID: %d",
+		miniupnpd_syslog(LOG_INFO, "%s: (inbound) failed to remove pinhole with ID: %d",
 	           action, uid);
 		SoapError(h, 501, "ActionFailed");
 		return;
 	}
-	syslog(LOG_INFO, "%s: (inbound) pinhole with ID %d successfully removed",
+	miniupnpd_syslog(LOG_INFO, "%s: (inbound) pinhole with ID %d successfully removed",
 	       action, uid);
 	bodylen = snprintf(body, sizeof(body), resp,
 	                   action, ns, action);
@@ -2255,16 +2256,16 @@ ExecuteSoapAction(struct upnphttp * h, const char * action, int n)
 			len = strlen(soapMethods[i].methodName);
 			if((len == methodlen) && memcmp(p, soapMethods[i].methodName, len) == 0) {
 #ifdef DEBUG
-				syslog(LOG_DEBUG, "Remote Call of SoapMethod '%s' %s",
+				miniupnpd_syslog(LOG_DEBUG, "Remote Call of SoapMethod '%s' %s",
 				       soapMethods[i].methodName, namespace);
 #endif /* DEBUG */
 				soapMethods[i].methodImpl(h, soapMethods[i].methodName, namespace);
 				return;
 			}
 		}
-		syslog(LOG_DEBUG, "SoapMethod: Unknown: %.*s %s", methodlen, p, namespace);
+		miniupnpd_syslog(LOG_DEBUG, "SoapMethod: Unknown: %.*s %s", methodlen, p, namespace);
 	} else {
-		syslog(LOG_DEBUG, "cannot parse SoapAction");
+		miniupnpd_syslog(LOG_DEBUG, "cannot parse SoapAction");
 	}
 
 	SoapError(h, 401, "Invalid Action");
@@ -2312,7 +2313,7 @@ SoapError(struct upnphttp * h, int errCode, const char * errDesc)
 	char body[2048];
 	int bodylen;
 
-	syslog(LOG_DEBUG, "Returning UPnPError %d: %s", errCode, errDesc);
+	miniupnpd_syslog(LOG_DEBUG, "Returning UPnPError %d: %s", errCode, errDesc);
 	bodylen = snprintf(body, sizeof(body), resp, errCode, errDesc);
 	BuildResp2_upnphttp(h, 500, "Internal Server Error", body, bodylen);
 	SendRespAndClose_upnphttp(h);

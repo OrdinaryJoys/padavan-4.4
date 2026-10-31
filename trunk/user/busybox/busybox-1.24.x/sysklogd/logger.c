@@ -95,7 +95,7 @@ int logger_main(int argc UNUSED_PARAM, char **argv)
 	if (opt & 0x2) /* -s */
 		i |= LOG_PERROR;
 	//if (opt & 0x4) /* -t */
-	openlog(str_t, i, 0);
+	bb_openlog(str_t, i, 0);
 	i = LOG_USER | LOG_NOTICE;
 	if (opt & 0x1) /* -p */
 		i = pencode(str_p);
@@ -107,7 +107,7 @@ int logger_main(int argc UNUSED_PARAM, char **argv)
 			 && NOT_LONE_CHAR(strbuf, '\n')
 			) {
 				/* Neither "" nor "\n" */
-				syslog(i, "%s", strbuf);
+				bb_syslog(i, "%s", strbuf);
 			}
 		}
 	} else {
@@ -120,10 +120,10 @@ int logger_main(int argc UNUSED_PARAM, char **argv)
 			sprintf(message + pos, " %s", *argv),
 			pos = len;
 		} while (*++argv);
-		syslog(i, "%s", message + 1); /* skip leading " " */
+		bb_syslog(i, "%s", message + 1); /* skip leading " " */
 	}
 
-	closelog();
+	bb_closelog();
 	return EXIT_SUCCESS;
 }
 

@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <syslog.h>
+#include "../boundedlog.h"
 #include <string.h>
 #include <time.h>
 
@@ -52,7 +53,7 @@ getifstats(const char * ifname, struct ifdata * data)
 #ifdef ENABLE_GETIFSTATS_CACHING
 	current_time = time(NULL);
 	if(current_time == ((time_t)-1)) {
-		syslog(LOG_ERR, "getifstats() : time() error : %m");
+		miniupnpd_syslog(LOG_ERR, "getifstats() : time() error : %m");
 	} else {
 		if(current_time < cache_timestamp + GETIFSTATS_CACHING_DURATION) {
 			/* return cached data */
@@ -63,12 +64,12 @@ getifstats(const char * ifname, struct ifdata * data)
 #endif /* ENABLE_GETIFSTATS_CACHING */
 	f = fopen("/proc/net/dev", "r");
 	if(!f) {
-		syslog(LOG_ERR, "getifstats() : cannot open /proc/net/dev : %m");
+		miniupnpd_syslog(LOG_ERR, "getifstats() : cannot open /proc/net/dev : %m");
 		return -1;
 	}
 	/* discard the two header lines */
 	if(!fgets(line, sizeof(line), f) || !fgets(line, sizeof(line), f)) {
-		syslog(LOG_ERR, "getifstats() : error reading /proc/net/dev : %m");
+		miniupnpd_syslog(LOG_ERR, "getifstats() : error reading /proc/net/dev : %m");
 	}
 	while(fgets(line, sizeof(line), f)) {
 		p = line;
@@ -111,7 +112,7 @@ getifstats(const char * ifname, struct ifdata * data)
 		}
 		fclose(f);
 	} else {
-		syslog(LOG_INFO, "cannot read %s file : %m", fname);
+		miniupnpd_syslog(LOG_INFO, "cannot read %s file : %m", fname);
 	}
 #endif
 #ifdef GET_WIRELESS_STATS

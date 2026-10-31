@@ -26,6 +26,13 @@ static struct crec *cache_head = NULL, *cache_tail = NULL, **hash_table = NULL;
 static struct crec *config_spare = NULL;
 static struct crec *new_chain = NULL;
 static int insert_error;
+static int cache_rehashing;
+
+/* Rehash must finish rewiring its shadow chains even after a deadline. The
+ * next preparation step then rejects the complete candidate. No half-linked
+ * hash or separately owned DNSSEC payload is abandoned on an early return. */
+static int cache_reload_step(unsigned int *work)
+{ return dns_reload_step(work) || cache_rehashing; }
 static union bigname *big_free = NULL;
 static int bignames_left, hash_size;
 
@@ -150,7 +157,7 @@ static void cache_free(struct crec *crecp);
 static void cache_unlink(struct crec *crecp);
 static void cache_link(struct crec *crecp);
 static void rehash(int size);
-static void cache_hash(struct crec *crecp);
+static int cache_hash(struct crec *crecp);
 
 unsigned short rrtype(char *in)
 {
@@ -268,6 +275,8 @@ static void rehash(int size)
 {
   struct crec **new, **old, *p, *tmp;
   int i, new_size, old_size;
+  unsigned int reload_work = 0;
+  if (!dns_reload_ok()) return;
 
   /* hash_size is a power of two. */
   for (new_size = 64; new_size < size/10; new_size = new_size << 1);
@@ -279,7 +288,10 @@ static void rehash(int size)
     return;
 
   for (i = 0; i < new_size; i++)
-    new[i] = NULL;
+    {
+      if (!dns_reload_step(&reload_work)) { free(new); return; }
+      new[i] = NULL;
+    }
 
   old = hash_table;
   old_size = hash_size;
@@ -288,12 +300,14 @@ static void rehash(int size)
   
   if (old)
     {
+      cache_rehashing = 1;
       for (i = 0; i < old_size; i++)
 	for (p = old[i]; p ; p = tmp)
 	  {
 	    tmp = p->hash_next;
 	    cache_hash(p);
 	  }
+      cache_rehashing = 0;
       free(old);
     }
 }
@@ -315,7 +329,7 @@ static struct crec **hash_bucket(char *name)
   return hash_table + ((val ^ (val >> 16)) & (hash_size - 1));
 }
 
-static void cache_hash(struct crec *crecp)
+static int cache_hash(struct crec *crecp)
 {
   /* maintain an invariant that all entries with F_REVERSE set
      are at the start of the hash-chain  and all non-reverse
@@ -324,16 +338,17 @@ static void cache_hash(struct crec *crecp)
 
   char *name = cache_get_name(crecp);
   struct crec **up = hash_bucket(name);
-  unsigned int flags = crecp->flags & (F_IMMORTAL | F_REVERSE);
+  unsigned int flags = crecp->flags & (F_IMMORTAL | F_REVERSE), reload_work = 0;
+  if (!cache_rehashing && !dns_reload_ok()) return 0;
   
   if (!(flags & F_REVERSE))
     {
       while (*up && ((*up)->flags & F_REVERSE))
-	up = &((*up)->hash_next); 
+        { if (!cache_reload_step(&reload_work)) return 0; up = &((*up)->hash_next); }
       
       if (flags & F_IMMORTAL)
 	while (*up && !((*up)->flags & F_IMMORTAL))
-	  up = &((*up)->hash_next);
+          { if (!cache_reload_step(&reload_work)) return 0; up = &((*up)->hash_next); }
     }
 
   /* Preserve order when inserting the same name multiple times.
@@ -341,10 +356,11 @@ static void cache_hash(struct crec *crecp)
   while (*up &&
 	 hostname_isequal(cache_get_name(*up), name) &&
 	 flags == ((*up)->flags & (F_IMMORTAL | F_REVERSE)))
-    up = &((*up)->hash_next);
+    { if (!cache_reload_step(&reload_work)) return 0; up = &((*up)->hash_next); }
   
   crecp->hash_next = *up;
   *up = crecp;
+  return 1;
 }
 
 static void cache_blockdata_free(struct crec *crecp)
@@ -1181,6 +1197,7 @@ struct crec *cache_find_by_name(struct crec *crecp, char *name, time_t now, unsi
 {
   struct crec *ans;
   int no_rr = (prot & F_NO_RR) || option_bool(OPT_NORR);
+  unsigned int reload_work = 0;
 
   prot &= ~F_NO_RR;
   
@@ -1195,6 +1212,7 @@ struct crec *cache_find_by_name(struct crec *crecp, char *name, time_t now, unsi
       
       for (up = hash_bucket(name), crecp = *up; crecp; crecp = next)
 	{
+          if (!dns_reload_step(&reload_work)) return NULL;
 	  next = crecp->hash_next;
 	  
 	  if (!is_expired(now, crecp) && !is_outdated_cname_pointer(crecp))
@@ -1329,17 +1347,20 @@ static void add_hosts_entry(struct crec *cache, union all_addr *addr, int addrle
 			    unsigned int index, struct crec **rhash, int hashsz)
 {
   int i;
-  unsigned int j; 
+  unsigned int j, reload_work = 0;
   struct crec *lookup = NULL;
 
   /* Remove duplicates in hosts files. */
-  while ((lookup = cache_find_by_name(lookup, cache_get_name(cache), 0, cache->flags & (F_IPV4 | F_IPV6))))
+  while (dns_reload_step(&reload_work) &&
+         (lookup = cache_find_by_name(lookup, cache_get_name(cache), 0, cache->flags & (F_IPV4 | F_IPV6))))
     if ((lookup->flags & F_HOSTS) && memcmp(&lookup->addr, addr, addrlen) == 0)
       {
 	free_config_crec(cache);
 	return;
       }
     
+  if (!dns_reload_ok()) { free_config_crec(cache); return; }
+
   /* Ensure there is only one address -> name mapping (first one trumps) 
      We do this by steam here, The entries are kept in hash chains, linked
      by ->next (which is unused at this point) held in hash buckets in
@@ -1362,7 +1383,7 @@ static void add_hosts_entry(struct crec *cache, union all_addr *addr, int addrle
       for (j = 0, i = 0; i < addrlen; i++)
 	j = (j*2 +((unsigned char *)addr)[i]) % hashsz;
       
-      for (lookup = rhash[j]; lookup; lookup = lookup->next)
+      for (lookup = rhash[j]; lookup && dns_reload_step(&reload_work); lookup = lookup->next)
 	if ((lookup->flags & cache->flags & (F_IPV4 | F_IPV6)) &&
 	    memcmp(&lookup->addr, addr, addrlen) == 0)
 	  {
@@ -1370,6 +1391,8 @@ static void add_hosts_entry(struct crec *cache, union all_addr *addr, int addrle
 	    break;
 	  }
       
+      if (!dns_reload_ok()) { free_config_crec(cache); return; }
+
       /* maintain address hash chain, insert new unique address */
       if (!lookup)
 	{
@@ -1394,12 +1417,14 @@ static void add_hosts_entry(struct crec *cache, union all_addr *addr, int addrle
 static int eatspace(FILE *f)
 {
   int c, nl = 0;
+  unsigned int reload_work = 0;
 
   while (1)
     {
+      if (!dns_reload_step(&reload_work)) return 1;
       if ((c = getc(f)) == '#')
 	while (c != '\n' && c != EOF)
-	  c = getc(f);
+          { if (!dns_reload_step(&reload_work)) return 1; c = getc(f); }
       
       if (c == EOF)
 	return 1;
@@ -1418,10 +1443,11 @@ static int eatspace(FILE *f)
 static int gettok(FILE *f, char *token, size_t buffsz)
 {
   int c;
-  unsigned int count = 0;
+  unsigned int count = 0, reload_work = 0;
  
   while (1)
     {
+      if (!dns_reload_step(&reload_work)) return -1;
       if ((c = getc(f)) == EOF)
 	return (count == 0) ? -1 : 1;
 
@@ -1555,9 +1581,9 @@ int read_hostsfile(char *filename, unsigned int index, int cache_size, struct cr
     } 
 
   if (ferror(f)) dns_reload_fail("hosts memory snapshot read failed");
-  dns_runtime_file_close(&input);
+  dns_reload_close(&input);
   
-  if (rhash)
+  if (rhash && dns_reload_ok())
     rehash(name_count); 
   
   my_syslog(LOG_INFO, _("read %s - %d names"), filename, names_done);
@@ -1614,7 +1640,7 @@ static void cache_reload_build(void)
   free_names(UID_NONE); /* free everything */
   
   /* Add locally-configured CNAMEs to the cache */
-  for (a = daemon->cnames; a; a = a->next)
+  for (a = daemon->cnames; a && dns_reload_ok(); a = a->next)
     if (a->alias[1] != '*' &&
 	((cache = get_config_crec())))
       {
@@ -1629,7 +1655,7 @@ static void cache_reload_build(void)
       }
   
 #ifdef HAVE_DNSSEC
-  for (ds = daemon->ds; ds; ds = ds->next)
+  for (ds = daemon->ds; ds && dns_reload_ok(); ds = ds->next)
     if (ds->name && (cache = get_config_crec()))
       {
 	
@@ -1651,8 +1677,9 @@ static void cache_reload_build(void)
 	    else
 	      cache->flags |= F_NEG | F_DNSSECOK | F_NO_RR;
 	    
-	    cache_hash(cache);
-	    make_non_terminals(cache);
+	    if (!cache_hash(cache))
+              { cache_blockdata_free(cache); free_config_crec(cache); }
+            else make_non_terminals(cache);
 	  }
       }
 #endif
@@ -1664,8 +1691,8 @@ static void cache_reload_build(void)
   daemon->srv_save = NULL;
 
   /* Do host_records in config. */
-  for (hr = daemon->host_records; hr; hr = hr->next)
-    for (nl = hr->names; nl; nl = nl->next)
+  for (hr = daemon->host_records; hr && dns_reload_ok(); hr = hr->next)
+    for (nl = hr->names; nl && dns_reload_ok(); nl = nl->next)
       {
 	if ((hr->flags & HR_4) &&
 	    (cache = get_config_crec()))
@@ -1699,7 +1726,7 @@ static void cache_reload_build(void)
       if (!dns_reload_active())
         daemon->addn_hosts = expand_filelist(daemon->addn_hosts);
 
-      for (ah = daemon->addn_hosts; ah; ah = ah->next)
+      for (ah = daemon->addn_hosts; ah && dns_reload_ok(); ah = ah->next)
 	if (!(ah->flags & AH_INACTIVE))
 	  total_size = read_hostsfile(ah->fname, ah->index, total_size, (struct crec **)daemon->packet, revhashsz);
     }
@@ -1707,31 +1734,31 @@ static void cache_reload_build(void)
   /* Make non-terminal records for all locally-define RRs */
   lrec.flags = F_FORWARD | F_CONFIG | F_NAMEP | F_IMMORTAL;
   
-  for (txt = daemon->txt; txt; txt = txt->next)
+  for (txt = daemon->txt; txt && dns_reload_ok(); txt = txt->next)
     {
       lrec.name.namep = txt->name;
       make_non_terminals(&lrec);
     }
 
-  for (naptr = daemon->naptr; naptr; naptr = naptr->next)
+  for (naptr = daemon->naptr; naptr && dns_reload_ok(); naptr = naptr->next)
     {
       lrec.name.namep = naptr->name;
       make_non_terminals(&lrec);
     }
 
-  for (mx = daemon->mxnames; mx; mx = mx->next)
+  for (mx = daemon->mxnames; mx && dns_reload_ok(); mx = mx->next)
     {
       lrec.name.namep = mx->name;
       make_non_terminals(&lrec);
     }
 
-  for (intr = daemon->int_names; intr; intr = intr->next)
+  for (intr = daemon->int_names; intr && dns_reload_ok(); intr = intr->next)
     {
       lrec.name.namep = intr->name;
       make_non_terminals(&lrec);
     }
   
-  for (ptr = daemon->ptr; ptr; ptr = ptr->next)
+  for (ptr = daemon->ptr; ptr && dns_reload_ok(); ptr = ptr->next)
     {
       lrec.name.namep = ptr->name;
       make_non_terminals(&lrec);
@@ -1881,8 +1908,9 @@ void cache_reload(void)
     { cache_reload_commit(); dns_reload_end(1); }
   else
     {
-      my_syslog(LOG_ERR, _("reload transaction rejected; previous hosts/DHCP configuration retained: %s"), dns_reload_error());
+      const char *error = dns_reload_error();
       cache_reload_abort(); dns_reload_end(0);
+      my_syslog(LOG_ERR, _("reload transaction rejected; previous hosts/DHCP configuration retained: %s"), error);
     }
 }
 
@@ -2011,6 +2039,8 @@ static void make_non_terminals(struct crec *source)
   char *name = cache_get_name(source);
   struct crec *crecp, *tmp, **up;
   int type = F_HOSTS | F_CONFIG;
+  unsigned int reload_work = 0;
+  if (!dns_reload_ok()) return;
 #ifdef HAVE_DHCP
   if (source->flags & F_DHCP)
     type = F_DHCP;
@@ -2023,6 +2053,7 @@ static void make_non_terminals(struct crec *source)
      for HOSTS/CONFIG when we re-read. */
   for (up = hash_bucket(name), crecp = *up; crecp; crecp = tmp)
     {
+      if (!dns_reload_step(&reload_work)) return;
       tmp = crecp->hash_next;
 
       if (!is_outdated_cname_pointer(crecp) &&
@@ -2041,10 +2072,11 @@ static void make_non_terminals(struct crec *source)
      
   while ((name = strchr(name, '.')))
     {
+      if (!dns_reload_step(&reload_work)) return;
       name++;
 
       /* Look for one existing, don't need another */
-      for (crecp = *hash_bucket(name); crecp; crecp = crecp->hash_next)
+      for (crecp = *hash_bucket(name); crecp && dns_reload_step(&reload_work); crecp = crecp->hash_next)
 	if (!is_outdated_cname_pointer(crecp) &&
 	    (crecp->flags & F_FORWARD) &&
 	    (crecp->flags & type) &&

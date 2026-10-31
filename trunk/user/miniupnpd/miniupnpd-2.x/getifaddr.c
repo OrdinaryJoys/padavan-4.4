@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <syslog.h>
+#include "boundedlog.h"
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <sys/types.h>
@@ -43,25 +44,25 @@ getifaddr(const char * ifname, char * buf, int len,
 	s = socket(PF_INET, SOCK_DGRAM, 0);
 	if(s < 0)
 	{
-		syslog(LOG_ERR, "socket(PF_INET, SOCK_DGRAM): %m");
+		miniupnpd_syslog(LOG_ERR, "socket(PF_INET, SOCK_DGRAM): %m");
 		return -1;
 	}
 	strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
 	ifr.ifr_name[IFNAMSIZ-1] = '\0';
 	if(ioctl(s, SIOCGIFFLAGS, &ifr, &ifrlen) < 0)
 	{
-		syslog(LOG_DEBUG, "ioctl(s, SIOCGIFFLAGS, ...): %m");
+		miniupnpd_syslog(LOG_DEBUG, "ioctl(s, SIOCGIFFLAGS, ...): %m");
 		goto err;
 	}
 	if ((ifr.ifr_flags & IFF_UP) == 0)
 	{
-		syslog(LOG_DEBUG, "network interface %s is down", ifname);
+		miniupnpd_syslog(LOG_DEBUG, "network interface %s is down", ifname);
 		goto err;
 	}
 	strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
 	if(ioctl(s, SIOCGIFADDR, &ifr, &ifrlen) < 0)
 	{
-		syslog(LOG_DEBUG, "ioctl(s, SIOCGIFADDR, ...): %m");
+		miniupnpd_syslog(LOG_DEBUG, "ioctl(s, SIOCGIFADDR, ...): %m");
 		goto err;
 	}
 	ifaddr = (struct sockaddr_in *)&ifr.ifr_addr;
@@ -70,7 +71,7 @@ getifaddr(const char * ifname, char * buf, int len,
 	{
 		if(!inet_ntop(AF_INET, &ifaddr->sin_addr, buf, len))
 		{
-			syslog(LOG_ERR, "inet_ntop(): %m");
+			miniupnpd_syslog(LOG_ERR, "inet_ntop(): %m");
 			goto err;
 		}
 	}
@@ -79,7 +80,7 @@ getifaddr(const char * ifname, char * buf, int len,
 		strncpy(ifr.ifr_name, ifname, IFNAMSIZ);
 		if(ioctl(s, SIOCGIFNETMASK, &ifr, &ifrlen) < 0)
 		{
-			syslog(LOG_DEBUG, "ioctl(s, SIOCGIFNETMASK, ...): %m");
+			miniupnpd_syslog(LOG_DEBUG, "ioctl(s, SIOCGIFNETMASK, ...): %m");
 			goto err;
 		}
 #ifdef ifr_netmask
@@ -101,7 +102,7 @@ getifaddr(const char * ifname, char * buf, int len,
 		return -1;
 	if(getifaddrs(&ifap)<0)
 	{
-		syslog(LOG_DEBUG, "getifaddrs: %m");
+		miniupnpd_syslog(LOG_DEBUG, "getifaddrs: %m");
 		return -1;
 	}
 	for(ife = ifap; ife; ife = ife->ifa_next)
@@ -153,7 +154,7 @@ int getifaddr_in6(const char * ifname, int af, struct in6_addr * addr)
 		return -1;
 	if(getifaddrs(&ifap)<0)
 	{
-		syslog(LOG_ERR, "getifaddrs: %m");
+		miniupnpd_syslog(LOG_ERR, "getifaddrs: %m");
 		return -1;
 	}
 	for(ife = ifap; ife && !found; ife = ife->ifa_next)
@@ -228,7 +229,7 @@ find_ipv6_addr(const char * ifname,
 
 	if(getifaddrs(&ifap)<0)
 	{
-		syslog(LOG_DEBUG, "getifaddrs: %m");
+		miniupnpd_syslog(LOG_DEBUG, "getifaddrs: %m");
 		return -1;
 	}
 	for(ife = ifap; ife; ife = ife->ifa_next)

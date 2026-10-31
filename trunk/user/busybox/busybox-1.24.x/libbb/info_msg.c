@@ -28,7 +28,7 @@ void FAST_FUNC bb_info_msg(const char *s, ...)
 	}
 # if ENABLE_FEATURE_SYSLOG
 	if (logmode & LOGMODE_SYSLOG)
-		vsyslog(LOG_INFO, s, p2);
+		bb_vsyslog(LOG_INFO, s, p2);
 # endif
 	va_end(p2);
 	va_end(p);
@@ -48,7 +48,7 @@ void FAST_FUNC bb_info_msg(const char *s, ...)
 
 # if ENABLE_FEATURE_SYSLOG
 	if (logmode & LOGMODE_SYSLOG)
-		syslog(LOG_INFO, "%s", msg);
+		bb_syslog(LOG_INFO, "%s", msg);
 # endif
 	if (logmode & LOGMODE_STDIO) {
 		fflush_all();

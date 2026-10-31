@@ -607,7 +607,7 @@ int getty_main(int argc UNUSED_PARAM, char **argv)
 	die_func = sleep10;
 	msg_eol = "\r\n";
 	/* most likely will internally use fd #3 in CLOEXEC mode: */
-	openlog(applet_name, LOG_PID, LOG_AUTH);
+	bb_openlog(applet_name, LOG_PID, LOG_AUTH);
 	logmode = LOGMODE_BOTH;
 
 #ifdef DEBUGGING

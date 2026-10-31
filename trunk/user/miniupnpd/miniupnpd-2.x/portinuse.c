@@ -14,6 +14,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <syslog.h>
+#include "boundedlog.h"
 #include <errno.h>
 #include <time.h>
 #include <sys/types.h>
@@ -79,7 +80,7 @@ port_in_use(const char *if_name,
 		ip_addr_str[0] = '\0';
 	}
 
-	syslog(LOG_DEBUG, "Check protocol %s for port %u on ext_if %s %s, %08X",
+	miniupnpd_syslog(LOG_DEBUG, "Check protocol %s for port %u on ext_if %s %s, %08X",
 	    (proto==IPPROTO_TCP)?"tcp":"udp", eport, if_name,
 	    ip_addr_str, (unsigned)ip_addr.s_addr);
 
@@ -87,7 +88,7 @@ port_in_use(const char *if_name,
 #if defined(__linux__)
 	f = fopen((proto==IPPROTO_TCP)?tcpfile:udpfile, "r");
 	if (!f) {
-		syslog(LOG_ERR, "cannot open %s", (proto==IPPROTO_TCP)?tcpfile:udpfile);
+		miniupnpd_syslog(LOG_ERR, "cannot open %s", (proto==IPPROTO_TCP)?tcpfile:udpfile);
 		return -1;
 	}
 
@@ -101,7 +102,7 @@ port_in_use(const char *if_name,
 			/* TODO add IPV6 support if enabled
 			 * Presently assumes IPV4 */
 #ifdef DEBUG
-			syslog(LOG_DEBUG, "port_in_use check port %u and address %s", tmp_port, eaddr);
+			miniupnpd_syslog(LOG_DEBUG, "port_in_use check port %u and address %s", tmp_port, eaddr);
 #endif
 			if (tmp_port == eport) {
 				char tmp_addr[4];
@@ -140,19 +141,19 @@ static struct nlist list[] = {
 	struct inpcb inpcb;
 	kd = kvm_openfiles(NULL, NULL, NULL, O_RDONLY, errstr);
 	if(!kd) {
-		syslog(LOG_ERR, "%s: kvm_openfiles(): %s",
+		miniupnpd_syslog(LOG_ERR, "%s: kvm_openfiles(): %s",
 		       "portinuse()", errstr);
 		return -1;
 	}
 	if(kvm_nlist(kd, list) < 0) {
-		syslog(LOG_ERR, "%s: kvm_nlist(): %s",
+		miniupnpd_syslog(LOG_ERR, "%s: kvm_nlist(): %s",
 		       "portinuse()", kvm_geterr(kd));
 		kvm_close(kd);
 		return -1;
 	}
 	n = kvm_read(kd, list[(proto==IPPROTO_TCP)?0:1].n_value, &table, sizeof(table));
 	if(n < 0) {
-		syslog(LOG_ERR, "%s: kvm_read(): %s",
+		miniupnpd_syslog(LOG_ERR, "%s: kvm_read(): %s",
 		       "portinuse()", kvm_geterr(kd));
 		kvm_close(kd);
 		return -1;
@@ -162,7 +163,7 @@ static struct nlist list[] = {
 		if(((u_long)next & 3) != 0) break;
 		n = kvm_read(kd, (u_long)next, &inpcb, sizeof(inpcb));
 		if(n < 0) {
-			syslog(LOG_ERR, "kvm_read(): %s", kvm_geterr(kd));
+			miniupnpd_syslog(LOG_ERR, "kvm_read(): %s", kvm_geterr(kd));
 			break;
 		}
 		next = CIRCLEQ_NEXT(&inpcb, inp_queue);	/*TAILQ_NEXT(&inpcb, inp_queue);*/
@@ -170,7 +171,7 @@ static struct nlist list[] = {
 		if((inpcb.inp_flags & INP_IPV6) != 0)
 			continue;
 #ifdef DEBUG
-		syslog(LOG_DEBUG, "%08lx:%hu %08lx:%hu",
+		miniupnpd_syslog(LOG_DEBUG, "%08lx:%hu %08lx:%hu",
 		       (u_long)inpcb.inp_laddr.s_addr, ntohs(inpcb.inp_lport),
 		       (u_long)inpcb.inp_faddr.s_addr, ntohs(inpcb.inp_fport));
 #endif
@@ -201,21 +202,21 @@ static struct nlist list[] = {
 		varname = "net.inet.udp.pcblist";
 		break;
 	default:
-		syslog(LOG_ERR, "port_in_use() unknown proto=%d", proto);
+		miniupnpd_syslog(LOG_ERR, "port_in_use() unknown proto=%d", proto);
 		return -1;
 	}
 
 	if (sysctlbyname(varname, NULL, &len, NULL, 0) < 0) {
-		syslog(LOG_ERR, "sysctlbyname(%s, NULL, ...): %m", varname);
+		miniupnpd_syslog(LOG_ERR, "sysctlbyname(%s, NULL, ...): %m", varname);
 		return -1;
 	}
 	buf = malloc(len);
 	if (buf == NULL) {
-		syslog(LOG_ERR, "malloc(%u) failed", (unsigned)len);
+		miniupnpd_syslog(LOG_ERR, "malloc(%u) failed", (unsigned)len);
 		return -1;
 	}
 	if (sysctlbyname(varname, buf, &len, NULL, 0) < 0) {
-		syslog(LOG_ERR, "sysctlbyname(%s, buf, ...): %m", varname);
+		miniupnpd_syslog(LOG_ERR, "sysctlbyname(%s, buf, ...): %m", varname);
 		free(buf);
 		return -1;
 	}
@@ -230,7 +231,7 @@ static struct nlist list[] = {
 		case IPPROTO_TCP:
 			xtp = (struct xtcpcb *)so_begin;
 			if (xtp->xt_len != sizeof *xtp) {
-				syslog(LOG_WARNING, "struct xtcpcb size mismatch; %ld vs %ld",
+				miniupnpd_syslog(LOG_WARNING, "struct xtcpcb size mismatch; %ld vs %ld",
 				       (long)xtp->xt_len, sizeof *xtp);
 				free(buf);
 				return -1;
@@ -240,7 +241,7 @@ static struct nlist list[] = {
 		case IPPROTO_UDP:
 			xip = (struct xinpcb *)so_begin;
 			if (xip->xi_len != sizeof *xip) {
-				syslog(LOG_WARNING, "struct xinpcb size mismatch : %ld vs %ld",
+				miniupnpd_syslog(LOG_WARNING, "struct xinpcb size mismatch : %ld vs %ld",
 				       (long)xip->xi_len, sizeof *xip);
 				free(buf);
 				return -1;
@@ -253,7 +254,7 @@ static struct nlist list[] = {
 		/* no support for IPv6 */
 		if (INP_ISIPV6(inp) != 0)
 			continue;
-		syslog(LOG_DEBUG, "%08lx:%hu %08lx:%hu <=> %hu %08lx:%hu",
+		miniupnpd_syslog(LOG_DEBUG, "%08lx:%hu %08lx:%hu <=> %hu %08lx:%hu",
 		       (u_long)inp->inp_laddr.s_addr, ntohs(inp->inp_lport),
 		       (u_long)inp->inp_faddr.s_addr, ntohs(inp->inp_fport),
 		       eport, (u_long)ip_addr.s_addr, iport
@@ -286,21 +287,21 @@ static struct nlist list[] = {
 		varname = "net.inet.udp.pcblist";
 		break;
 	default:
-		syslog(LOG_ERR, "port_in_use() unknown proto=%d", proto);
+		miniupnpd_syslog(LOG_ERR, "port_in_use() unknown proto=%d", proto);
 		return -1;
 	}
 
 	if (sysctlbyname(varname, NULL, &len, NULL, 0) < 0) {
-		syslog(LOG_ERR, "sysctlbyname(%s, NULL, ...): %m", varname);
+		miniupnpd_syslog(LOG_ERR, "sysctlbyname(%s, NULL, ...): %m", varname);
 		return -1;
 	}
 	buf = malloc(len);
 	if (buf == NULL) {
-		syslog(LOG_ERR, "malloc(%u) failed", (unsigned)len);
+		miniupnpd_syslog(LOG_ERR, "malloc(%u) failed", (unsigned)len);
 		return -1;
 	}
 	if (sysctlbyname(varname, buf, &len, NULL, 0) < 0) {
-		syslog(LOG_ERR, "sysctlbyname(%s, buf, ...): %m", varname);
+		miniupnpd_syslog(LOG_ERR, "sysctlbyname(%s, buf, ...): %m", varname);
 		free(buf);
 		return -1;
 	}
@@ -308,13 +309,13 @@ static struct nlist list[] = {
 	xig = (struct xinpgen *)buf;
 	exig = (struct xinpgen *)(void *)((char *)buf + len - sizeof *exig);
 	if (xig->xig_len != sizeof *xig) {
-		syslog(LOG_WARNING, "struct xinpgen size mismatch; %ld vs %ld",
+		miniupnpd_syslog(LOG_WARNING, "struct xinpgen size mismatch; %ld vs %ld",
 		       (long)xig->xig_len, sizeof *xig);
 		free(buf);
 		return -1;
 	}
 	if (exig->xig_len != sizeof *exig) {
-		syslog(LOG_WARNING, "struct xinpgen size mismatch; %ld vs %ld",
+		miniupnpd_syslog(LOG_WARNING, "struct xinpgen size mismatch; %ld vs %ld",
 		       (long)exig->xig_len, sizeof *exig);
 		free(buf);
 		return -1;
@@ -328,7 +329,7 @@ static struct nlist list[] = {
 		case IPPROTO_TCP:
 			xtp = (struct xtcpcb *)xig;
 			if (xtp->xt_len != sizeof *xtp) {
-				syslog(LOG_WARNING, "struct xtcpcb size mismatch; %ld vs %ld",
+				miniupnpd_syslog(LOG_WARNING, "struct xtcpcb size mismatch; %ld vs %ld",
 				       (long)xtp->xt_len, sizeof *xtp);
 				free(buf);
 				return -1;
@@ -338,7 +339,7 @@ static struct nlist list[] = {
 		case IPPROTO_UDP:
 			xip = (struct xinpcb *)xig;
 			if (xip->xi_len != sizeof *xip) {
-				syslog(LOG_WARNING, "struct xinpcb size mismatch : %ld vs %ld",
+				miniupnpd_syslog(LOG_WARNING, "struct xinpcb size mismatch : %ld vs %ld",
 				       (long)xip->xi_len, sizeof *xip);
 				free(buf);
 				return -1;
@@ -351,7 +352,7 @@ static struct nlist list[] = {
 		/* no support for IPv6 */
 		if ((inp->inp_vflag & INP_IPV6) != 0)
 			continue;
-		syslog(LOG_DEBUG, "%08lx:%hu %08lx:%hu <=> %hu %08lx:%hu",
+		miniupnpd_syslog(LOG_DEBUG, "%08lx:%hu %08lx:%hu <=> %hu %08lx:%hu",
 		       (u_long)inp->inp_laddr.s_addr, ntohs(inp->inp_lport),
 		       (u_long)inp->inp_faddr.s_addr, ntohs(inp->inp_fport),
 		       eport, (u_long)ip_addr.s_addr, iport
@@ -385,7 +386,7 @@ static struct nlist list[] = {
 					iaddr_old, sizeof(iaddr_old), &iport_old,
 					0, 0, 0, 0, 0, 0, 0) == 0)
 			{
-				syslog(LOG_DEBUG, "port_in_use check port %d on nat chain %s redirected to %s port %d", eport,
+				miniupnpd_syslog(LOG_DEBUG, "port_in_use check port %d on nat chain %s redirected to %s port %d", eport,
 						chains_to_check[i], iaddr_old, iport_old);
 				if (!(strcmp(iaddr, iaddr_old)==0 && iport==iport_old)) {
 					/* only "in use" if redirected to somewhere else */

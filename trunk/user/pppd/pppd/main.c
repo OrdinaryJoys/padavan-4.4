@@ -269,7 +269,7 @@ int main __P((int, char *[]));
 #endif
 
 #ifdef ULTRIX
-#define setlogmask(x)
+#define ppp_log_mask(x)
 #endif
 
 /*
@@ -379,7 +379,7 @@ main(argc, argv)
 	(*the_channel->process_extra_options)();
 
     if (debug)
-	setlogmask(LOG_UPTO(LOG_DEBUG));
+	ppp_log_mask(LOG_UPTO(LOG_DEBUG));
 
     /*
      * Check that we are running as root.
@@ -472,7 +472,7 @@ main(argc, argv)
 	else
 	    p = "(unknown)";
     }
-    syslog(LOG_NOTICE, "pppd %s started by %s, uid %d", VERSION, p, uid);
+    ppp_syslog(LOG_NOTICE, "pppd %s started by %s, uid %d", VERSION, p, uid);
     script_setenv("PPPLOGNAME", p, 0);
 
     if (devnam[0])
@@ -805,8 +805,8 @@ detach()
 void
 reopen_log()
 {
-    openlog("pppd", LOG_PID | LOG_NDELAY, LOG_PPP);
-    setlogmask(LOG_UPTO(LOG_INFO));
+    ppp_log_open("pppd", LOG_PID | LOG_NDELAY, LOG_PPP);
+    ppp_log_mask(LOG_UPTO(LOG_INFO));
 }
 
 /*
@@ -1212,7 +1212,7 @@ die(status)
 	print_link_stats();
     cleanup();
     notify(exitnotify, status);
-    syslog(LOG_INFO, "Exit.");
+    ppp_syslog(LOG_INFO, "Exit.");
     exit(status);
 }
 
@@ -1563,9 +1563,9 @@ toggle_debug(sig)
 {
     debug = !debug;
     if (debug) {
-	setlogmask(LOG_UPTO(LOG_DEBUG));
+	ppp_log_mask(LOG_UPTO(LOG_DEBUG));
     } else {
-	setlogmask(LOG_UPTO(LOG_WARNING));
+	ppp_log_mask(LOG_UPTO(LOG_WARNING));
     }
 }
 
@@ -1658,7 +1658,7 @@ safe_fork(int infd, int outfd, int errfd)
 	if (errfd == 0 || errfd == 1)
 		errfd = dup(errfd);
 
-	closelog();
+	ppp_log_close();
 
 	/* dup the in, out, err fds to 0, 1, 2 */
 	if (infd != 0)
@@ -1914,8 +1914,8 @@ run_program(prog, args, must_exist, done, arg, wait)
 	/* have to reopen the log, there's nowhere else
 	   for the message to go. */
 	reopen_log();
-	syslog(LOG_ERR, "Can't execute %s: %m", prog);
-	closelog();
+	ppp_syslog(LOG_ERR, "Can't execute %s: %m", prog);
+	ppp_log_close();
     }
     _exit(99);
 }

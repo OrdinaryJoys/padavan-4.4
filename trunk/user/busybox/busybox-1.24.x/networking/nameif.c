@@ -226,7 +226,7 @@ int nameif_main(int argc UNUSED_PARAM, char **argv)
 	char *token[2];
 
 	if (1 & getopt32(argv, "sc:", &fname)) {
-		openlog(applet_name, 0, LOG_LOCAL0);
+		bb_openlog(applet_name, 0, LOG_LOCAL0);
 		/* Why not just "="? I assume logging to stderr
 		 * can't hurt. 2>/dev/null if you don't like it: */
 		logmode |= LOGMODE_SYSLOG;

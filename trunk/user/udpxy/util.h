@@ -26,6 +26,10 @@
 
 struct timeval;
 
+void udpxy_openlog(const char *ident, int options, int facility);
+void udpxy_closelog(void);
+void udpxy_syslog(int priority, const char *format, ...);
+
 #ifdef __cplusplus
 extern "C" {
 #endif

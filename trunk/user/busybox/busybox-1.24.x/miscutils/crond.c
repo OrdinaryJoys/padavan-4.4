@@ -937,7 +937,7 @@ int crond_main(int argc UNUSED_PARAM, char **argv)
 
 	if (!(opts & OPT_d) && G.log_filename == NULL) {
 		/* logging to syslog */
-		openlog(applet_name, LOG_CONS | LOG_PID, LOG_CRON);
+		bb_openlog(applet_name, LOG_CONS | LOG_PID, LOG_CRON);
 		logmode = LOGMODE_SYSLOG;
 	}
 

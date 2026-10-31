@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <syslog.h>
+#include "../boundedlog.h"
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -71,7 +72,7 @@ get_src_for_route_to(const struct sockaddr * dst,
 	{
 		char dst_str[128];
 		sockaddr_to_string(dst, dst_str, sizeof(dst_str));
-		syslog(LOG_DEBUG, "get_src_for_route_to (%s)", dst_str);
+		miniupnpd_syslog(LOG_DEBUG, "get_src_for_route_to (%s)", dst_str);
 	}
 	/* add address */
 #ifndef USE_LIBNFNETLINK
@@ -103,7 +104,7 @@ get_src_for_route_to(const struct sockaddr * dst,
 
 	fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
 	if (fd < 0) {
-		syslog(LOG_ERR, "socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE) : %m");
+		miniupnpd_syslog(LOG_ERR, "socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE) : %m");
 		return -1;
 	}
 
@@ -116,7 +117,7 @@ get_src_for_route_to(const struct sockaddr * dst,
 	status = sendmsg(fd, &msg, 0);
 
 	if (status < 0) {
-		syslog(LOG_ERR, "sendmsg(rtnetlink) : %m");
+		miniupnpd_syslog(LOG_ERR, "sendmsg(rtnetlink) : %m");
 		goto error;
 	}
 
@@ -128,11 +129,11 @@ get_src_for_route_to(const struct sockaddr * dst,
 		if(status < 0) {
 			if (errno == EINTR || errno == EAGAIN)
 				continue;
-			syslog(LOG_ERR, "recvmsg(rtnetlink) %m");
+			miniupnpd_syslog(LOG_ERR, "recvmsg(rtnetlink) %m");
 			goto error;
 		}
 		if(status == 0) {
-			syslog(LOG_ERR, "recvmsg(rtnetlink) EOF");
+			miniupnpd_syslog(LOG_ERR, "recvmsg(rtnetlink) EOF");
 			goto error;
 		}
 		for (h = (struct nlmsghdr*)&req.n; status >= (int)sizeof(*h); ) {
@@ -141,14 +142,14 @@ get_src_for_route_to(const struct sockaddr * dst,
 
 			if (l<0 || len>status) {
 				if (msg.msg_flags & MSG_TRUNC) {
-					syslog(LOG_ERR, "Truncated message");
+					miniupnpd_syslog(LOG_ERR, "Truncated message");
 				}
-				syslog(LOG_ERR, "malformed message: len=%d", len);
+				miniupnpd_syslog(LOG_ERR, "malformed message: len=%d", len);
 				goto error;
 			}
 
 			if(nladdr.nl_pid != 0 || h->nlmsg_seq != 1/*seq*/) {
-				syslog(LOG_ERR, "wrong seq = %d\n", h->nlmsg_seq);
+				miniupnpd_syslog(LOG_ERR, "wrong seq = %d\n", h->nlmsg_seq);
 				/* Don't forget to skip that message. */
 				status -= NLMSG_ALIGN(len);
 				h = (struct nlmsghdr*)((char*)h + NLMSG_ALIGN(len));
@@ -157,7 +158,7 @@ get_src_for_route_to(const struct sockaddr * dst,
 
 			if(h->nlmsg_type == NLMSG_ERROR) {
 				struct nlmsgerr *err = (struct nlmsgerr*)NLMSG_DATA(h);
-				syslog(LOG_ERR, "NLMSG_ERROR %d : %s", err->error, strerror(-err->error));
+				miniupnpd_syslog(LOG_ERR, "NLMSG_ERROR %d : %s", err->error, strerror(-err->error));
 				goto error;
 			}
 			if(h->nlmsg_type == RTM_NEWROUTE) {
@@ -169,7 +170,7 @@ get_src_for_route_to(const struct sockaddr * dst,
 					if(rta->rta_type == RTA_PREFSRC) {
 						if(src_len && src) {
 							if(*src_len < RTA_PAYLOAD(rta)) {
-								syslog(LOG_WARNING, "cannot copy src: %u<%lu",
+								miniupnpd_syslog(LOG_WARNING, "cannot copy src: %u<%lu",
 								       (unsigned)*src_len, (unsigned long)RTA_PAYLOAD(rta));
 								goto error;
 							}
@@ -188,7 +189,7 @@ get_src_for_route_to(const struct sockaddr * dst,
 			h = (struct nlmsghdr*)((char*)h + NLMSG_ALIGN(len));
 		}
 	}
-	syslog(LOG_WARNING, "get_src_for_route_to() : src not found");
+	miniupnpd_syslog(LOG_WARNING, "get_src_for_route_to() : src not found");
 error:
 	if(fd >= 0)
 		close(fd);

@@ -5,8 +5,11 @@
 #include "dnsmasq.h"
 #include "runtime_file.h"
 #include "reload_file.h"
+#ifdef __linux__
+#include <sys/sysinfo.h>
+#endif
 
-#define RELOAD_HASH 4096U
+#define RELOAD_HASH 65536U
 struct reload_allocation {
   struct reload_allocation *next;
   void *pointer;
@@ -18,14 +21,57 @@ struct reload_identity {
   struct stat metadata;
 };
 static struct {
-  int active, failed, next_index;
+  int active, failed, next_index, publishing, initial;
   const char *reason;
-  size_t input_bytes, model_bytes;
+  size_t input_bytes, model_bytes, memory_limit;
+  struct dns_runtime_file live_input;
   unsigned int files, directory_entries;
   long long deadline;
   struct reload_identity *identities;
   struct reload_allocation *allocations[RELOAD_HASH];
 } reload;
+static int initial_reload;
+
+void dns_reload_initial(int initial) { initial_reload = initial != 0; }
+
+/* The fixed index avoids long linked-list searches for large candidates.
+ * Fold high pointer bits so malloc alignment cannot leave most buckets empty. */
+static unsigned int reload_bucket(void *pointer)
+{
+  uintptr_t value = (uintptr_t)pointer;
+  value ^= value >> 17; value *= 0xed5ad4bbU; value ^= value >> 11;
+  return value % RELOAD_HASH;
+}
+
+static int reload_memory_limit(size_t *limit)
+{
+  size_t maximum = DNS_RELOAD_MODEL_BYTES + DNS_RUNTIME_HOSTS_BYTES + sizeof(reload);
+#ifdef __linux__
+  struct sysinfo info;
+  uint64_t available;
+  if (sysinfo(&info) || !info.mem_unit ||
+      (uint64_t)info.freeram > UINT64_MAX / info.mem_unit) return 0;
+  available = (uint64_t)info.freeram * info.mem_unit;
+  /* Conservative: do not assume cached/buffered pages can be reclaimed.
+   * This initial snapshot includes the old live model already in RAM.
+   * Concurrent allocations and allocator/kernel overhead remain outside a
+   * strict RSS/OOM guarantee; the reserve is not a physical memory lock. */
+  if (available <= DNS_RELOAD_SYSTEM_HEADROOM_BYTES + sizeof(reload)) return 0;
+  available -= DNS_RELOAD_SYSTEM_HEADROOM_BYTES;
+  if (available < maximum) maximum = (size_t)available;
+#endif
+  /* Non-Linux native replay retains the same finite model/snapshot ceiling;
+   * production Linux additionally requires the checked free-RAM admission. */
+  *limit = maximum;
+  return 1;
+}
+
+static size_t reload_memory_remaining(void)
+{
+  size_t used = sizeof(reload) + reload.model_bytes;
+  if (reload.live_input.stream) used += reload.live_input.size ? reload.live_input.size : 1;
+  return used < reload.memory_limit ? reload.memory_limit - used : 0;
+}
 
 static long long reload_clock(void)
 {
@@ -49,8 +95,9 @@ int dns_reload_ok(void)
   long long now;
   if (!reload.active)
     return 1;
-  if (!reload.failed && ((now = reload_clock()) < 0 || now >= reload.deadline))
-    dns_reload_fail("reload cooperative time budget exceeded");
+  if (!reload.failed && !reload.publishing && ((now = reload_clock()) < 0 || now >= reload.deadline))
+    dns_reload_fail(reload.initial ? "initial reload cooperative time budget exceeded" :
+                    "hot reload cooperative time budget exceeded");
   return !reload.failed;
 }
 
@@ -61,7 +108,10 @@ int dns_reload_begin(void)
     return 0;
   memset(&reload, 0, sizeof(reload));
   reload.active = 1;
-  reload.deadline = now + DNS_RELOAD_TIME_MS;
+  reload.initial = initial_reload;
+  reload.deadline = now + (reload.initial ? DNS_RELOAD_TIME_MS : DNS_RELOAD_HOT_TIME_MS);
+  if (!reload_memory_limit(&reload.memory_limit))
+    dns_reload_fail("reload free-memory admission failed");
   reload.next_index = daemon->host_index;
   return 1;
 }
@@ -74,6 +124,8 @@ void *dns_reload_track(void *pointer, size_t size)
     return pointer;
   if (!dns_reload_ok() || DNS_RELOAD_MODEL_BYTES - reload.model_bytes < sizeof(*item) ||
       size > DNS_RELOAD_MODEL_BYTES - reload.model_bytes - sizeof(*item) ||
+      reload_memory_remaining() < sizeof(*item) ||
+      size > reload_memory_remaining() - sizeof(*item) ||
       !(item = malloc(sizeof(*item))))
     {
       free(pointer);
@@ -82,7 +134,7 @@ void *dns_reload_track(void *pointer, size_t size)
     }
   item->pointer = pointer;
   item->bytes = size + sizeof(*item);
-  bucket = ((uintptr_t)pointer >> 3) % RELOAD_HASH;
+  bucket = reload_bucket(pointer);
   item->next = reload.allocations[bucket];
   reload.allocations[bucket] = item;
   reload.model_bytes += item->bytes;
@@ -94,7 +146,8 @@ void *dns_reload_malloc(size_t size)
   void *pointer;
   if (!reload.active)
     return whine_malloc(size);
-  if (!dns_reload_ok() || size > DNS_RELOAD_MODEL_BYTES - reload.model_bytes)
+  if (!dns_reload_ok() || size > DNS_RELOAD_MODEL_BYTES - reload.model_bytes ||
+      size > reload_memory_remaining())
     { dns_reload_fail("reload candidate allocation budget exhausted"); return NULL; }
   if (!(pointer = calloc(1, size)))
     { dns_reload_fail("reload candidate allocation failed"); return NULL; }
@@ -105,7 +158,7 @@ void dns_reload_free(void *pointer)
 {
   struct reload_allocation **up, *item;
   if (reload.active && pointer)
-    for (up = &reload.allocations[((uintptr_t)pointer >> 3) % RELOAD_HASH]; (item = *up); up = &item->next)
+    for (up = &reload.allocations[reload_bucket(pointer)]; (item = *up); up = &item->next)
       if (item->pointer == pointer)
         {
           *up = item->next;
@@ -136,18 +189,37 @@ int dns_reload_read(struct dns_runtime_file *input, const char *path, int hosts)
   if (!reload.active)
     return dns_runtime_file_open_limit(input, path, limit,
       hosts ? DNS_RUNTIME_HOSTS_LINES : DNS_RUNTIME_FILE_LINES, &error);
+  if (reload.live_input.stream)
+    { dns_reload_fail("reload input snapshot is already active"); return 0; }
   if (!dns_reload_ok() || reload.files >= DNS_RELOAD_FILES)
     { dns_reload_fail("reload file-count budget exceeded"); return 0; }
   if (limit > DNS_RELOAD_INPUT_BYTES - reload.input_bytes)
     limit = DNS_RELOAD_INPUT_BYTES - reload.input_bytes;
-  if (!limit || !dns_runtime_file_open_limit(input, path, limit,
-      hosts ? DNS_RUNTIME_HOSTS_LINES : DNS_RUNTIME_FILE_LINES, &error))
-    { dns_reload_fail(limit ? error : "reload aggregate input byte budget exceeded"); return 0; }
+  if (limit > reload_memory_remaining()) limit = reload_memory_remaining();
+  if (!limit)
+    { dns_reload_fail("reload aggregate input or combined model/snapshot budget exhausted"); return 0; }
+  if (!dns_runtime_file_open_limit_deadline(input, path, limit,
+      hosts ? DNS_RUNTIME_HOSTS_LINES : DNS_RUNTIME_FILE_LINES, reload.deadline, &error))
+    {
+      /* Prefer the group deadline reason when it capped the reader. */
+      dns_reload_ok();
+      dns_reload_fail(error);
+      return 0;
+    }
+  reload.live_input = *input;
   reload.files++;
   reload.input_bytes += input->size;
   if (!remember(path, &input->metadata) || !dns_reload_ok())
-    { dns_runtime_file_close(input); return 0; }
+    { dns_reload_close(input); return 0; }
   return 1;
+}
+
+void dns_reload_close(struct dns_runtime_file *input)
+{
+  if (reload.active && reload.live_input.stream &&
+      reload.live_input.contents == input->contents)
+    memset(&reload.live_input, 0, sizeof(reload.live_input));
+  dns_runtime_file_close(input);
 }
 
 static int name_compare(const void *a, const void *b)
@@ -256,13 +328,19 @@ int dns_reload_validate(void)
   for (item = reload.identities; item && dns_reload_ok(); item = item->next)
     if (!dns_runtime_file_unchanged(item->path, &item->metadata))
       dns_reload_fail("reload input identity changed before commit");
-  return dns_reload_ok();
+  if (!dns_reload_ok()) return 0;
+  /* From here callers only publish/free already parsed objects. A timeout
+   * during destructive commit must not create a partially applied group.
+   * This bounded cleanup tail is measured separately, not a hard deadline. */
+  reload.publishing = 1;
+  return 1;
 }
 
 void dns_reload_end(int publish)
 {
   struct reload_identity *identity = reload.identities;
   unsigned int i;
+  if (reload.live_input.stream) dns_runtime_file_close(&reload.live_input);
   while (identity)
     {
       struct reload_identity *next = identity->next;

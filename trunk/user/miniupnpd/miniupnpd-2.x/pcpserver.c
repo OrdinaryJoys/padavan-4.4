@@ -68,6 +68,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <stdio.h>
 #include <ctype.h>
 #include <syslog.h>
+#include "boundedlog.h"
 
 #include "pcpserver.h"
 #include "natpmp.h"
@@ -266,24 +267,24 @@ static int parseCommonRequestHeader(const uint8_t *common_req, pcp_info_t *pcp_m
 static void printMAPOpcodeVersion1(const uint8_t *buf)
 {
 	char map_addr[INET6_ADDRSTRLEN];
-	syslog(LOG_DEBUG, "PCP MAP: v1 Opcode specific information. \n");
-	syslog(LOG_DEBUG, "MAP protocol: \t\t %d\n", (int)buf[0] );
-	syslog(LOG_DEBUG, "MAP int port: \t\t %d\n", (int)READNU16(buf+4));
-	syslog(LOG_DEBUG, "MAP ext port: \t\t %d\n", (int)READNU16(buf+6));
-	syslog(LOG_DEBUG, "MAP Ext IP: \t\t %s\n", inet_ntop(AF_INET6,
+	miniupnpd_syslog(LOG_DEBUG, "PCP MAP: v1 Opcode specific information. \n");
+	miniupnpd_syslog(LOG_DEBUG, "MAP protocol: \t\t %d\n", (int)buf[0] );
+	miniupnpd_syslog(LOG_DEBUG, "MAP int port: \t\t %d\n", (int)READNU16(buf+4));
+	miniupnpd_syslog(LOG_DEBUG, "MAP ext port: \t\t %d\n", (int)READNU16(buf+6));
+	miniupnpd_syslog(LOG_DEBUG, "MAP Ext IP: \t\t %s\n", inet_ntop(AF_INET6,
 	       buf+8, map_addr, INET6_ADDRSTRLEN));
 }
 
 static void printMAPOpcodeVersion2(const uint8_t *buf)
 {
 	char map_addr[INET6_ADDRSTRLEN];
-	syslog(LOG_DEBUG, "PCP MAP: v2 Opcode specific information.");
-	syslog(LOG_DEBUG, "MAP nonce:   \t%08x%08x%08x",
+	miniupnpd_syslog(LOG_DEBUG, "PCP MAP: v2 Opcode specific information.");
+	miniupnpd_syslog(LOG_DEBUG, "MAP nonce:   \t%08x%08x%08x",
 	       READNU32(buf), READNU32(buf+4), READNU32(buf+8));
-	syslog(LOG_DEBUG, "MAP protocol:\t%d", (int)buf[12]);
-	syslog(LOG_DEBUG, "MAP int port:\t%d", (int)READNU16(buf+16));
-	syslog(LOG_DEBUG, "MAP ext port:\t%d", (int)READNU16(buf+18));
-	syslog(LOG_DEBUG, "MAP Ext IP:  \t%s", inet_ntop(AF_INET6,
+	miniupnpd_syslog(LOG_DEBUG, "MAP protocol:\t%d", (int)buf[12]);
+	miniupnpd_syslog(LOG_DEBUG, "MAP int port:\t%d", (int)READNU16(buf+16));
+	miniupnpd_syslog(LOG_DEBUG, "MAP ext port:\t%d", (int)READNU16(buf+18));
+	miniupnpd_syslog(LOG_DEBUG, "MAP Ext IP:  \t%s", inet_ntop(AF_INET6,
 	       buf+20, map_addr, INET6_ADDRSTRLEN));
 }
 #endif /* DEBUG */
@@ -317,15 +318,15 @@ static void printPEEROpcodeVersion1(const uint8_t *buf)
 {
 	char ext_addr[INET6_ADDRSTRLEN];
 	char peer_addr[INET6_ADDRSTRLEN];
-	syslog(LOG_DEBUG, "PCP PEER: v1 Opcode specific information. \n");
-	syslog(LOG_DEBUG, "Protocol: \t\t %d\n", (int)buf[0]);
-	syslog(LOG_DEBUG, "Internal port: \t\t %d\n", READNU16(buf + 4));
-	syslog(LOG_DEBUG, "External IP: \t\t %s\n", inet_ntop(AF_INET6, buf + 8,
+	miniupnpd_syslog(LOG_DEBUG, "PCP PEER: v1 Opcode specific information. \n");
+	miniupnpd_syslog(LOG_DEBUG, "Protocol: \t\t %d\n", (int)buf[0]);
+	miniupnpd_syslog(LOG_DEBUG, "Internal port: \t\t %d\n", READNU16(buf + 4));
+	miniupnpd_syslog(LOG_DEBUG, "External IP: \t\t %s\n", inet_ntop(AF_INET6, buf + 8,
 	       ext_addr,INET6_ADDRSTRLEN));
-	syslog(LOG_DEBUG, "External port port: \t\t %d\n", READNU16(buf + 6));
-	syslog(LOG_DEBUG, "PEER IP: \t\t %s\n", inet_ntop(AF_INET6, buf + 28,
+	miniupnpd_syslog(LOG_DEBUG, "External port port: \t\t %d\n", READNU16(buf + 6));
+	miniupnpd_syslog(LOG_DEBUG, "PEER IP: \t\t %s\n", inet_ntop(AF_INET6, buf + 28,
 	       peer_addr,INET6_ADDRSTRLEN));
-	syslog(LOG_DEBUG, "PEER port port: \t\t %d\n", READNU16(buf + 24));
+	miniupnpd_syslog(LOG_DEBUG, "PEER port port: \t\t %d\n", READNU16(buf + 24));
 }
 
 static void printPEEROpcodeVersion2(const uint8_t *buf)
@@ -333,17 +334,17 @@ static void printPEEROpcodeVersion2(const uint8_t *buf)
 	char ext_addr[INET6_ADDRSTRLEN];
 	char peer_addr[INET6_ADDRSTRLEN];
 
-	syslog(LOG_DEBUG, "PCP PEER: v2 Opcode specific information.");
-	syslog(LOG_DEBUG, "nonce:        \t%08x%08x%08x",
+	miniupnpd_syslog(LOG_DEBUG, "PCP PEER: v2 Opcode specific information.");
+	miniupnpd_syslog(LOG_DEBUG, "nonce:        \t%08x%08x%08x",
 	       READNU32(buf), READNU32(buf+4), READNU32(buf+8));
-	syslog(LOG_DEBUG, "Protocol:     \t%d", buf[12]);
-	syslog(LOG_DEBUG, "Internal port:\t%d", READNU16(buf + 16));
-	syslog(LOG_DEBUG, "External IP:  \t%s", inet_ntop(AF_INET6, buf + 20,
+	miniupnpd_syslog(LOG_DEBUG, "Protocol:     \t%d", buf[12]);
+	miniupnpd_syslog(LOG_DEBUG, "Internal port:\t%d", READNU16(buf + 16));
+	miniupnpd_syslog(LOG_DEBUG, "External IP:  \t%s", inet_ntop(AF_INET6, buf + 20,
 	       ext_addr, INET6_ADDRSTRLEN));
-	syslog(LOG_DEBUG, "External port:\t%d", READNU16(buf + 18));
-	syslog(LOG_DEBUG, "PEER IP:      \t%s", inet_ntop(AF_INET6, buf + 40,
+	miniupnpd_syslog(LOG_DEBUG, "External port:\t%d", READNU16(buf + 18));
+	miniupnpd_syslog(LOG_DEBUG, "PEER IP:      \t%s", inet_ntop(AF_INET6, buf + 40,
 	       peer_addr, INET6_ADDRSTRLEN));
-	syslog(LOG_DEBUG, "PEER port:    \t%d", READNU16(buf + 36));
+	miniupnpd_syslog(LOG_DEBUG, "PEER port:    \t%d", READNU16(buf + 36));
 }
 #endif /* DEBUG */
 
@@ -389,13 +390,13 @@ static void printSADSCPOpcode(const uint8_t *buf)
 	unsigned char sadscp_tol;
 	sadscp_tol = buf[12];	/* tolerance_fields */
 
-	syslog(LOG_DEBUG, "PCP SADSCP: Opcode specific information.\n");
-	syslog(LOG_DEBUG, "Delay tolerance %d \n", (sadscp_tol>>6)&3);
-	syslog(LOG_DEBUG, "Loss tolerance %d \n",  (sadscp_tol>>4)&3);
-	syslog(LOG_DEBUG, "Jitter tolerance %d \n",  (sadscp_tol>>2)&3);
-	syslog(LOG_DEBUG, "RRR %d \n", sadscp_tol&3);
-	syslog(LOG_DEBUG, "AppName Length %d \n", buf[13]);
-	syslog(LOG_DEBUG, "Application name %.*s \n", buf[13], buf + 14);
+	miniupnpd_syslog(LOG_DEBUG, "PCP SADSCP: Opcode specific information.\n");
+	miniupnpd_syslog(LOG_DEBUG, "Delay tolerance %d \n", (sadscp_tol>>6)&3);
+	miniupnpd_syslog(LOG_DEBUG, "Loss tolerance %d \n",  (sadscp_tol>>4)&3);
+	miniupnpd_syslog(LOG_DEBUG, "Jitter tolerance %d \n",  (sadscp_tol>>2)&3);
+	miniupnpd_syslog(LOG_DEBUG, "RRR %d \n", sadscp_tol&3);
+	miniupnpd_syslog(LOG_DEBUG, "AppName Length %d \n", buf[13]);
+	miniupnpd_syslog(LOG_DEBUG, "Application name %.*s \n", buf[13], buf + 14);
 }
 #endif //DEBUG
 
@@ -450,12 +451,12 @@ static int parsePCPOption(uint8_t* pcp_buf, int remain, pcp_info_t *pcp_msg_info
 			return 0;
 		}
 #ifdef DEBUG
-		syslog(LOG_DEBUG, "PCP OPTION: \t Third party\n");
-		syslog(LOG_DEBUG, "Third PARTY IP: \t %s\n", inet_ntop(AF_INET6,
+		miniupnpd_syslog(LOG_DEBUG, "PCP OPTION: \t Third party\n");
+		miniupnpd_syslog(LOG_DEBUG, "Third PARTY IP: \t %s\n", inet_ntop(AF_INET6,
 		       pcp_buf + 4, third_addr, INET6_ADDRSTRLEN));
 #endif
 		if (pcp_msg_info->thirdp_ip ) {
-			syslog(LOG_ERR, "PCP: THIRD PARTY OPTION was already present. \n");
+			miniupnpd_syslog(LOG_ERR, "PCP: THIRD PARTY OPTION was already present. \n");
 			pcp_msg_info->result_code = PCP_ERR_MALFORMED_OPTION;
 			return 0;
 		} else {
@@ -471,14 +472,14 @@ static int parsePCPOption(uint8_t* pcp_buf, int remain, pcp_info_t *pcp_msg_info
 			return 0;
 		}
 #ifdef DEBUG
-		syslog(LOG_DEBUG, "PCP OPTION: \t Prefer failure \n");
+		miniupnpd_syslog(LOG_DEBUG, "PCP OPTION: \t Prefer failure \n");
 #endif
 		if (pcp_msg_info->opcode != PCP_OPCODE_MAP) {
-			syslog(LOG_DEBUG, "PCP: Unsupported OPTION for given OPCODE.\n");
+			miniupnpd_syslog(LOG_DEBUG, "PCP: Unsupported OPTION for given OPCODE.\n");
 			pcp_msg_info->result_code = PCP_ERR_MALFORMED_REQUEST;
 		}
 		if (pcp_msg_info->pfailure_present != 0 ) {
-			syslog(LOG_DEBUG, "PCP: PREFER FAILURE OPTION was already present.\n");
+			miniupnpd_syslog(LOG_DEBUG, "PCP: PREFER FAILURE OPTION was already present.\n");
 			pcp_msg_info->result_code = PCP_ERR_MALFORMED_OPTION;
 		} else {
 			pcp_msg_info->pfailure_present = 1;
@@ -492,10 +493,10 @@ static int parsePCPOption(uint8_t* pcp_buf, int remain, pcp_info_t *pcp_msg_info
 			return 0;
 		}
 #ifdef DEBUG
-		syslog(LOG_DEBUG, "PCP OPTION: \t Filter\n");
+		miniupnpd_syslog(LOG_DEBUG, "PCP OPTION: \t Filter\n");
 #endif
 		if (pcp_msg_info->opcode != PCP_OPCODE_MAP) {
-			syslog(LOG_ERR, "PCP: Unsupported OPTION for given OPCODE.\n");
+			miniupnpd_syslog(LOG_ERR, "PCP: Unsupported OPTION for given OPCODE.\n");
 			pcp_msg_info->result_code = PCP_ERR_MALFORMED_REQUEST;
 			return 0;
 		}
@@ -505,18 +506,18 @@ static int parsePCPOption(uint8_t* pcp_buf, int remain, pcp_info_t *pcp_msg_info
 	case PCP_OPTION_FLOW_PRIORITY:
 
 #ifdef DEBUG
-		syslog(LOG_DEBUG, "PCP OPTION: \t Flow priority\n");
+		miniupnpd_syslog(LOG_DEBUG, "PCP OPTION: \t Flow priority\n");
 #endif
 		if (option_length != PCP_FLOW_PRIORITY_OPTION_SIZE) {
-			syslog(LOG_ERR, "PCP: Error processing DSCP. sizeof %d and remaining %d. flow len %d \n",
+			miniupnpd_syslog(LOG_ERR, "PCP: Error processing DSCP. sizeof %d and remaining %d. flow len %d \n",
 			       PCP_FLOW_PRIORITY_OPTION_SIZE, remain, READNU16(pcp_buf + 2));
 			pcp_msg_info->result_code = PCP_ERR_MALFORMED_OPTION;
 			return 0;
 		}
 
 #ifdef DEBUG
-		syslog(LOG_DEBUG, "DSCP UP: \t %d\n", pcp_buf[4]);
-		syslog(LOG_DEBUG, "DSCP DOWN: \t %d\n", pcp_buf[5]);
+		miniupnpd_syslog(LOG_DEBUG, "DSCP UP: \t %d\n", pcp_buf[4]);
+		miniupnpd_syslog(LOG_DEBUG, "DSCP DOWN: \t %d\n", pcp_buf[5]);
 #endif
 		pcp_msg_info->dscp_up = pcp_buf[4];
 		pcp_msg_info->dscp_down = pcp_buf[5];
@@ -526,7 +527,7 @@ static int parsePCPOption(uint8_t* pcp_buf, int remain, pcp_info_t *pcp_msg_info
 #endif
 	default:
 		if (pcp_buf[0] < 128) {
-			syslog(LOG_ERR, "PCP: Unrecognized mandatory PCP OPTION: %d \n", (int)pcp_buf[0]);
+			miniupnpd_syslog(LOG_ERR, "PCP: Unrecognized mandatory PCP OPTION: %d \n", (int)pcp_buf[0]);
 			/* Mandatory to understand */
 			pcp_msg_info->result_code = PCP_ERR_UNSUPP_OPTION;
 			remain = 0;
@@ -551,7 +552,7 @@ static void parsePCPOptions(void* pcp_buf, int remain, pcp_info_t *pcp_msg_info)
 		pcp_buf += option_length;
 	}
 	if (remain > 0) {
-		syslog(LOG_WARNING, "%s: remain=%d", "parsePCPOptions", remain);
+		miniupnpd_syslog(LOG_WARNING, "%s: remain=%d", "parsePCPOptions", remain);
 	}
 }
 
@@ -612,14 +613,14 @@ static int CheckExternalAddress(pcp_info_t* pcp_msg_info)
 	}
 
 	if (!IN6_ARE_ADDR_EQUAL(pcp_msg_info->ext_ip, &external_addr)) {
-		syslog(LOG_ERR,
+		miniupnpd_syslog(LOG_ERR,
 		       "PCP: External IP in request didn't match interface IP \n");
 #ifdef DEBUG
 		{
 			char s[INET6_ADDRSTRLEN];
-			syslog(LOG_DEBUG, "Interface IP %s \n",
+			miniupnpd_syslog(LOG_DEBUG, "Interface IP %s \n",
 			       inet_ntop(AF_INET6, &external_addr.s6_addr, s, sizeof(s)));
-			syslog(LOG_DEBUG, "IP in the PCP request %s \n",
+			miniupnpd_syslog(LOG_DEBUG, "IP in the PCP request %s \n",
 			       inet_ntop(AF_INET6, pcp_msg_info->ext_ip, s, sizeof(s)));
 		}
 #endif
@@ -725,7 +726,7 @@ static int CreatePCPPeer_NAT(pcp_info_t *pcp_msg_info)
 					pcp_msg_info->peer_port, pcp_msg_info->dscp_up,
 					pcp_msg_info->mapped_str, pcp_msg_info->int_port,
 					proto, pcp_msg_info->desc, timestamp) < 0 ) {
-			syslog(LOG_ERR, "PCP: failed to add flowp upstream mapping %s:%hu->%s:%hu '%s'",
+			miniupnpd_syslog(LOG_ERR, "PCP: failed to add flowp upstream mapping %s:%hu->%s:%hu '%s'",
 			       pcp_msg_info->mapped_str,
 			       pcp_msg_info->int_port,
 			       peerip_s,
@@ -740,7 +741,7 @@ static int CreatePCPPeer_NAT(pcp_info_t *pcp_msg_info)
 					pcp_msg_info->int_port, pcp_msg_info->dscp_down,
 					peerip_s, pcp_msg_info->peer_port, proto, pcp_msg_info->desc, timestamp)
 		    < 0 ) {
-			syslog(LOG_ERR, "PCP: failed to add flowp downstream mapping %s:%hu->%s:%hu '%s'",
+			miniupnpd_syslog(LOG_ERR, "PCP: failed to add flowp downstream mapping %s:%hu->%s:%hu '%s'",
 			       pcp_msg_info->mapped_str,
 			       pcp_msg_info->int_port,
 			       peerip_s,
@@ -774,7 +775,7 @@ static void CreatePCPPeer(pcp_info_t *pcp_msg_info)
 	int r = -1;
 
 	if (!inet_n46top(pcp_msg_info->peer_ip, peerip_s, sizeof(peerip_s))) {
-		syslog(LOG_ERR, "inet_n46top(peer_ip): %m");
+		miniupnpd_syslog(LOG_ERR, "inet_n46top(peer_ip): %m");
 		return;
 	}
 
@@ -799,7 +800,7 @@ static void CreatePCPPeer(pcp_info_t *pcp_msg_info)
 	}
 	/* TODO: add upnp function for PI */
 	pcp_msg_info->result_code = r;
-	syslog(r == PCP_SUCCESS ? LOG_INFO : LOG_ERR,
+	miniupnpd_syslog(r == PCP_SUCCESS ? LOG_INFO : LOG_ERR,
 	       "PCP PEER: %s peer mapping %s %s:%hu(%hu)->%s:%hu '%s'",
 	       r == PCP_SUCCESS ? "added" : "failed to add",
 	       (pcp_msg_info->protocol==IPPROTO_TCP)?"TCP":"UDP",
@@ -870,15 +871,15 @@ static void DeletePCPPeer(pcp_info_t *pcp_msg_info)
 				r = upnp_delete_outboundpinhole(uid);
 #endif /* 0 */
 			if(r<0) {
-				syslog(LOG_ERR, "PCP PEER: failed to remove peer mapping");
+				miniupnpd_syslog(LOG_ERR, "PCP PEER: failed to remove peer mapping");
 			} else {
-				syslog(LOG_INFO, "PCP PEER: %s port %hu peer mapping removed",
+				miniupnpd_syslog(LOG_INFO, "PCP PEER: %s port %hu peer mapping removed",
 				       proto2==IPPROTO_TCP?"TCP":"UDP", eport2);
 			}
 			return;
 		}
 	if (r==-1) {
-		syslog(LOG_ERR, "PCP PEER: Failed to find PCP mapping internal port %hu, protocol %s",
+		miniupnpd_syslog(LOG_ERR, "PCP PEER: Failed to find PCP mapping internal port %hu, protocol %s",
 		       iport, (pcp_msg_info->protocol == IPPROTO_TCP)?"TCP":"UDP");
 		pcp_msg_info->result_code = PCP_ERR_NO_RESOURCES;
 	}
@@ -930,7 +931,7 @@ static int CreatePCPMap_NAT(pcp_info_t *pcp_msg_info)
 #ifdef CHECK_PORTINUSE
 		if (port_in_use(ext_if_name, pcp_msg_info->ext_port, pcp_msg_info->protocol,
 				pcp_msg_info->mapped_str, pcp_msg_info->int_port) > 0) {
-			syslog(LOG_INFO, "port %hu protocol %s already in use",
+			miniupnpd_syslog(LOG_INFO, "port %hu protocol %s already in use",
 			       pcp_msg_info->ext_port,
 			       (pcp_msg_info->protocol==IPPROTO_TCP)?"tcp":"udp");
 			pcp_msg_info->ext_port++;
@@ -955,7 +956,7 @@ static int CreatePCPMap_NAT(pcp_info_t *pcp_msg_info)
 					return PCP_ERR_CANNOT_PROVIDE_EXTERNAL;
 				}
 			} else {
-				syslog(LOG_INFO, "port %hu %s already redirected to %s:%hu, replacing",
+				miniupnpd_syslog(LOG_INFO, "port %hu %s already redirected to %s:%hu, replacing",
 				       pcp_msg_info->ext_port, (pcp_msg_info->protocol==IPPROTO_TCP)?"tcp":"udp",
 				       iaddr_old, iport_old);
 				/* remove and then add again */
@@ -1000,7 +1001,7 @@ static int CreatePCPMap_FW(pcp_info_t *pcp_msg_info)
 					NULL /* lifetime */);
 	if(uid >= 0) {
 		/* pinhole already exists, updating */
-		syslog(LOG_INFO, "updating pinhole to %s:%hu %s",
+		miniupnpd_syslog(LOG_INFO, "updating pinhole to %s:%hu %s",
 		       pcp_msg_info->mapped_str, pcp_msg_info->int_port,
 		       (pcp_msg_info->protocol == IPPROTO_TCP)?"TCP":"UDP");
 		r = upnp_update_inboundpinhole((unsigned short)uid, pcp_msg_info->lifetime);
@@ -1062,7 +1063,7 @@ static void CreatePCPMap(pcp_info_t *pcp_msg_info)
 	else
 		r = CreatePCPMap_NAT(pcp_msg_info);
 	pcp_msg_info->result_code = r;
-	syslog(r == PCP_SUCCESS ? LOG_INFO : LOG_ERR,
+	miniupnpd_syslog(r == PCP_SUCCESS ? LOG_INFO : LOG_ERR,
 	      "PCP MAP: %s mapping %s %hu->%s:%hu '%s'",
 	       r == PCP_SUCCESS ? "added" : "failed to add",
 	       (pcp_msg_info->protocol==IPPROTO_TCP)?"TCP":"UDP",
@@ -1115,7 +1116,7 @@ static void DeletePCPMap(pcp_info_t *pcp_msg_info)
 			if(0 != strcmp(desc, pcp_msg_info->desc)) {
 				/* nonce does not match */
 				pcp_msg_info->result_code = PCP_ERR_NOT_AUTHORIZED;
-				syslog(LOG_ERR, "Unauthorized to remove PCP mapping internal port %hu, protocol %s",
+				miniupnpd_syslog(LOG_ERR, "Unauthorized to remove PCP mapping internal port %hu, protocol %s",
 				       iport, (pcp_msg_info->protocol == IPPROTO_TCP)?"TCP":"UDP");
 				return;
 			} else if (!pcp_msg_info->is_fw) {
@@ -1128,10 +1129,10 @@ static void DeletePCPMap(pcp_info_t *pcp_msg_info)
 			break;
 		}
 	if (r >= 0) {
-		syslog(LOG_INFO, "PCP: %s port %hu mapping removed",
+		miniupnpd_syslog(LOG_INFO, "PCP: %s port %hu mapping removed",
 		       proto2==IPPROTO_TCP?"TCP":"UDP", eport2);
 	} else {
-		syslog(LOG_ERR, "Failed to remove PCP mapping internal port %hu, protocol %s",
+		miniupnpd_syslog(LOG_ERR, "Failed to remove PCP mapping internal port %hu, protocol %s",
 		       iport, (pcp_msg_info->protocol == IPPROTO_TCP)?"TCP":"UDP");
 		pcp_msg_info->result_code = PCP_ERR_NO_RESOURCES;
 	}
@@ -1171,13 +1172,13 @@ static int ValidatePCPMsg(pcp_info_t *pcp_msg_info)
 	/* Produce mapped_str for future use. */
 	if (!inet_n46top(pcp_msg_info->mapped_ip, pcp_msg_info->mapped_str,
 		         sizeof(pcp_msg_info->mapped_str))) {
-		syslog(LOG_ERR, "inet_ntop(pcpserver): %m");
+		miniupnpd_syslog(LOG_ERR, "inet_ntop(pcpserver): %m");
 		return 0;
 	}
 
 	/* protocol zero means 'all protocols' : internal port MUST be zero */
 	if (pcp_msg_info->protocol == 0 && pcp_msg_info->int_port != 0) {
-		syslog(LOG_ERR, "PCP %s: Protocol was ZERO, but internal port "
+		miniupnpd_syslog(LOG_ERR, "PCP %s: Protocol was ZERO, but internal port "
 		       "has non-ZERO value.", getPCPOpCodeStr(pcp_msg_info->opcode));
 		pcp_msg_info->result_code = PCP_ERR_MALFORMED_REQUEST;
 		return 0;
@@ -1241,7 +1242,7 @@ static int processPCPRequest(void * req, int req_size, pcp_info_t *pcp_msg_info)
 	}
 
 	if ( (req_size > PCP_MAX_LEN) || ( (req_size & 3) != 0)) {
-		syslog(LOG_ERR, "PCP: Size of PCP packet(%d) is larger than %d bytes or "
+		miniupnpd_syslog(LOG_ERR, "PCP: Size of PCP packet(%d) is larger than %d bytes or "
 		       "the size is not multiple of 4.\n", req_size, PCP_MAX_LEN);
 		pcp_msg_info->result_code = PCP_ERR_MALFORMED_REQUEST;
 		return 1; /* send response */
@@ -1281,7 +1282,7 @@ static int processPCPRequest(void * req, int req_size, pcp_info_t *pcp_msg_info)
 					CreatePCPMap(pcp_msg_info);
 				}
 			} else {
-				syslog(LOG_ERR, "PCP: Invalid PCP v1 MAP message.");
+				miniupnpd_syslog(LOG_ERR, "PCP: Invalid PCP v1 MAP message.");
 				return pcp_msg_info->result_code;
 			}
 			break;
@@ -1311,7 +1312,7 @@ static int processPCPRequest(void * req, int req_size, pcp_info_t *pcp_msg_info)
 					CreatePCPPeer(pcp_msg_info);
 				}
 			} else {
-				syslog(LOG_ERR, "PCP: Invalid PCP v1 PEER message.");
+				miniupnpd_syslog(LOG_ERR, "PCP: Invalid PCP v1 PEER message.");
 				 return pcp_msg_info->result_code;
 			}
 
@@ -1354,7 +1355,7 @@ static int processPCPRequest(void * req, int req_size, pcp_info_t *pcp_msg_info)
 					CreatePCPMap(pcp_msg_info);
 				}
 			} else {
-				syslog(LOG_ERR, "PCP: Invalid PCP v2 MAP message.");
+				miniupnpd_syslog(LOG_ERR, "PCP: Invalid PCP v2 MAP message.");
 				return pcp_msg_info->result_code;
 			}
 
@@ -1389,7 +1390,7 @@ static int processPCPRequest(void * req, int req_size, pcp_info_t *pcp_msg_info)
 					CreatePCPPeer(pcp_msg_info);
 				}
 			} else {
-				syslog(LOG_ERR, "PCP: Invalid PCP v2 PEER message.");
+				miniupnpd_syslog(LOG_ERR, "PCP: Invalid PCP v2 PEER message.");
 			}
 
 		break;
@@ -1542,13 +1543,13 @@ int ProcessIncomingPCPPacket(int s, unsigned char *buff, int len,
 			(const struct sockaddr_in6 *)senderaddr;
 		pcp_msg_info.sender_ip = senderaddr_v6->sin6_addr;
 	} else {
-		syslog(LOG_WARNING, "unknown PCP packet sender address family %d",
+		miniupnpd_syslog(LOG_WARNING, "unknown PCP packet sender address family %d",
 		       senderaddr->sa_family);
 		return 0;
 	}
 
 	if(sockaddr_to_string(senderaddr, addr_str, sizeof(addr_str)))
-		syslog(LOG_DEBUG, "PCP request received from %s %dbytes",
+		miniupnpd_syslog(LOG_DEBUG, "PCP request received from %s %dbytes",
 		       addr_str, len);
 
 	if(buff[1] & 128) {
@@ -1561,7 +1562,7 @@ int ProcessIncomingPCPPacket(int s, unsigned char *buff, int len,
 	if (!GETFLAG(PCP_ALLOWTHIRDPARTYMASK)) {
 		lan_addr = get_lan_for_peer(senderaddr);
 		if(lan_addr == NULL) {
-			syslog(LOG_DEBUG, "PCP packet sender %s not from a LAN, ignoring",
+			miniupnpd_syslog(LOG_DEBUG, "PCP packet sender %s not from a LAN, ignoring",
 			       addr_str);
 			return 0;
 		}
@@ -1581,7 +1582,7 @@ int ProcessIncomingPCPPacket(int s, unsigned char *buff, int len,
 		                  sizeof(struct sockaddr_in6),
 		           receiveraddr);
 		if( len < 0 ) {
-			syslog(LOG_DEBUG, "sendto(pcpserver): %m");
+			miniupnpd_syslog(LOG_DEBUG, "sendto(pcpserver): %m");
 		}
 	}
 
@@ -1596,30 +1597,30 @@ int OpenAndConfPCPv6Socket(void)
 	struct sockaddr_in6 addr;
 	s = socket(PF_INET6, SOCK_DGRAM, 0/*IPPROTO_UDP*/);
 	if(s < 0) {
-		syslog(LOG_ERR, "%s: socket(): %m", "OpenAndConfPCPv6Socket");
+		miniupnpd_syslog(LOG_ERR, "%s: socket(): %m", "OpenAndConfPCPv6Socket");
 		return -1;
 	}
 	if(setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &i, sizeof(i)) < 0) {
-		syslog(LOG_WARNING, "%s: setsockopt(SO_REUSEADDR): %m",
+		miniupnpd_syslog(LOG_WARNING, "%s: setsockopt(SO_REUSEADDR): %m",
 		       "OpenAndConfPCPv6Socket");
 	}
 #ifdef IPV6_V6ONLY
 	/* force IPV6 only for IPV6 socket.
 	 * see http://www.ietf.org/rfc/rfc3493.txt section 5.3 */
 	if(setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, &i, sizeof(i)) < 0) {
-		syslog(LOG_WARNING, "%s: setsockopt(IPV6_V6ONLY): %m",
+		miniupnpd_syslog(LOG_WARNING, "%s: setsockopt(IPV6_V6ONLY): %m",
 		       "OpenAndConfPCPv6Socket");
 	}
 #endif
 #ifdef IPV6_RECVPKTINFO
 	/* see RFC3542 */
 	if(setsockopt(s, IPPROTO_IPV6, IPV6_RECVPKTINFO, &i, sizeof(i)) < 0) {
-		syslog(LOG_WARNING, "%s: setsockopt(IPV6_RECVPKTINFO): %m",
+		miniupnpd_syslog(LOG_WARNING, "%s: setsockopt(IPV6_RECVPKTINFO): %m",
 		       "OpenAndConfPCPv6Socket");
 	}
 #endif
 	if(!set_non_blocking(s)) {
-		syslog(LOG_WARNING, "%s: set_non_blocking(): %m",
+		miniupnpd_syslog(LOG_WARNING, "%s: set_non_blocking(): %m",
 		       "OpenAndConfPCPv6Socket");
 	}
 	memset(&addr, 0, sizeof(addr));
@@ -1627,7 +1628,7 @@ int OpenAndConfPCPv6Socket(void)
 	addr.sin6_port = htons(NATPMP_PORT);
 	addr.sin6_addr = ipv6_bind_addr;
 	if(bind(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-		syslog(LOG_ERR, "%s: bind(): %m", "OpenAndConfPCPv6Socket");
+		miniupnpd_syslog(LOG_ERR, "%s: bind(): %m", "OpenAndConfPCPv6Socket");
 		close(s);
 		return -1;
 	}

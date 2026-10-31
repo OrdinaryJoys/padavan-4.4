@@ -304,7 +304,7 @@ void death_handler (int signal)
     free(dial_no_tmp);
     close(server_socket);
     close(control_fd);
-    closelog();
+    close_log();
 
     exit (1);
 }
@@ -1447,7 +1447,7 @@ void daemonize() {
     else if (pid)
     {
         close(server_socket);
-        closelog();
+        close_log();
         exit(0);
     }
 

@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <syslog.h>
+#include "boundedlog.h"
 #include <string.h>
 #include <signal.h>
 
@@ -72,14 +73,14 @@ writepidfile(const char * fname, int pid)
 
 	if( (pidfile = open(fname, O_WRONLY|O_CREAT, 0644)) < 0)
 	{
-		syslog(LOG_ERR, "Unable to open pidfile for writing %s: %m", fname);
+		miniupnpd_syslog(LOG_ERR, "Unable to open pidfile for writing %s: %m", fname);
 		return -1;
 	}
 
 	pidstringlen = snprintf(pidstring, sizeof(pidstring), "%d\n", pid);
 	if(pidstringlen <= 0)
 	{
-		syslog(LOG_ERR,
+		miniupnpd_syslog(LOG_ERR,
 			"Unable to write to pidfile %s: snprintf(): FAILED", fname);
 		close(pidfile);
 		return -1;
@@ -87,7 +88,7 @@ writepidfile(const char * fname, int pid)
 	else
 	{
 		if(write(pidfile, pidstring, pidstringlen) < 0)
-			syslog(LOG_ERR, "Unable to write to pidfile %s: %m", fname);
+			miniupnpd_syslog(LOG_ERR, "Unable to write to pidfile %s: %m", fname);
 	}
 
 	close(pidfile);

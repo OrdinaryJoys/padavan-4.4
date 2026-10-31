@@ -257,7 +257,7 @@ int acpid_main(int argc UNUSED_PARAM, char **argv)
 		xmove_fd(xopen(opt_logfile, O_WRONLY | O_CREAT | O_APPEND), STDOUT_FILENO);
 		xdup2(STDOUT_FILENO, STDERR_FILENO);
 		/* Also, acpid's messages (but not children) will go to syslog too */
-		openlog(applet_name, LOG_PID, LOG_DAEMON);
+		bb_openlog(applet_name, LOG_PID, LOG_DAEMON);
 		logmode = LOGMODE_SYSLOG | LOGMODE_STDIO;
 	}
 	/* else: -d "Debug", log is not redirected */

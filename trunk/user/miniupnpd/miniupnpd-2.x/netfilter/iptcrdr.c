@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
+#include "../boundedlog.h"
 #include <sys/errno.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -106,7 +107,7 @@ int init_redirect(void)
 
 	h = iptc_init("nat");
 	if(!h) {
-		syslog(LOG_ERR, "iptc_init() failed : %s",
+		miniupnpd_syslog(LOG_ERR, "iptc_init() failed : %s",
 		       iptc_strerror(errno));
 		return -1;
 	} else {
@@ -239,7 +240,7 @@ add_redirect_rule2(const char * ifname,
 			/* TODO : check if this should be done only with UDP */
 			r = addmasqueraderule(proto, eport, iaddr, iport, rhost/*, ifname*/);
 			if(r < 0) {
-				syslog(LOG_NOTICE, "add_redirect_rule2(): addmasqueraderule returned %d", r);
+				miniupnpd_syslog(LOG_NOTICE, "add_redirect_rule2(): addmasqueraderule returned %d", r);
 			}
 		}
 #endif /* ENABLE_PORT_TRIGGERING */
@@ -333,13 +334,13 @@ get_nat_redirect_rule(const char * nat_chain_name, const char * ifname, unsigned
 	h = iptc_init("nat");
 	if(!h)
 	{
-		syslog(LOG_ERR, "%s() : iptc_init() failed : %s",
+		miniupnpd_syslog(LOG_ERR, "%s() : iptc_init() failed : %s",
 		       "get_nat_redirect_rule", iptc_strerror(errno));
 		return -1;
 	}
 	if(!iptc_is_chain(nat_chain_name, h))
 	{
-		syslog(LOG_ERR, "chain %s not found", nat_chain_name);
+		miniupnpd_syslog(LOG_ERR, "chain %s not found", nat_chain_name);
 	}
 	else
 	{
@@ -421,13 +422,13 @@ get_redirect_rule_by_index(int index,
 	h = iptc_init("nat");
 	if(!h)
 	{
-		syslog(LOG_ERR, "%s() : iptc_init() failed : %s",
+		miniupnpd_syslog(LOG_ERR, "%s() : iptc_init() failed : %s",
 		       "get_redirect_rule_by_index", iptc_strerror(errno));
 		return -1;
 	}
 	if(!iptc_is_chain(miniupnpd_nat_chain, h))
 	{
-		syslog(LOG_ERR, "chain %s not found", miniupnpd_nat_chain);
+		miniupnpd_syslog(LOG_ERR, "chain %s not found", miniupnpd_nat_chain);
 	}
 	else
 	{
@@ -512,13 +513,13 @@ get_peer_rule_by_index(int index,
 	h = iptc_init("nat");
 	if(!h)
 	{
-		syslog(LOG_ERR, "%s() : iptc_init() failed : %s",
+		miniupnpd_syslog(LOG_ERR, "%s() : iptc_init() failed : %s",
 		       "get_peer_rule_by_index", iptc_strerror(errno));
 		return -1;
 	}
 	if(!iptc_is_chain(miniupnpd_nat_postrouting_chain, h))
 	{
-		syslog(LOG_ERR, "chain %s not found", miniupnpd_nat_postrouting_chain);
+		miniupnpd_syslog(LOG_ERR, "chain %s not found", miniupnpd_nat_postrouting_chain);
 	}
 	else
 	{
@@ -606,7 +607,7 @@ delete_rule_and_commit(unsigned int index, IPTC_HANDLE h,
 	if(!iptc_delete_num_entry(miniupnpd_chain, index, &h))
 #endif
 	{
-		syslog(LOG_ERR, "%s() : iptc_delete_num_entry(): %s\n",
+		miniupnpd_syslog(LOG_ERR, "%s() : iptc_delete_num_entry(): %s\n",
 	    	   logcaller, iptc_strerror(errno));
 		r = -1;
 	}
@@ -616,7 +617,7 @@ delete_rule_and_commit(unsigned int index, IPTC_HANDLE h,
 	else if(!iptc_commit(&h))
 #endif
 	{
-		syslog(LOG_ERR, "%s() : iptc_commit(): %s\n",
+		miniupnpd_syslog(LOG_ERR, "%s() : iptc_commit(): %s\n",
 	    	   logcaller, iptc_strerror(errno));
 		r = -1;
 	}
@@ -648,14 +649,14 @@ delete_redirect_and_filter_rules(unsigned short eport, int proto)
 	h = iptc_init("nat");
 	if(!h)
 	{
-		syslog(LOG_ERR, "%s() : iptc_init() failed : %s",
+		miniupnpd_syslog(LOG_ERR, "%s() : iptc_init() failed : %s",
 		       "delete_redirect_and_filter_rules", iptc_strerror(errno));
 		return -1;
 	}
 	/* First step : find the right nat rule */
 	if(!iptc_is_chain(miniupnpd_nat_chain, h))
 	{
-		syslog(LOG_ERR, "chain %s not found", miniupnpd_nat_chain);
+		miniupnpd_syslog(LOG_ERR, "chain %s not found", miniupnpd_nat_chain);
 	}
 	else
 	{
@@ -706,7 +707,7 @@ delete_redirect_and_filter_rules(unsigned short eport, int proto)
 #endif
 	if(r == 0)
 	{
-		syslog(LOG_INFO, "Trying to delete nat rule at index %u", index);
+		miniupnpd_syslog(LOG_INFO, "Trying to delete nat rule at index %u", index);
 		/* Now delete both rules */
 		/* first delete the nat rule */
 		h = iptc_init("nat");
@@ -750,7 +751,7 @@ delete_redirect_and_filter_rules(unsigned short eport, int proto)
 					if(iaddr != e->ip.dst.s_addr)
 						continue;
 					index = i;
-					syslog(LOG_INFO, "Trying to delete filter rule at index %u", index);
+					miniupnpd_syslog(LOG_INFO, "Trying to delete filter rule at index %u", index);
 					r = delete_rule_and_commit(index, h, miniupnpd_forward_chain, "delete_filter_rule");
 					h = NULL;
 					break;
@@ -784,7 +785,7 @@ delete_redirect_and_filter_rules(unsigned short eport, int proto)
 			{
 				target = (void *)e + e->target_offset;
 				mr = (const struct ip_nat_multi_range *)&target->data[0];
-				syslog(LOG_DEBUG, "postrouting rule #%u: %s %s %hu",
+				miniupnpd_syslog(LOG_DEBUG, "postrouting rule #%u: %s %s %hu",
 				       i, target->u.user.name, inet_ntoa(e->ip.src), ntohs(mr->range[0].min.all));
 				/* target->u.user.name SNAT / MASQUERADE */
 				if (eport != ntohs(mr->range[0].min.all)) {
@@ -806,7 +807,7 @@ delete_redirect_and_filter_rules(unsigned short eport, int proto)
 				}
 
 				index = i;
-				syslog(LOG_INFO, "Trying to delete peer rule at index %u", index);
+				miniupnpd_syslog(LOG_INFO, "Trying to delete peer rule at index %u", index);
 				r2 = delete_rule_and_commit(index, h, miniupnpd_nat_postrouting_chain, "delete_peer_rule");
 				h = NULL;
 				break;
@@ -858,7 +859,7 @@ delete_redirect_and_filter_rules(unsigned short eport, int proto)
 				if(iaddr != e->ip.dst.s_addr)
 					continue;
 				index = i;
-				syslog(LOG_INFO, "Trying to delete dscp rule at index %u", index);
+				miniupnpd_syslog(LOG_INFO, "Trying to delete dscp rule at index %u", index);
 				r2 = delete_rule_and_commit(index, h, "FORWARD", "delete_dscp_rule");
 				h = NULL;
 				break;
@@ -908,7 +909,7 @@ delete_redirect_and_filter_rules(unsigned short eport, int proto)
 					if(iaddr != e->ip.src.s_addr)
 						continue;
 					index = i;
-				syslog(LOG_INFO, "Trying to delete dscp rule at index %u", index);
+				miniupnpd_syslog(LOG_INFO, "Trying to delete dscp rule at index %u", index);
 				r2 = delete_rule_and_commit(index, h, "FORWARD", "delete_dscp_rule");
 				h = NULL;
 				break;
@@ -1090,13 +1091,13 @@ iptc_init_verify_and_append(const char * table,
 	h = iptc_init(table);
 	if(!h)
 	{
-		syslog(LOG_ERR, "%s() : iptc_init() error : %s\n",
+		miniupnpd_syslog(LOG_ERR, "%s() : iptc_init() error : %s\n",
 		       logcaller, iptc_strerror(errno));
 		return -1;
 	}
 	if(!iptc_is_chain(miniupnpd_chain, h))
 	{
-		syslog(LOG_ERR, "%s() : chain %s not found",
+		miniupnpd_syslog(LOG_ERR, "%s() : chain %s not found",
 		       logcaller, miniupnpd_chain);
 		if(h)
 #ifdef IPTABLES_143
@@ -1113,7 +1114,7 @@ iptc_init_verify_and_append(const char * table,
 	if(!iptc_append_entry(miniupnpd_chain, e, &h))
 #endif
 	{
-		syslog(LOG_ERR, "%s() : iptc_append_entry() error : %s\n",
+		miniupnpd_syslog(LOG_ERR, "%s() : iptc_append_entry() error : %s\n",
 		       logcaller, iptc_strerror(errno));
 		if(h)
 #ifdef IPTABLES_143
@@ -1129,7 +1130,7 @@ iptc_init_verify_and_append(const char * table,
 	if(!iptc_commit(&h))
 #endif
 	{
-		syslog(LOG_ERR, "%s() : iptc_commit() error : %s\n",
+		miniupnpd_syslog(LOG_ERR, "%s() : iptc_commit() error : %s\n",
 		       logcaller, iptc_strerror(errno));
 		if(h)
 #ifdef IPTABLES_143
@@ -1164,7 +1165,7 @@ addnatrule(int proto, unsigned short eport,
 
 	e = calloc(1, sizeof(struct ipt_entry));
 	if(!e) {
-		syslog(LOG_ERR, "%s: calloc(%d) error", "addnatrule",
+		miniupnpd_syslog(LOG_ERR, "%s: calloc(%d) error", "addnatrule",
 		       (int)sizeof(struct ipt_entry));
 		return -1;
 	}
@@ -1181,7 +1182,7 @@ addnatrule(int proto, unsigned short eport,
 	               + match->u.match_size
 				   + target->u.target_size);
 	if(!tmp) {
-		syslog(LOG_ERR, "%s: realloc(%d) error", "addnatrule",
+		miniupnpd_syslog(LOG_ERR, "%s: realloc(%d) error", "addnatrule",
 		       (int)(sizeof(struct ipt_entry) + match->u.match_size + target->u.target_size));
 		free(e);
 		free(match);
@@ -1234,7 +1235,7 @@ addmasqueraderule(int proto,
 
 	e = calloc(1, sizeof(struct ipt_entry));
 	if(!e) {
-		syslog(LOG_ERR, "%s: calloc(%d) error", "addmasqueraderule",
+		miniupnpd_syslog(LOG_ERR, "%s: calloc(%d) error", "addmasqueraderule",
 		       (int)sizeof(struct ipt_entry));
 		return -1;
 	}
@@ -1251,7 +1252,7 @@ addmasqueraderule(int proto,
 	               + match->u.match_size
 				   + target->u.target_size);
 	if(!tmp) {
-		syslog(LOG_ERR, "%s: realloc(%d) error", "addmasqueraderule",
+		miniupnpd_syslog(LOG_ERR, "%s: realloc(%d) error", "addmasqueraderule",
 		       (int)(sizeof(struct ipt_entry) + match->u.match_size + target->u.target_size));
 		free(e);
 		free(match);
@@ -1313,7 +1314,7 @@ addpeernatrule(int proto,
 
 	e = calloc(1, sizeof(struct ipt_entry));
 	if(!e) {
-		syslog(LOG_ERR, "%s: calloc(%d) error", "addpeernatrule",
+		miniupnpd_syslog(LOG_ERR, "%s: calloc(%d) error", "addpeernatrule",
 		       (int)sizeof(struct ipt_entry));
 		return -1;
 	}
@@ -1331,7 +1332,7 @@ addpeernatrule(int proto,
 	               + match->u.match_size
 				   + target->u.target_size);
 	if(!tmp) {
-		syslog(LOG_ERR, "%s: realloc(%d) error", "addpeernatrule",
+		miniupnpd_syslog(LOG_ERR, "%s: realloc(%d) error", "addpeernatrule",
 		       (int)(sizeof(struct ipt_entry) + match->u.match_size + target->u.target_size));
 		free(e);
 		free(match);
@@ -1384,7 +1385,7 @@ addpeerdscprule(int proto, unsigned char dscp,
 
 	e = calloc(1, sizeof(struct ipt_entry));
 	if(!e) {
-		syslog(LOG_ERR, "%s: calloc(%d) error", "addpeerdscprule",
+		miniupnpd_syslog(LOG_ERR, "%s: calloc(%d) error", "addpeerdscprule",
 		       (int)sizeof(struct ipt_entry));
 		return -1;
 	}
@@ -1404,7 +1405,7 @@ addpeerdscprule(int proto, unsigned char dscp,
 	               + match->u.match_size
 				   + target->u.target_size);
 	if(!tmp) {
-		syslog(LOG_ERR, "%s: realloc(%d) error", "addpeerdscprule",
+		miniupnpd_syslog(LOG_ERR, "%s: realloc(%d) error", "addpeerdscprule",
 		       (int)(sizeof(struct ipt_entry) + match->u.match_size + target->u.target_size));
 		free(e);
 		free(match);
@@ -1449,7 +1450,7 @@ addpeerdscprule2(int proto, unsigned char dscp,
 
 	e = calloc(1, sizeof(struct ipt_entry));
 	if(!e) {
-		syslog(LOG_ERR, "%s: calloc(%d) error", "addpeerdscprule",
+		miniupnpd_syslog(LOG_ERR, "%s: calloc(%d) error", "addpeerdscprule",
 		       (int)sizeof(struct ipt_entry));
 		return -1;
 	}
@@ -1469,7 +1470,7 @@ addpeerdscprule2(int proto, unsigned char dscp,
 	               + match->u.match_size
 				   + target->u.target_size);
 	if(!tmp) {
-		syslog(LOG_ERR, "%s: realloc(%d) error", "addpeerdscprule",
+		miniupnpd_syslog(LOG_ERR, "%s: realloc(%d) error", "addpeerdscprule",
 		       (int)(sizeof(struct ipt_entry) + match->u.match_size + target->u.target_size));
 		free(e);
 		free(match);
@@ -1531,7 +1532,7 @@ add_filter_rule(int proto, const char * rhost,
 
 	e = calloc(1, sizeof(struct ipt_entry));
 	if(!e) {
-		syslog(LOG_ERR, "%s: calloc(%d) error", "add_filter_rule",
+		miniupnpd_syslog(LOG_ERR, "%s: calloc(%d) error", "add_filter_rule",
 		       (int)sizeof(struct ipt_entry));
 		return -1;
 	}
@@ -1550,7 +1551,7 @@ add_filter_rule(int proto, const char * rhost,
 	               + match->u.match_size
 				   + target->u.target_size);
 	if(!tmp) {
-		syslog(LOG_ERR, "%s: realloc(%d) error", "add_filter_rule",
+		miniupnpd_syslog(LOG_ERR, "%s: realloc(%d) error", "add_filter_rule",
 		       (int)(sizeof(struct ipt_entry) + match->u.match_size + target->u.target_size));
 		free(e);
 		free(match);
@@ -1597,21 +1598,21 @@ get_portmappings_in_range(unsigned short startport, unsigned short endport,
 	array = calloc(capacity, sizeof(unsigned short));
 	if(!array)
 	{
-		syslog(LOG_ERR, "%s() : calloc error", "get_portmappings_in_range");
+		miniupnpd_syslog(LOG_ERR, "%s() : calloc error", "get_portmappings_in_range");
 		return NULL;
 	}
 
 	h = iptc_init("nat");
 	if(!h)
 	{
-		syslog(LOG_ERR, "%s() : iptc_init() failed : %s",
+		miniupnpd_syslog(LOG_ERR, "%s() : iptc_init() failed : %s",
 		       "get_portmappings_in_range", iptc_strerror(errno));
 		free(array);
 		return NULL;
 	}
 	if(!iptc_is_chain(miniupnpd_nat_chain, h))
 	{
-		syslog(LOG_ERR, "chain %s not found", miniupnpd_nat_chain);
+		miniupnpd_syslog(LOG_ERR, "chain %s not found", miniupnpd_nat_chain);
 		free(array);
 		array = NULL;
 	}
@@ -1651,7 +1652,7 @@ get_portmappings_in_range(unsigned short startport, unsigned short endport,
 						tmp = realloc(array, sizeof(unsigned short)*capacity);
 						if(!tmp)
 						{
-							syslog(LOG_ERR, "get_portmappings_in_range() : realloc(%u) error",
+							miniupnpd_syslog(LOG_ERR, "get_portmappings_in_range() : realloc(%u) error",
 							       (unsigned)sizeof(unsigned short)*capacity);
 							*number = 0;
 							free(array);
@@ -1696,7 +1697,7 @@ update_rule_and_commit(const char * table, const char * chain,
 	h = iptc_init(table);
 	if(!h)
 	{
-		syslog(LOG_ERR, "%s() : iptc_init() failed : %s",
+		miniupnpd_syslog(LOG_ERR, "%s() : iptc_init() failed : %s",
 		       "update_rule_and_commit", iptc_strerror(errno));
 		return -1;
 	}
@@ -1706,7 +1707,7 @@ update_rule_and_commit(const char * table, const char * chain,
 	if(!iptc_replace_entry(chain, e, index, &h))
 #endif
 	{
-		syslog(LOG_ERR, "%s(): iptc_replace_entry: %s",
+		miniupnpd_syslog(LOG_ERR, "%s(): iptc_replace_entry: %s",
 		       "update_rule_and_commit", iptc_strerror(errno));
 		r = -1;
 	}
@@ -1716,7 +1717,7 @@ update_rule_and_commit(const char * table, const char * chain,
 	else if(!iptc_commit(&h))
 #endif
 	{
-		syslog(LOG_ERR, "%s(): iptc_commit: %s",
+		miniupnpd_syslog(LOG_ERR, "%s(): iptc_commit: %s",
 		       "update_rule_and_commit", iptc_strerror(errno));
 		r = -1;
 	}
@@ -1750,14 +1751,14 @@ update_portmapping(const char * ifname, unsigned short eport, int proto,
 	h = iptc_init("nat");
 	if(!h)
 	{
-		syslog(LOG_ERR, "%s() : iptc_init() failed : %s",
+		miniupnpd_syslog(LOG_ERR, "%s() : iptc_init() failed : %s",
 		       "update_portmapping", iptc_strerror(errno));
 		return -1;
 	}
 	/* First step : find the right nat rule */
 	if(!iptc_is_chain(miniupnpd_nat_chain, h))
 	{
-		syslog(LOG_ERR, "chain %s not found", miniupnpd_nat_chain);
+		miniupnpd_syslog(LOG_ERR, "chain %s not found", miniupnpd_nat_chain);
 		r = -1;
 	}
 	else
@@ -1799,7 +1800,7 @@ update_portmapping(const char * ifname, unsigned short eport, int proto,
 				entry_len = sizeof(struct ipt_entry) + match->u.match_size + target->u.target_size;
 				new_e = malloc(entry_len);
 				if(new_e == NULL) {
-					syslog(LOG_ERR, "%s: malloc(%u) error",
+					miniupnpd_syslog(LOG_ERR, "%s: malloc(%u) error",
 					       "update_portmapping", (unsigned)entry_len);
 					r = -1;
 				}
@@ -1818,7 +1819,7 @@ update_portmapping(const char * ifname, unsigned short eport, int proto,
 #endif
 	if(!found || r < 0)
 		return -1;
-	syslog(LOG_INFO, "Trying to update nat rule at index %u", index);
+	miniupnpd_syslog(LOG_INFO, "Trying to update nat rule at index %u", index);
 	target = (void *)new_e + new_e->target_offset;
 	mr = (struct ip_nat_multi_range *)&target->data[0];
 	mr->range[0].min.all = mr->range[0].max.all = htons(iport);
@@ -1832,14 +1833,14 @@ update_portmapping(const char * ifname, unsigned short eport, int proto,
 	h = iptc_init("filter");
 	if(!h)
 	{
-		syslog(LOG_ERR, "%s() : iptc_init() failed : %s",
+		miniupnpd_syslog(LOG_ERR, "%s() : iptc_init() failed : %s",
 		       "update_portmapping", iptc_strerror(errno));
 		return -1;
 	}
 	i = 0; found = 0;
 	if(!iptc_is_chain(miniupnpd_forward_chain, h))
 	{
-		syslog(LOG_ERR, "chain %s not found", miniupnpd_forward_chain);
+		miniupnpd_syslog(LOG_ERR, "chain %s not found", miniupnpd_forward_chain);
 	}
 	else
 	{
@@ -1879,7 +1880,7 @@ update_portmapping(const char * ifname, unsigned short eport, int proto,
 			entry_len = sizeof(struct ipt_entry) + match->u.match_size + target->u.target_size;
 			new_e = malloc(entry_len);
 			if(new_e == NULL) {
-				syslog(LOG_ERR, "%s: malloc(%u) error",
+				miniupnpd_syslog(LOG_ERR, "%s: malloc(%u) error",
 				       "update_portmapping", (unsigned)entry_len);
 				r = -1;
 			} else {
@@ -1896,7 +1897,7 @@ update_portmapping(const char * ifname, unsigned short eport, int proto,
 	if(!found || r < 0)
 		return -1;
 
-	syslog(LOG_INFO, "Trying to update filter rule at index %u", index);
+	miniupnpd_syslog(LOG_INFO, "Trying to update filter rule at index %u", index);
 	match = (struct ipt_entry_match *)&new_e->elems;
 	if(0 == strncmp(match->u.user.name, "tcp", IPT_FUNCTION_MAXNAMELEN))
 	{
@@ -1919,14 +1920,14 @@ update_portmapping(const char * ifname, unsigned short eport, int proto,
 	h = iptc_init("mangle");
 	if(!h)
 	{
-		syslog(LOG_ERR, "%s() : iptc_init() failed : %s",
+		miniupnpd_syslog(LOG_ERR, "%s() : iptc_init() failed : %s",
 		       "update_portmapping", iptc_strerror(errno));
 		return -1;
 	}
 	i = 0; found = 0;
 	if(!iptc_is_chain("FORWARD", h))
 	{
-		syslog(LOG_ERR, "chain %s not found", miniupnpd_forward_chain);
+		miniupnpd_syslog(LOG_ERR, "chain %s not found", miniupnpd_forward_chain);
 	}
 	else
 	{
@@ -1966,7 +1967,7 @@ update_portmapping(const char * ifname, unsigned short eport, int proto,
 			entry_len = sizeof(struct ipt_entry) + match->u.match_size + target->u.target_size;
 			new_e = malloc(entry_len);
 			if(new_e == NULL) {
-				syslog(LOG_ERR, "%s: malloc(%u) error",
+				miniupnpd_syslog(LOG_ERR, "%s: malloc(%u) error",
 				       "update_portmapping", (unsigned)entry_len);
 				r = -1;
 			} else {
@@ -1983,7 +1984,7 @@ update_portmapping(const char * ifname, unsigned short eport, int proto,
 	if(!found || r < 0)
 		return -1;
 
-	syslog(LOG_INFO, "Trying to update mangle rule at index %u", index);
+	miniupnpd_syslog(LOG_INFO, "Trying to update mangle rule at index %u", index);
 	match = (struct ipt_entry_match *)&new_e->elems;
 	if(0 == strncmp(match->u.user.name, "tcp", IPT_FUNCTION_MAXNAMELEN))
 	{
@@ -2006,14 +2007,14 @@ update_portmapping(const char * ifname, unsigned short eport, int proto,
 	h = iptc_init("mangle");
 	if(!h)
 	{
-		syslog(LOG_ERR, "%s() : iptc_init() failed : %s",
+		miniupnpd_syslog(LOG_ERR, "%s() : iptc_init() failed : %s",
 		       "update_portmapping", iptc_strerror(errno));
 		return -1;
 	}
 	i = 0; found = 0;
 	if(!iptc_is_chain("FORWARD", h))
 	{
-		syslog(LOG_ERR, "chain %s not found", miniupnpd_forward_chain);
+		miniupnpd_syslog(LOG_ERR, "chain %s not found", miniupnpd_forward_chain);
 	}
 	else
 	{
@@ -2053,7 +2054,7 @@ update_portmapping(const char * ifname, unsigned short eport, int proto,
 			entry_len = sizeof(struct ipt_entry) + match->u.match_size + target->u.target_size;
 			new_e = malloc(entry_len);
 			if(new_e == NULL) {
-				syslog(LOG_ERR, "%s: malloc(%u) error",
+				miniupnpd_syslog(LOG_ERR, "%s: malloc(%u) error",
 				       "update_portmapping", (unsigned)entry_len);
 				r = -1;
 			} else {
@@ -2070,7 +2071,7 @@ update_portmapping(const char * ifname, unsigned short eport, int proto,
 	if(!found || r < 0)
 		return -1;
 
-	syslog(LOG_INFO, "Trying to update mangle rule at index %u", index);
+	miniupnpd_syslog(LOG_INFO, "Trying to update mangle rule at index %u", index);
 	match = (struct ipt_entry_match *)&new_e->elems;
 	if(0 == strncmp(match->u.user.name, "tcp", IPT_FUNCTION_MAXNAMELEN))
 	{

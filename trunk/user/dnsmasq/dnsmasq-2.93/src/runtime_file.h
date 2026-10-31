@@ -30,6 +30,9 @@ int dns_runtime_file_open(struct dns_runtime_file *snapshot, const char *path,
 int dns_runtime_file_open_limit(struct dns_runtime_file *snapshot, const char *path,
                                 size_t byte_limit, unsigned int line_limit,
                                 const char **error);
+int dns_runtime_file_open_limit_deadline(struct dns_runtime_file *snapshot, const char *path,
+                                size_t byte_limit, unsigned int line_limit,
+                                long long group_deadline, const char **error);
 int dns_runtime_file_read_fd_limit(struct dns_runtime_file *snapshot, int source,
                                    size_t byte_limit, unsigned int line_limit,
                                    const char **error);

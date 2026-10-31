@@ -156,7 +156,7 @@ int klogd_main(int argc UNUSED_PARAM, char **argv)
 	 * and openlog() also may use the same fd 3 if we swap them:
 	 */
 	klogd_open();
-	openlog("kernel", 0, LOG_KERN);
+	bb_openlog("kernel", 0, LOG_KERN);
 	/*
 	 * glibc problem: for some reason, glibc changes LOG_KERN to LOG_USER
 	 * above. The logic behind this is that standard
@@ -193,7 +193,7 @@ int klogd_main(int argc UNUSED_PARAM, char **argv)
 	/* We want klogd_read to not be restarted, thus _norestart: */
 	bb_signals_recursive_norestart(BB_FATAL_SIGS, record_signo);
 
-	syslog(LOG_NOTICE, "klogd started: %s", bb_banner);
+	bb_syslog(LOG_NOTICE, "klogd started: %s", bb_banner);
 
 	write_pidfile(CONFIG_PID_FILE_PATH "/klogd.pid");
 
@@ -247,7 +247,7 @@ int klogd_main(int argc UNUSED_PARAM, char **argv)
 			}
 			/* Log (only non-empty lines) */
 			if (*start)
-				syslog(priority, "%s", start);
+				bb_syslog(priority, "%s", start);
 
 			if (!newline)
 				break;
@@ -256,7 +256,7 @@ int klogd_main(int argc UNUSED_PARAM, char **argv)
 	}
 
 	klogd_close();
-	syslog(LOG_NOTICE, "klogd: exiting");
+	bb_syslog(LOG_NOTICE, "klogd: exiting");
 	remove_pidfile(CONFIG_PID_FILE_PATH "/klogd.pid");
 	if (bb_got_signal)
 		kill_myself_with_sig(bb_got_signal);

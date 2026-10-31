@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <syslog.h>
+#include "boundedlog.h"
 #include <sys/queue.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -127,15 +128,15 @@ newSubscriber(const char * eventurl, const char * callback, int callbacklen)
 		uint32_t status;
 		uuid_create(&uuid, &status);
 		if(status != uuid_s_ok) {
-			syslog(LOG_ERR, "uuid_create() failed (%u)", status);
+			miniupnpd_syslog(LOG_ERR, "uuid_create() failed (%u)", status);
 		} else {
 			char * uuid_str;
 			uuid_to_string(&uuid, &uuid_str, &status);
 			if(status != uuid_s_ok) {
-				syslog(LOG_ERR, "uuid_to_string() failed (%u)", status);
+				miniupnpd_syslog(LOG_ERR, "uuid_to_string() failed (%u)", status);
 			} else {
 				if(strlen(uuid_str) != 36) {
-					syslog(LOG_ERR, "uuid_to_string() returned %s", uuid_str);
+					miniupnpd_syslog(LOG_ERR, "uuid_to_string() returned %s", uuid_str);
 					status = (uint32_t)-1;
 				} else {
 					memcpy(tmp->uuid, "uuid:", 5);
@@ -173,7 +174,7 @@ upnpevents_addSubscriber(const char * eventurl,
 	struct subscriber * tmp;
 	/*static char uuid[42];*/
 	/* "uuid:00000000-0000-0000-0000-000000000000"; 5+36+1=42bytes */
-	syslog(LOG_DEBUG, "addSubscriber(%s, %.*s, %d)",
+	miniupnpd_syslog(LOG_DEBUG, "addSubscriber(%s, %.*s, %d)",
 	       eventurl, callbacklen, callback, timeout);
 	/*strncpy(uuid, uuidvalue, sizeof(uuid));
 	uuid[sizeof(uuid)-1] = '\0';*/
@@ -246,7 +247,7 @@ upnp_event_create_notify(struct subscriber * sub)
 
 	obj = calloc(1, sizeof(struct upnp_event_notify));
 	if(!obj) {
-		syslog(LOG_ERR, "%s: calloc(): %m", "upnp_event_create_notify");
+		miniupnpd_syslog(LOG_ERR, "%s: calloc(): %m", "upnp_event_create_notify");
 		return;
 	}
 	obj->sub = sub;
@@ -258,7 +259,7 @@ upnp_event_create_notify(struct subscriber * sub)
 	obj->s = socket(PF_INET, SOCK_STREAM, 0);
 #endif
 	if(obj->s<0) {
-		syslog(LOG_ERR, "%s: socket(): %m", "upnp_event_create_notify");
+		miniupnpd_syslog(LOG_ERR, "%s: socket(): %m", "upnp_event_create_notify");
 		goto error;
 	}
 #if 0 /* does not work for non blocking connect() */
@@ -266,19 +267,19 @@ upnp_event_create_notify(struct subscriber * sub)
 	sock_timeout.tv_sec = 3;
 	sock_timeout.tv_usec = 0;
 	if(setsockopt(obj->s, SOL_SOCKET, SO_RCVTIMEO, &sock_timeout, sizeof(struct timeval)) < 0) {
-		syslog(LOG_WARNING, "%s: setsockopt(SO_RCVTIMEO): %m",
+		miniupnpd_syslog(LOG_WARNING, "%s: setsockopt(SO_RCVTIMEO): %m",
 		       "upnp_event_create_notify");
 	}
 	sock_timeout.tv_sec = 3;
 	sock_timeout.tv_usec = 0;
 	if(setsockopt(obj->s, SOL_SOCKET, SO_SNDTIMEO, &sock_timeout, sizeof(struct timeval)) < 0) {
-		syslog(LOG_WARNING, "%s: setsockopt(SO_SNDTIMEO): %m",
+		miniupnpd_syslog(LOG_WARNING, "%s: setsockopt(SO_SNDTIMEO): %m",
 		       "upnp_event_create_notify");
 	}
 #endif
 	/* set socket non blocking */
 	if(!set_non_blocking(obj->s)) {
-		syslog(LOG_ERR, "%s: set_non_blocking(): %m",
+		miniupnpd_syslog(LOG_ERR, "%s: set_non_blocking(): %m",
 		       "upnp_event_create_notify");
 		goto error;
 	}
@@ -377,12 +378,12 @@ upnp_event_notify_connect(struct upnp_event_notify * obj)
 	addr.sin_port = htons(port);
 	addrlen = sizeof(struct sockaddr_in);
 #endif
-	syslog(LOG_DEBUG, "%s: '%s' %hu '%s'", "upnp_event_notify_connect",
+	miniupnpd_syslog(LOG_DEBUG, "%s: '%s' %hu '%s'", "upnp_event_notify_connect",
 	       obj->addrstr, port, obj->path);
 	obj->state = EConnecting;
 	if(connect(obj->s, (struct sockaddr *)&addr, addrlen) < 0) {
 		if(errno != EINPROGRESS && errno != EWOULDBLOCK) {
-			syslog(LOG_ERR, "%s: connect(%d, %s, %u): %m",
+			miniupnpd_syslog(LOG_ERR, "%s: connect(%d, %s, %u): %m",
 			       "upnp_event_notify_connect", obj->s,
 			       obj->addrstr, addrlen);
 			obj->state = EError;
@@ -444,7 +445,7 @@ static void upnp_event_prepare(struct upnp_event_notify * obj)
 	obj->buffersize = 1024;
 	obj->buffer = malloc(obj->buffersize);
 	if(!obj->buffer) {
-		syslog(LOG_ERR, "%s: malloc returned NULL", "upnp_event_prepare");
+		miniupnpd_syslog(LOG_ERR, "%s: malloc returned NULL", "upnp_event_prepare");
 		if(xml) {
 			free(xml);
 		}
@@ -466,14 +467,14 @@ static void upnp_event_send(struct upnp_event_notify * obj)
 {
 	int i;
 
-	syslog(LOG_DEBUG, "%s: sending event notify message to %s%s",
+	miniupnpd_syslog(LOG_DEBUG, "%s: sending event notify message to %s%s",
 	       "upnp_event_send", obj->addrstr, obj->portstr);
-	syslog(LOG_DEBUG, "%s: msg: %s",
+	miniupnpd_syslog(LOG_DEBUG, "%s: msg: %s",
 	       "upnp_event_send", obj->buffer + obj->sent);
 	i = send(obj->s, obj->buffer + obj->sent, obj->tosend - obj->sent, 0);
 	if(i<0) {
 		if(errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-			syslog(LOG_DEBUG, "%s: send(): %m", "upnp_event_send");
+			miniupnpd_syslog(LOG_DEBUG, "%s: send(): %m", "upnp_event_send");
 			obj->state = EError;
 			return;
 		} else {
@@ -482,7 +483,7 @@ static void upnp_event_send(struct upnp_event_notify * obj)
 		}
 	}
 	if(i != (obj->tosend - obj->sent))
-		syslog(LOG_NOTICE, "%s: %d bytes send out of %d",
+		miniupnpd_syslog(LOG_NOTICE, "%s: %d bytes send out of %d",
 		       "upnp_event_send", i, obj->tosend - obj->sent);
 	obj->sent += i;
 	if(obj->sent == obj->tosend)
@@ -497,12 +498,12 @@ static void upnp_event_recv(struct upnp_event_notify * obj)
 		if(errno != EAGAIN &&
 		   errno != EWOULDBLOCK &&
 		   errno != EINTR) {
-			syslog(LOG_DEBUG, "%s: recv(): %m", "upnp_event_recv");
+			miniupnpd_syslog(LOG_DEBUG, "%s: recv(): %m", "upnp_event_recv");
 			obj->state = EError;
 		}
 		return;
 	}
-	syslog(LOG_DEBUG, "%s: (%dbytes) %.*s", "upnp_event_recv",
+	miniupnpd_syslog(LOG_DEBUG, "%s: (%dbytes) %.*s", "upnp_event_recv",
 	       n, n, obj->buffer);
 	/* TODO : do something with the data recevied ?
 	 * right now, n (number of bytes received) is ignored
@@ -522,13 +523,13 @@ upnp_event_process_notify(struct upnp_event_notify * obj)
 		/* now connected or failed to connect */
 		len = sizeof(err);
 		if(getsockopt(obj->s, SOL_SOCKET, SO_ERROR, &err, &len) < 0) {
-			syslog(LOG_ERR, "%s: getsockopt: %m", "upnp_event_process_notify");
+			miniupnpd_syslog(LOG_ERR, "%s: getsockopt: %m", "upnp_event_process_notify");
 			obj->state = EError;
 			break;
 		}
 		if(err != 0) {
 			errno = err;
-			syslog(LOG_DEBUG, "%s: connect(%s%s): %m",
+			miniupnpd_syslog(LOG_DEBUG, "%s: connect(%s%s): %m",
 			       "upnp_event_process_notify",
 			       obj->addrstr, obj->portstr);
 			obj->state = EError;
@@ -549,7 +550,7 @@ upnp_event_process_notify(struct upnp_event_notify * obj)
 		obj->s = -1;
 		break;
 	default:
-		syslog(LOG_ERR, "%s: unknown state", "upnp_event_process_notify");
+		miniupnpd_syslog(LOG_ERR, "%s: unknown state", "upnp_event_process_notify");
 	}
 }
 
@@ -557,7 +558,7 @@ void upnpevents_selectfds(fd_set *readset, fd_set *writeset, int * max_fd)
 {
 	struct upnp_event_notify * obj;
 	for(obj = notifylist.lh_first; obj != NULL; obj = obj->entries.le_next) {
-		syslog(LOG_DEBUG, "upnpevents_selectfds: %p %d %d",
+		miniupnpd_syslog(LOG_DEBUG, "upnpevents_selectfds: %p %d %d",
 		       obj, obj->state, obj->s);
 		if(obj->s >= 0) {
 			switch(obj->state) {
@@ -591,7 +592,7 @@ void upnpevents_processfds(fd_set *readset, fd_set *writeset)
 	struct subscriber * subnext;
 	time_t curtime;
 	for(obj = notifylist.lh_first; obj != NULL; obj = obj->entries.le_next) {
-		syslog(LOG_DEBUG, "%s: %p %d %d %d %d",
+		miniupnpd_syslog(LOG_DEBUG, "%s: %p %d %d %d %d",
 		       "upnpevents_processfds", obj, obj->state, obj->s,
 		       FD_ISSET(obj->s, readset), FD_ISSET(obj->s, writeset));
 		if(obj->s >= 0) {
@@ -626,7 +627,7 @@ void upnpevents_processfds(fd_set *readset, fd_set *writeset)
 	for(sub = subscriberlist.lh_first; sub != NULL; ) {
 		subnext = sub->entries.le_next;
 		if(sub->timeout && curtime > sub->timeout && sub->notify == NULL) {
-			syslog(LOG_INFO, "subscriber timeouted : %u > %u SID=%s",
+			miniupnpd_syslog(LOG_INFO, "subscriber timeouted : %u > %u SID=%s",
 			       (unsigned)curtime, (unsigned)sub->timeout, sub->uuid);
 			LIST_REMOVE(sub, entries);
 			free(sub);

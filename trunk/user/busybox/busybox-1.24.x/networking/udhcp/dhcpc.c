@@ -1404,7 +1404,7 @@ int udhcpc_main(int argc UNUSED_PARAM, char **argv)
 	}
 #endif
 	if (opt & OPT_S) {
-		openlog(applet_name, LOG_PID, LOG_DAEMON);
+		bb_openlog(applet_name, LOG_PID, LOG_DAEMON);
 		logmode |= LOGMODE_SYSLOG;
 	}
 

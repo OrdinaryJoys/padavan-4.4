@@ -783,7 +783,7 @@ int tftpd_main(int argc UNUSED_PARAM, char **argv)
 	opt = option_mask32 = TFTPD_OPT | (getopt32(argv, "rcu:l", &user_opt) << 8);
 	argv += optind;
 	if (opt & TFTPD_OPT_l) {
-		openlog(applet_name, LOG_PID, LOG_DAEMON);
+		bb_openlog(applet_name, LOG_PID, LOG_DAEMON);
 		logmode = LOGMODE_SYSLOG;
 	}
 	if (opt & TFTPD_OPT_u) {
