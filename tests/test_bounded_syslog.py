@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import unittest
 
-from bounded_log_harness import generate_source, read_source_inputs
+from bounded_log_harness import function, generate_source, mask, read_source_inputs
 
 ROOT = Path(__file__).resolve().parents[1]
 HEADER = ROOT/'trunk/user/shared/bounded_syslog.h'
@@ -306,6 +306,119 @@ int main(void)
         self.assertNotEqual(rejected.returncode,0,'old consumer unexpectedly compiled')
         self.assertRegex(rejected.stderr,
                          r"error: (?:call to undeclared function|implicit declaration of function) 'pptpd_syslog'")
+
+
+    def ppp_consumer(self,name,body,driver):
+        """Compile real consumer code separately; do not substitute its logger."""
+        folder=ROOT/'trunk/user/pppd/pppd'
+        prefix=('#define _GNU_SOURCE\n#include <errno.h>\n#include <stdarg.h>\n'
+                '#include <stdio.h>\n#include <syslog.h>\n#include <stdlib.h>\n'
+                '#include '+json.dumps(str(folder/'bounded_ppp_log.h'))+'\n')
+        flags=['clang','-std=gnu99','-O1','-g','-Werror=implicit-function-declaration',
+               '-fsanitize=address,undefined','-DPADAVAN_LOG_SOCKET='+json.dumps(str(self.path))]
+        for version,consumer in [('fixed',body),('old',body.replace('ppp_syslog(','syslog('))]:
+            source=self.base/(name+'-'+version+'.c')
+            source.write_text(prefix+consumer)
+            output=self.base/(name+'-'+version+'.o')
+            built=subprocess.run(flags+['-c',str(source),'-o',str(output)],capture_output=True,text=True)
+            self.assertEqual(built.returncode,0,built.stdout+built.stderr)
+            symbols=subprocess.run(['nm','-u',str(output)],capture_output=True,text=True)
+            self.assertEqual(symbols.returncode,0,symbols.stdout+symbols.stderr)
+            undefined={line.split()[-1].split('@')[0] for line in symbols.stdout.splitlines() if line.split()}
+            if __import__('sys').platform=='darwin':
+                undefined={(value[1:] if value.startswith('_') else value).split('$')[0] for value in undefined}
+            if version=='fixed':
+                self.assertIn('ppp_syslog',undefined)
+                self.assertFalse(undefined&{'syslog','vsyslog','openlog','closelog','setlogmask'},undefined)
+            else:
+                self.assertIn('syslog',undefined,'negative control must reproduce a real libc symbol import')
+        # Link the actual main-daemon logging functions, rather than accepting
+        # unresolved logger symbols or supplying a test logger implementation.
+        actual=(folder/'utils.c').read_text()
+        provider=('#include '+json.dumps(str(HEADER))+'\n'
+                  'static struct padavan_log_context ppp_log_context=PADAVAN_LOG_CONTEXT_INIT;\n')
+        provider+='\n'.join(function(actual,value) for value in ('ppp_log_open','ppp_log_close','ppp_log_mask','ppp_syslog'))
+        link_source=self.base/(name+'-driver.c');link_source.write_text(prefix+provider+'\n'+driver)
+        linked=subprocess.run(flags+[str(link_source),str(self.base/(name+'-fixed.o')),'-o',str(self.base/name)],
+                              capture_output=True,text=True)
+        self.assertEqual(linked.returncode,0,linked.stdout+linked.stderr)
+        return name
+
+    def test_actual_pppoe_room_macro_object_uses_bounded_main_logger(self):
+        header=(ROOT/'trunk/user/pppd/pppd/plugins/rp-pppoe/pppoe.h').read_text()
+        lines=header.splitlines();start=[i for i,line in enumerate(lines) if line.startswith('#define CHECK_ROOM(')]
+        self.assertEqual(len(start),1)
+        end=start[0]
+        while lines[end].endswith('\\'):end+=1
+        definitions='\n'.join(next(line for line in lines if line.startswith('#define '+value+' '))
+                              for value in ('ETH_JUMBO_LEN','PPPOE_OVERHEAD','MAX_PPPOE_PAYLOAD'))
+        # ETH_DATA_LEN is the Linux Ethernet-header dependency; all PPPoE
+        # arithmetic and the error/return macro body come from the real header.
+        body='#define ETH_DATA_LEN 1500\n'+definitions+'\n'+'\n'.join(lines[start[0]:end+1])+r'''
+int continued;
+void room_consumer(int bad)
+{
+    unsigned char data[ETH_JUMBO_LEN],*cursor=data;
+    continued=0;
+    CHECK_ROOM(cursor,data,bad ? MAX_PPPOE_PAYLOAD+1 : 1);
+    continued=1;
+}
+'''
+        driver=r'''
+extern int continued;
+extern void room_consumer(int);
+int main(int argc,char **argv)
+{
+    int bad=argc>1 ? atoi(argv[1]) : 0;
+    ppp_log_open("ppp-room-probe",LOG_PID,LOG_DAEMON);
+    errno=EACCES;room_consumer(bad);
+    return continued==!bad && errno==EACCES ? 0 : 1;
+}
+'''
+        binary=self.ppp_consumer('pppoe-room',body,driver)
+        self.server();self.run_binary(binary,'0');self.assertEqual(self.drain(),[])
+        self.run_binary(binary,'1');wire=self.drain();self.assertEqual(len(wire),1)
+        self.assertTrue(wire[0].startswith(b'<27>'));self.assertIn(b'Would create too-long packet',wire[0])
+
+    def test_actual_pppd_option_error_object_uses_bounded_main_logger(self):
+        text=(ROOT/'trunk/user/pppd/pppd/options.c').read_text()
+        start=text.index('\nvoid\noption_error ')+1;text=text[start:]
+        opening=text.index('{');depth=0
+        for token in re.finditer(r'[{}]',mask(text)[opening:]):
+            depth+=1 if token.group()=='{' else -1
+            if depth==0:
+                body=text[:opening+token.end()];break
+        else:self.fail('actual option_error function is unterminated')
+        declarations=r'''
+#define __V(arguments) arguments
+#define PHASE_INITIALIZE 0
+extern int phase;
+extern char *progname;
+extern int vslprintf(char *,int,const char *,va_list);
+'''
+        driver=r'''
+int phase;
+char *progname="pppd-option-probe";
+extern void option_error(char *,...);
+/* Inert formatter dependency: this test checks logger routing, not PPP's
+ * separate vslprintf implementation or any option/network initialization. */
+int vslprintf(char *buffer,int length,const char *format,va_list args)
+{ return vsnprintf(buffer,length,format,args); }
+int main(int argc,char **argv)
+{
+    phase=argc>1 ? atoi(argv[1]) : 1;
+    ppp_log_open(progname,LOG_PID,LOG_DAEMON);
+    errno=EACCES;option_error("PUBLIC option %d: %s",7,"bad");
+    return errno==EACCES ? 0 : 1;
+}
+'''
+        binary=self.ppp_consumer('pppd-option',declarations+body,driver)
+        self.server()
+        for phase in ('0','1'):
+            with self.subTest(phase=phase):
+                _,err=self.run_binary(binary,phase);wire=self.drain();self.assertEqual(len(wire),1)
+                self.assertTrue(wire[0].startswith(b'<27>'));self.assertIn(b'PUBLIC option 7: bad',wire[0])
+                self.assertEqual(err,'pppd-option-probe: PUBLIC option 7: bad\n' if phase=='0' else '')
 
 
 if __name__=='__main__':unittest.main()

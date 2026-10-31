@@ -16,6 +16,7 @@
 ***********************************************************************/
 
 #include "config.h"
+#include "../../bounded_ppp_log.h"
 
 extern int IsSetID;
 
@@ -354,7 +355,7 @@ unsigned char *findTag(PPPoEPacket *packet, UINT16_t tagType,
 #define CHECK_ROOM(cursor, start, len) \
 do {\
     if (((cursor)-(start))+(len) > MAX_PPPOE_PAYLOAD) { \
-        syslog(LOG_ERR, "Would create too-long packet"); \
+        ppp_syslog(LOG_ERR, "Would create too-long packet"); \
         return; \
     } \
 } while(0)
