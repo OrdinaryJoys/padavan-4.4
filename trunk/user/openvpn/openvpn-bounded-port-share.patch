@@ -1,0 +1,12 @@
+--- a/src/openvpn/ps.c
++++ b/src/openvpn/ps.c
+@@ -109,7 +109,8 @@
+ close_fds_except(int keep)
+ {
+     socket_descriptor_t i;
+-    closelog();
++    /* The bounded logger owns no persistent descriptor across fork().
++     * Keep the inherited logging state unchanged in this forked child. */
+     for (i = 3; i <= 100; ++i)
+     {
+         if (i != keep)
