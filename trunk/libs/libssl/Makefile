@@ -1,6 +1,8 @@
 SRC_NAME=openssl-3.5.9
 SRC_URL=https://github.com/openssl/openssl/releases/download/$(SRC_NAME)/$(SRC_NAME).tar.gz
 SRC_SHA256=603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a
+# Quote literal build flag values without expanding shell metacharacters.
+shell_quote = '$(subst ','"'"',$(1))'
 
 # openssl use CROSS_COMPILE prefix
 CC = gcc
@@ -10,6 +12,7 @@ CXX = g++
 
 COPTS = $(CPUFLAGS) -O3 $(filter-out -O%, $(CFLAGS))
 COPTS += $(if $(CONFIG_IPV6),-DOPENSSL_USE_IPV6=1,)
+COPTS += -DPADAVAN_OPENSSL_BOUNDED_LOG
 
 CFLAGS := $(COPTS)
 CXXFLAGS := $(COPTS)
@@ -41,21 +44,35 @@ download_test:
 	echo "$(SRC_SHA256)  $(SRC_NAME).tar.gz" | sha256sum -c -; \
 	)
 
-extract_test:
+extract_test: download_test
 	( if [ ! -d $(SRC_NAME) ]; then \
 		tar -xf $(SRC_NAME).tar.gz; \
-	fi )
+	fi; \
+	if patch -d $(SRC_NAME) -p1 --fuzz=0 --force --reverse --dry-run < openssl-bounded-log.patch >/dev/null 2>&1; then \
+		:; \
+	elif patch -d $(SRC_NAME) -p1 --fuzz=0 --force --forward --dry-run < openssl-bounded-log.patch >/dev/null 2>&1; then \
+		patch -d $(SRC_NAME) -p1 --fuzz=0 --force --forward < openssl-bounded-log.patch || exit 1; \
+	else \
+		echo "OpenSSL bounded logging patch does not match the locked source" >&2; exit 1; \
+	fi; \
+	for target in $(SRC_NAME)/crypto/bio/padavan_bounded_syslog.h $(SRC_NAME)/apps/include/padavan_bounded_syslog.h; do \
+		cmp -s ../../user/shared/bounded_syslog.h "$$target" || cp ../../user/shared/bounded_syslog.h "$$target" || exit 1; \
+	done )
 
-config_test:
-	( if [ -f ./config_done ]; then \
+config_test: extract_test
+	( { sha256sum Makefile openssl-bounded-log.patch ../../user/shared/bounded_syslog.h && \
+		printf '%s\n' $(call shell_quote,CFLAGS=$(CFLAGS)) $(call shell_quote,CXXFLAGS=$(CXXFLAGS)) \
+		$(call shell_quote,CROSS_COMPILE=$(CROSS_COMPILE)) $(call shell_quote,CONFIG_IPV6=$(CONFIG_IPV6)) \
+		$(call shell_quote,OPENSSL_CIPHERS=$(OPENSSL_CIPHERS)); } > .padavan-config-wanted || exit 1; \
+	if [ -f ./config_done ] && cmp -s .padavan-config-wanted config_done; then \
 		echo "the same configuration"; \
 	else \
-		make configure && touch config_done; \
+		$(MAKE) configure && mv -f .padavan-config-wanted config_done || exit 1; \
 	fi )
 
 configure:
 	( cd $(SRC_NAME) ; \
-	./Configure \
+	CFLAGS=$(call shell_quote,$(CFLAGS)) CXXFLAGS=$(call shell_quote,$(CXXFLAGS)) ./Configure \
 		linux-mips32 \
 		shared \
 		--prefix=$(STAGEDIR) \
@@ -68,7 +85,7 @@ clean:
 	if [ -f $(SRC_NAME)/Makefile ] ; then \
 		$(MAKE) -C $(SRC_NAME) clean ; \
 	fi ; \
-	rm -f config_done
+	rm -f config_done .padavan-config-wanted
 
 install:
 	$(MAKE) -C $(SRC_NAME) install_sw DESTDIR=""

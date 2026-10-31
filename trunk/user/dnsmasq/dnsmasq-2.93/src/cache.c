@@ -48,6 +48,158 @@ static struct crec *really_insert(char *name, union all_addr *addr, unsigned sho
 static void dump_cache_entry(struct crec *cache, time_t now);
 static char *querystr(char *desc, unsigned short type);
 
+/* Preparation has no live lookups or evictions. Keep its hosts-only indexes
+ * private to that shadow image: the normal cache still uses the original
+ * lookup/round-robin path. All buckets and nodes use the same tracked model
+ * allocator as the candidate, and are released before publication. */
+#define HOSTS_INDEX_BUCKETS 1024U
+#define HOSTS_INDEX_BLOCK 64U
+struct hosts_index_name {
+  struct hosts_index_name *next;
+  const char *name;
+  struct crec *first, *tail;
+  unsigned int generation, hash;
+  int nonterminals;
+};
+struct hosts_index_address {
+  struct hosts_index_address *next;
+  struct crec *entry;
+  unsigned int hash;
+};
+struct hosts_name_block {
+  struct hosts_name_block *next;
+  unsigned int used;
+  struct hosts_index_name entries[HOSTS_INDEX_BLOCK];
+};
+struct hosts_address_block {
+  struct hosts_address_block *next;
+  unsigned int used;
+  struct hosts_index_address entries[HOSTS_INDEX_BLOCK];
+};
+static struct {
+  struct hosts_index_name **names;
+  struct hosts_index_address **addresses;
+  struct hosts_name_block *name_blocks;
+  struct hosts_address_block *address_blocks;
+  unsigned int generation, work;
+} hosts_index;
+
+static void hosts_index_end(void)
+{
+  while (hosts_index.name_blocks)
+    {
+      struct hosts_name_block *next = hosts_index.name_blocks->next;
+      free(hosts_index.name_blocks);
+      hosts_index.name_blocks = next;
+    }
+  while (hosts_index.address_blocks)
+    {
+      struct hosts_address_block *next = hosts_index.address_blocks->next;
+      free(hosts_index.address_blocks);
+      hosts_index.address_blocks = next;
+    }
+  free(hosts_index.names);
+  free(hosts_index.addresses);
+  memset(&hosts_index, 0, sizeof(hosts_index));
+}
+
+static int hosts_index_begin(void)
+{
+  if (hosts_index.names || hosts_index.addresses || hosts_index.name_blocks || hosts_index.address_blocks)
+    { dns_reload_fail("hosts preparation index is already active"); return 0; }
+  hosts_index.names = whine_malloc(HOSTS_INDEX_BUCKETS * sizeof(*hosts_index.names));
+  hosts_index.addresses = whine_malloc(HOSTS_INDEX_BUCKETS * sizeof(*hosts_index.addresses));
+  if (!hosts_index.names || !hosts_index.addresses)
+    { hosts_index_end(); return 0; }
+  hosts_index.generation = 1;
+  return 1;
+}
+
+/* Locale independent, matching hostname_isequal's ASCII case semantics. */
+static unsigned int hosts_name_hash(const char *name)
+{
+  unsigned int hash = 2166136261U, c;
+  while ((c = (unsigned char)*name++))
+    {
+      if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+      hash = (hash ^ c) * 16777619U;
+    }
+  return hash;
+}
+
+static struct hosts_index_name *hosts_index_name(char *name, int create)
+{
+  struct hosts_index_name *item;
+  unsigned int hash = hosts_name_hash(name), bucket = hash & (HOSTS_INDEX_BUCKETS - 1), work = 0;
+  if (!hosts_index.names) return NULL;
+  for (item = hosts_index.names[bucket]; item; item = item->next)
+    {
+      if (!cache_reload_step(&work)) return NULL;
+      if (item->hash == hash && hostname_isequal(item->name, name)) return item;
+    }
+  if (!create || !dns_reload_step(&hosts_index.work)) return NULL;
+  if (!hosts_index.name_blocks || hosts_index.name_blocks->used == HOSTS_INDEX_BLOCK)
+    {
+      struct hosts_name_block *block = whine_malloc(sizeof(*block));
+      if (!block) return NULL;
+      block->next = hosts_index.name_blocks;
+      hosts_index.name_blocks = block;
+    }
+  item = &hosts_index.name_blocks->entries[hosts_index.name_blocks->used++];
+  item->name = name;
+  item->hash = hash;
+  item->next = hosts_index.names[bucket];
+  hosts_index.names[bucket] = item;
+  return item;
+}
+
+static unsigned int hosts_address_hash(char *name, union all_addr *addr, int length,
+                                       unsigned int family)
+{
+  unsigned int hash = hosts_name_hash(name) ^ family;
+  int i;
+  for (i = 0; i < length; i++)
+    hash = (hash ^ ((unsigned char *)addr)[i]) * 16777619U;
+  return hash;
+}
+
+static int hosts_index_duplicate(struct crec *cache, union all_addr *addr, int length,
+                                  unsigned int *hash)
+{
+  struct hosts_index_address *item;
+  unsigned int family = cache->flags & (F_IPV4 | F_IPV6), work = 0;
+  char *name = cache_get_name(cache);
+  *hash = hosts_address_hash(name, addr, length, family);
+  for (item = hosts_index.addresses[*hash & (HOSTS_INDEX_BUCKETS - 1)]; item; item = item->next)
+    {
+      if (!dns_reload_step(&work)) return 0;
+      if (item->hash == *hash && (item->entry->flags & family) &&
+          memcmp(&item->entry->addr, addr, length) == 0 &&
+          hostname_isequal(cache_get_name(item->entry), name)) return 1;
+    }
+  return 0;
+}
+
+static int hosts_index_address(struct crec *cache, unsigned int hash)
+{
+  struct hosts_index_address *item;
+  unsigned int bucket = hash & (HOSTS_INDEX_BUCKETS - 1);
+  if (!dns_reload_step(&hosts_index.work)) return 0;
+  if (!hosts_index.address_blocks || hosts_index.address_blocks->used == HOSTS_INDEX_BLOCK)
+    {
+      struct hosts_address_block *block = whine_malloc(sizeof(*block));
+      if (!block) return 0;
+      block->next = hosts_index.address_blocks;
+      hosts_index.address_blocks = block;
+    }
+  item = &hosts_index.address_blocks->entries[hosts_index.address_blocks->used++];
+  item->entry = cache;
+  item->hash = hash;
+  item->next = hosts_index.addresses[bucket];
+  hosts_index.addresses[bucket] = item;
+  return 1;
+}
+
 /* type->string mapping: this is also used by the name-hash function as a mixing table. */
 /* taken from https://www.iana.org/assignments/dns-parameters/dns-parameters.xhtml */
 static const struct {
@@ -297,6 +449,9 @@ static void rehash(int size)
   old_size = hash_size;
   hash_table = new;
   hash_size = new_size;
+  /* Saved group tails belong to the old bucket layout. Nodes and duplicate
+   * keys remain valid, but no saved insertion position survives a rehash. */
+  if (hosts_index.names) hosts_index.generation++;
   
   if (old)
     {
@@ -338,8 +493,27 @@ static int cache_hash(struct crec *crecp)
 
   char *name = cache_get_name(crecp);
   struct crec **up = hash_bucket(name);
+  struct crec *first = *up;
+  struct hosts_index_name *indexed = NULL;
   unsigned int flags = crecp->flags & (F_IMMORTAL | F_REVERSE), reload_work = 0;
   if (!cache_rehashing && !dns_reload_ok()) return 0;
+
+  if (hosts_index.names && (crecp->flags & F_HOSTS) && (flags & F_REVERSE))
+    indexed = hosts_index_name(name, 0);
+
+  /* Only the first contiguous reverse group is eligible. A different name
+   * inserted ahead of it, or a different generation, forces the original
+   * search. No pointer is used in the live cache or across preparation. */
+  if (indexed && indexed->generation == hosts_index.generation &&
+      indexed->first == first && indexed->tail &&
+      (first->flags & (F_IMMORTAL | F_REVERSE)) == flags &&
+      hostname_isequal(cache_get_name(first), name))
+    {
+      crecp->hash_next = indexed->tail->hash_next;
+      indexed->tail->hash_next = crecp;
+      indexed->tail = crecp;
+      return 1;
+    }
   
   if (!(flags & F_REVERSE))
     {
@@ -360,6 +534,15 @@ static int cache_hash(struct crec *crecp)
   
   crecp->hash_next = *up;
   *up = crecp;
+  if (indexed)
+    {
+      if (!first || !(first->flags & F_REVERSE) ||
+          (first->flags & (F_IMMORTAL | F_REVERSE)) != flags ||
+          !hostname_isequal(cache_get_name(first), name)) first = crecp;
+      indexed->first = first;
+      indexed->tail = crecp;
+      indexed->generation = hosts_index.generation;
+    }
   return 1;
 }
 
@@ -1348,16 +1531,27 @@ static void add_hosts_entry(struct crec *cache, union all_addr *addr, int addrle
 {
   int i;
   unsigned int j, reload_work = 0;
+  unsigned int address_hash = 0;
   struct crec *lookup = NULL;
+  struct hosts_index_name *indexed = NULL;
 
   /* Remove duplicates in hosts files. */
-  while (dns_reload_step(&reload_work) &&
-         (lookup = cache_find_by_name(lookup, cache_get_name(cache), 0, cache->flags & (F_IPV4 | F_IPV6))))
-    if ((lookup->flags & F_HOSTS) && memcmp(&lookup->addr, addr, addrlen) == 0)
-      {
-	free_config_crec(cache);
-	return;
-      }
+  if (hosts_index.names)
+    {
+      /* Reject duplicates before borrowing this new record's name as a key.
+       * Accepted keys are owned by the candidate through index teardown;
+       * a failed insertion aborts the group without using those keys again. */
+      if (hosts_index_duplicate(cache, addr, addrlen, &address_hash) || !dns_reload_ok() ||
+          !(indexed = hosts_index_name(cache_get_name(cache), 1)))
+        { free_config_crec(cache); return; }
+    }
+  else
+    {
+      while (dns_reload_step(&reload_work) &&
+             (lookup = cache_find_by_name(lookup, cache_get_name(cache), 0, cache->flags & (F_IPV4 | F_IPV6))))
+        if ((lookup->flags & F_HOSTS) && memcmp(&lookup->addr, addr, addrlen) == 0)
+          { free_config_crec(cache); return; }
+    }
     
   if (!dns_reload_ok()) { free_config_crec(cache); return; }
 
@@ -1410,8 +1604,20 @@ static void add_hosts_entry(struct crec *cache, union all_addr *addr, int addrle
 
   cache->uid = index;
   memcpy(&cache->addr, addr, addrlen);  
-  cache_hash(cache);
-  make_non_terminals(cache);
+  if (!cache_hash(cache)) { free_config_crec(cache); return; }
+  if (indexed)
+    {
+      if (!hosts_index_address(cache, address_hash)) return;
+      /* Every hosts record is immortal. Once this canonical name has had
+       * its empty entry removed and ancestors installed, later addresses
+       * cannot extend their TTL or require another bucket-wide scan. */
+      if (!indexed->nonterminals)
+        {
+          make_non_terminals(cache);
+          if (dns_reload_ok()) indexed->nonterminals = 1;
+        }
+    }
+  else make_non_terminals(cache);
 }
 
 static int eatspace(FILE *f)
@@ -1818,12 +2024,13 @@ int cache_reload_prepare(void)
   empty.size = old.size ? old.size : 64;
   empty.table = dns_reload_malloc(empty.size * sizeof(*empty.table));
   packet = dns_reload_malloc(daemon->packet_buff_sz);
-  if (!empty.table || !packet) return 0;
+  if (!empty.table || !packet || !hosts_index_begin()) return 0;
   memcpy(old_metrics, daemon->metrics, sizeof(old_metrics));
   cache_use_image(empty);
   daemon->packet = packet;
   daemon->addn_hosts = reload_hosts;
   cache_reload_build();
+  hosts_index_end();
   reload_candidate = cache_image();
   memcpy(reload_metrics, daemon->metrics, sizeof(reload_metrics));
   cache_use_image(old);
@@ -1838,6 +2045,7 @@ int cache_reload_prepare(void)
 
 void cache_reload_abort(void)
 {
+  hosts_index_end();
 #ifdef HAVE_DNSSEC
   int i;
   struct crec *entry;
