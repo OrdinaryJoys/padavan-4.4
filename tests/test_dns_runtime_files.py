@@ -54,7 +54,7 @@ class DNSRuntimeFileTests(unittest.TestCase):
 #include <stdarg.h>
 #undef free
 struct daemon *daemon;
-static int calls, marked, parsed, cleaned, checked, added, logs, source_fd = -1;
+static int calls, marked, parsed, cleaned, checked, added, logs, source_fd = -1, source_closed;
 static const char *fault;
 static const char *current_path;
 static int active_fault(const char *name) { return fault && !strcmp(fault,name); }
@@ -64,6 +64,8 @@ static ssize_t fault_pread(int fd,void *p,size_t n,off_t offset) {
   calls++;
   if(active_fault("read")){errno=EIO;return -1;}
   if(active_fault("interrupt")){errno=EINTR;return -1;}
+  if(calls>=3&&active_fault("verify-read")){errno=EIO;return -1;}
+  if(calls>=3&&active_fault("verify-interrupt")){errno=EINTR;return -1;}
   if(active_fault("short")&&n>1)n=1;
   result=pread(fd,p,n,offset);
   if(calls==1 && active_fault("grow")) {
@@ -76,19 +78,44 @@ static ssize_t fault_pread(int fd,void *p,size_t n,off_t offset) {
     w=open(other,O_WRONLY|O_CREAT|O_EXCL,0600);if(w<0)_exit(92);
     if(write(w,"x",1)!=1||close(w)||rename(other,current_path))_exit(93);
   }
-  if(calls==1 && active_fault("rewrite")) {
+  if(calls==1 && (active_fault("rewrite")||active_fault("rewrite-coarse")||active_fault("mixed-coarse"))) {
     int w=open(current_path,O_WRONLY);if(w<0)_exit(94);
-    if(write(w,"!",1)!=1||close(w))_exit(95);
+    if(write(w,"!",1)!=1)_exit(95);
+    if(active_fault("mixed-coarse")&&pwrite(w,"?",1,4096)!=1)_exit(95);
+    if(close(w))_exit(95);
+  }
+  if(calls==3 && active_fault("verify-grow")) {
+    int w=open(current_path,O_WRONLY|O_APPEND);if(w<0)_exit(90);
+    if(write(w,"x",1)!=1||close(w))_exit(91);
   }
   if(calls==1 && active_fault("mode")) {
     struct stat st;if(fstat(fd,&st)||chmod(current_path,(st.st_mode&0777)^0200))_exit(96);
   }
   return result;
 }
+static void fault_metadata(struct stat *st) {
+  if(!active_fault("rewrite-coarse")&&!active_fault("mixed-coarse"))return;
+  /* Model a filesystem whose mtime/ctime do not advance for this write.
+   * Identity, size and bytes still come from actual private-file syscalls. */
+#ifdef __APPLE__
+  st->st_mtimespec.tv_sec=1;st->st_mtimespec.tv_nsec=0;
+  st->st_ctimespec.tv_sec=1;st->st_ctimespec.tv_nsec=0;
+#else
+  st->st_mtim.tv_sec=1;st->st_mtim.tv_nsec=0;
+  st->st_ctim.tv_sec=1;st->st_ctim.tv_nsec=0;
+#endif
+}
+static int fault_stat(const char *path,struct stat *st) {
+  int result=stat(path,st);if(!result)fault_metadata(st);return result;
+}
+static int fault_fstat(int fd,struct stat *st) {
+  int result=fstat(fd,st);if(!result)fault_metadata(st);return result;
+}
 static int fault_clock(clockid_t clock,struct timespec *stamp) {
   static int ticks;
   if(active_fault("clock")){errno=EIO;return -1;}
-  if(active_fault("group-validation")){stamp->tv_sec=0;stamp->tv_nsec=ticks++>=4?300000000L:0;return 0;}
+  if(active_fault("group-validation")){stamp->tv_sec=0;stamp->tv_nsec=source_closed?300000000L:0;return 0;}
+  if(active_fault("verify-deadline")){stamp->tv_sec=calls>=2?6:0;stamp->tv_nsec=0;return 0;}
   if(active_fault("deadline")){stamp->tv_sec=ticks++ ? 6 : 0;stamp->tv_nsec=0;return 0;}
   return clock_gettime(clock,stamp);
 }
@@ -100,7 +127,10 @@ static int fault_open(const char *path,int flags) {
 }
 static int fault_close(int fd) {
   int result=close(fd);
-  if(fd==source_fd&&active_fault("close")){errno=EIO;return -1;}
+  if(fd==source_fd) {
+    source_closed=1;
+    if(active_fault("close")){errno=EIO;return -1;}
+  }
   return result;
 }
 static void *fault_malloc(size_t n) {
@@ -115,6 +145,8 @@ static FILE *fault_fmemopen(void *p,size_t n,const char *m) {
 #define close fault_close
 #define malloc fault_malloc
 #define fmemopen fault_fmemopen
+#define stat(path,metadata) fault_stat((path),(metadata))
+#define fstat(fd,metadata) fault_fstat((fd),(metadata))
 '''
         suffix = r'''
 #undef clock_gettime
@@ -123,6 +155,8 @@ static FILE *fault_fmemopen(void *p,size_t n,const char *m) {
 #undef close
 #undef malloc
 #undef fmemopen
+#undef stat
+#undef fstat
 int main(int argc,char **argv) {
   struct dns_runtime_file snapshot;const char *error;int c;size_t bytes=0;
   if(argc<3)return 98;
@@ -176,6 +210,8 @@ int main(int argc,char **argv) {
 #undef close
 #undef malloc
 #undef fmemopen
+#undef stat
+#undef fstat
 static void stub_log(int priority,const char *fmt,...) {
   va_list ap;(void)priority;logs++;
   va_start(ap,fmt);vfprintf(stderr,fmt,ap);va_end(ap);fputc('\n',stderr);
@@ -322,7 +358,7 @@ static int callback(char *role,char *path) {
     def test_group_deadline_also_covers_postread_byte_validation(self):
         for result in self.run_case(role='group-deadline',fault='group-validation'):
             self.assertEqual(result.returncode,1,result.stdout+result.stderr)
-            self.assertIn('time budget exceeded',result.stderr);self.assertIn('reads=2',result.stdout)
+            self.assertIn('time budget exceeded',result.stderr);self.assertIn('reads=4',result.stdout)
 
     def test_regular_empty_final_line_and_short_reads(self):
         for payload in (b'',b'server=192.0.2.1',b'server=192.0.2.1\n'):
@@ -403,6 +439,29 @@ static int callback(char *role,char *path) {
                     env={**self.env,'DNS_READER_FAULT':fault},capture_output=True,text=True,timeout=2)
                 self.assertEqual(result.returncode,1,(fault,result.stdout,result.stderr))
                 self.assertIn('runtime DNS input',result.stderr)
+
+    def test_same_metadata_persistent_and_cross_chunk_rewrites_rejected(self):
+        for fault,payload in (('rewrite-coarse',b'server=192.0.2.1\n'),
+                              ('mixed-coarse',b'A'+b'a'*4094+b'\n'+b'B'+b'b'*4094+b'\n')):
+            for binary in self.binaries:
+                self.path.write_bytes(payload)
+                result=subprocess.run([str(binary),'reader',str(self.path)],
+                    env={**self.env,'DNS_READER_FAULT':fault},capture_output=True,text=True,timeout=2)
+                self.assertEqual(result.returncode,1,(fault,result.stdout,result.stderr))
+                self.assertIn('contents changed while reading',result.stderr)
+
+    def test_verification_pass_keeps_original_deadline_and_rejects_read_or_eof_failure(self):
+        for fault,reason in (('verify-read','verification read failed'),
+                             ('verify-interrupt','verification read failed'),
+                             ('verify-grow','verification read failed'),
+                             ('verify-deadline','time budget exceeded')):
+            for binary in self.binaries:
+                self.path.write_bytes(b'server=192.0.2.1\n')
+                result=subprocess.run([str(binary),'group-deadline',str(self.path)],
+                    env={**self.env,'DNS_READER_FAULT':fault},capture_output=True,text=True,timeout=2)
+                self.assertEqual(result.returncode,1,(fault,result.stdout,result.stderr))
+                self.assertIn(reason,result.stderr)
+                if fault=='verify-deadline':self.assertIn('reads=2',result.stdout)
 
     def test_runtime_failures_preserve_existing_server_tables(self):
         fifo=self.base/'fifo';os.mkfifo(fifo)

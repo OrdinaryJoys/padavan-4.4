@@ -16,7 +16,10 @@
 /* Limits apply per file, not to an entire reload of many files. The deadline
  * is checked between bounded reads; it cannot interrupt a stalled filesystem.
  * The fd variant borrows source and leaves both its offset and lifetime alone.
- * Symlink/hardlink aliases to stable regular files are intentionally accepted. */
+ * Symlink/hardlink aliases to stable regular files are intentionally accepted.
+ * A same-fd second pass verifies contents within that original deadline using
+ * bounded stack storage. This is not an atomic filesystem snapshot against
+ * non-cooperating writers changing already verified ranges or restoring bytes. */
 
 struct dns_runtime_file {
   FILE *stream;

@@ -100,7 +100,7 @@ static int runtime_read_owned(struct dns_runtime_file *snapshot, int fd,
                               long long group_deadline, const char **error)
 {
   struct stat opened, after, named;
-  unsigned char *bytes = NULL, extra;
+  unsigned char *bytes = NULL, extra, verify[4096];
   size_t size, used = 0, line = 0, lines = 0, i;
   unsigned int interrupts = 0;
   long long deadline, now;
@@ -149,8 +149,53 @@ static int runtime_read_owned(struct dns_runtime_file *snapshot, int fd,
         goto fail;
       used += (size_t)count;
     }
-  *error = "runtime DNS input read failed or changed size";
-  do count = pread(fd, &extra, 1, (off_t)size);
+  do
+    {
+      *error = "runtime DNS input read time budget exceeded";
+      if ((now = runtime_milliseconds()) < 0 || now >= deadline)
+        goto fail;
+      *error = "runtime DNS input read failed or changed size";
+      count = pread(fd, &extra, 1, (off_t)size);
+    }
+  while (count < 0 && errno == EINTR && interrupts++ < 16);
+  if (count != 0)
+    goto fail;
+
+  /* Equal size and timestamps do not prove unchanged contents: filesystem
+   * timestamps may have coarse resolution. Re-read through this same fd and
+   * compare bounded chunks with the private snapshot, using the original
+   * deadline. This detects persistent rewrites, including mixed first-pass
+   * chunks, without a second whole-file allocation or parsing live bytes.
+   * A non-cooperating writer can still change an already verified range or
+   * restore identical bytes; this is not an atomic filesystem snapshot. */
+  used = 0;
+  while (used < size)
+    {
+      size_t take = size - used;
+      *error = "runtime DNS input read time budget exceeded";
+      if ((now = runtime_milliseconds()) < 0 || now >= deadline)
+        goto fail;
+      if (take > sizeof(verify))
+        take = sizeof(verify);
+      *error = "runtime DNS input verification read failed or changed size";
+      count = pread(fd, verify, take, (off_t)used);
+      if (count < 0 && errno == EINTR && interrupts++ < 16)
+        continue;
+      if (count <= 0 || (size_t)count > take)
+        goto fail;
+      *error = "runtime DNS input contents changed while reading";
+      if (memcmp(bytes + used, verify, (size_t)count))
+        goto fail;
+      used += (size_t)count;
+    }
+  do
+    {
+      *error = "runtime DNS input read time budget exceeded";
+      if ((now = runtime_milliseconds()) < 0 || now >= deadline)
+        goto fail;
+      *error = "runtime DNS input verification read failed or changed size";
+      count = pread(fd, &extra, 1, (off_t)size);
+    }
   while (count < 0 && errno == EINTR && interrupts++ < 16);
   if (count != 0)
     goto fail;
