@@ -64,6 +64,7 @@
 
 #include <sys/un.h>
 #include <sys/uio.h>
+#include "default_logfile.h"
 
 #if ENABLE_FEATURE_REMOTE_LOG
 #include <netinet/in.h>
@@ -610,9 +611,13 @@ static void log_locally(time_t now, char *msg, logFile_t *log_file)
 			/* log_file->isRegular = 0; - already is */
 		} else {
  reopen:
-			log_file->fd = open(log_file->path, O_WRONLY | O_CREAT
-					| O_NOCTTY | O_APPEND | O_NONBLOCK,
-					0666);
+			log_file->fd = syslogd_open_logfile(log_file->path);
+			if (log_file->fd == SYSLOGD_REJECTED_DEFAULT_FILE) {
+				/* Unsafe shared-/tmp replacement: drop this entry. Sending
+				 * it to console/stderr could block us again. Retry the
+				 * pathname on the next message without deleting it. */
+				return;
+			}
 			if (log_file->fd < 0) {
 				/* cannot open logfile? - print to /dev/console then */
 				int fd = device_open(DEV_CONSOLE, O_WRONLY | O_NOCTTY | O_NONBLOCK);
@@ -626,9 +631,14 @@ static void log_locally(time_t now, char *msg, logFile_t *log_file)
 #if ENABLE_FEATURE_ROTATE_LOGFILE
 			{
 				struct stat statf;
-				log_file->isRegular = (fstat(log_file->fd, &statf) == 0 && S_ISREG(statf.st_mode));
-				/* bug (mostly harmless): can wrap around if file > 4gb */
-				log_file->size = statf.st_size;
+				if (fstat(log_file->fd, &statf) == 0) {
+					log_file->isRegular = S_ISREG(statf.st_mode);
+					/* Can wrap around if file > 4gb (existing behavior). */
+					log_file->size = statf.st_size;
+				} else {
+					log_file->isRegular = 0;
+					log_file->size = 0;
+				}
 			}
 #endif
 		}

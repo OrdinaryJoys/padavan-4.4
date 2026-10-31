@@ -9,11 +9,16 @@
 #define DNS_RELOAD_TIME_MS 10000
 #define DNS_RELOAD_HOT_TIME_MS 250
 #define DNS_RELOAD_SYSTEM_HEADROOM_BYTES (16U * 1024U * 1024U)
+/* Only small, bounded model/parser operations use the batched check. Input
+ * reads, validation, and every256-step chain walk keep forced clock checks. */
+#define DNS_RELOAD_CHECK_WORK 64U
+#define DNS_RELOAD_FORCE_ALLOCATION 4096U
 
 void dns_reload_initial(int initial);
 int dns_reload_begin(void);
 int dns_reload_active(void);
 int dns_reload_ok(void);
+int dns_reload_work_ok(void);
 static inline int dns_reload_step(unsigned int *work)
 { return (++*work & 255U) || dns_reload_ok(); }
 void dns_reload_fail(const char *reason);

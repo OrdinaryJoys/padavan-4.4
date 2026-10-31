@@ -496,7 +496,7 @@ static int cache_hash(struct crec *crecp)
   struct crec *first = *up;
   struct hosts_index_name *indexed = NULL;
   unsigned int flags = crecp->flags & (F_IMMORTAL | F_REVERSE), reload_work = 0;
-  if (!cache_rehashing && !dns_reload_ok()) return 0;
+  if (!cache_rehashing && !dns_reload_work_ok()) return 0;
 
   if (hosts_index.names && (crecp->flags & F_HOSTS) && (flags & F_REVERSE))
     indexed = hosts_index_name(name, 0);
@@ -1541,7 +1541,7 @@ static void add_hosts_entry(struct crec *cache, union all_addr *addr, int addrle
       /* Reject duplicates before borrowing this new record's name as a key.
        * Accepted keys are owned by the candidate through index teardown;
        * a failed insertion aborts the group without using those keys again. */
-      if (hosts_index_duplicate(cache, addr, addrlen, &address_hash) || !dns_reload_ok() ||
+      if (hosts_index_duplicate(cache, addr, addrlen, &address_hash) || !dns_reload_work_ok() ||
           !(indexed = hosts_index_name(cache_get_name(cache), 1)))
         { free_config_crec(cache); return; }
     }
@@ -1553,7 +1553,7 @@ static void add_hosts_entry(struct crec *cache, union all_addr *addr, int addrle
           { free_config_crec(cache); return; }
     }
     
-  if (!dns_reload_ok()) { free_config_crec(cache); return; }
+  if (!dns_reload_work_ok()) { free_config_crec(cache); return; }
 
   /* Ensure there is only one address -> name mapping (first one trumps) 
      We do this by steam here, The entries are kept in hash chains, linked
@@ -1585,7 +1585,7 @@ static void add_hosts_entry(struct crec *cache, union all_addr *addr, int addrle
 	    break;
 	  }
       
-      if (!dns_reload_ok()) { free_config_crec(cache); return; }
+      if (!dns_reload_work_ok()) { free_config_crec(cache); return; }
 
       /* maintain address hash chain, insert new unique address */
       if (!lookup)
@@ -1614,13 +1614,14 @@ static void add_hosts_entry(struct crec *cache, union all_addr *addr, int addrle
       if (!indexed->nonterminals)
         {
           make_non_terminals(cache);
-          if (dns_reload_ok()) indexed->nonterminals = 1;
+          if (dns_reload_work_ok()) indexed->nonterminals = 1;
         }
     }
   else make_non_terminals(cache);
 }
 
-static int eatspace(FILE *f)
+/* Caller holds its private hosts memory-snapshot FILE lock. */
+static int hosts_eatspace_unlocked(FILE *f)
 {
   int c, nl = 0;
   unsigned int reload_work = 0;
@@ -1628,9 +1629,9 @@ static int eatspace(FILE *f)
   while (1)
     {
       if (!dns_reload_step(&reload_work)) return 1;
-      if ((c = getc(f)) == '#')
+      if ((c = getc_unlocked(f)) == '#')
 	while (c != '\n' && c != EOF)
-          { if (!dns_reload_step(&reload_work)) return 1; c = getc(f); }
+          { if (!dns_reload_step(&reload_work)) return 1; c = getc_unlocked(f); }
       
       if (c == EOF)
 	return 1;
@@ -1646,7 +1647,7 @@ static int eatspace(FILE *f)
     }
 }
 	 
-static int gettok(FILE *f, char *token, size_t buffsz)
+static int hosts_gettok_unlocked(FILE *f, char *token, size_t buffsz)
 {
   int c;
   unsigned int count = 0, reload_work = 0;
@@ -1654,13 +1655,13 @@ static int gettok(FILE *f, char *token, size_t buffsz)
   while (1)
     {
       if (!dns_reload_step(&reload_work)) return -1;
-      if ((c = getc(f)) == EOF)
+      if ((c = getc_unlocked(f)) == EOF)
 	return (count == 0) ? -1 : 1;
 
       if (isspace(c) || c == '#')
 	{
 	  ungetc(c, f);
-	  return eatspace(f);
+	  return hosts_eatspace_unlocked(f);
 	}
       
       if (count < (buffsz - 1))
@@ -1692,10 +1693,13 @@ int read_hostsfile(char *filename, unsigned int index, int cache_size, struct cr
       return cache_size;
     }
   f = input.stream;
+  /* This is our newly owned memory snapshot, not a live/shared FILE. Hold
+   * its lock once while parsing instead of locking for every input byte. */
+  flockfile(f);
   
-  lineno += eatspace(f);
+  lineno += hosts_eatspace_unlocked(f);
   
-  while (dns_reload_ok() && (atnl = gettok(f, token, MAXDNAMESTR)) != -1)
+  while (dns_reload_work_ok() && (atnl = hosts_gettok_unlocked(f, token, MAXDNAMESTR)) != -1)
     {
       if (inet_pton(AF_INET, token, &addr) > 0)
 	{
@@ -1713,8 +1717,8 @@ int read_hostsfile(char *filename, unsigned int index, int cache_size, struct cr
 	{
 	  my_syslog(LOG_ERR, _("bad address at %s line %d"), filename, lineno); 
           if (dns_reload_active()) { dns_reload_fail("invalid hosts address syntax"); break; }
-	  while (atnl == 0 && dns_reload_ok())
-	    atnl = gettok(f, token, MAXDNAMESTR);
+	  while (atnl == 0 && dns_reload_work_ok())
+	    atnl = hosts_gettok_unlocked(f, token, MAXDNAMESTR);
 	  lineno += atnl;
 	  continue;
 	}
@@ -1726,13 +1730,13 @@ int read_hostsfile(char *filename, unsigned int index, int cache_size, struct cr
 	  cache_size = name_count;
 	} 
       
-      while (atnl == 0 && dns_reload_ok())
+      while (atnl == 0 && dns_reload_work_ok())
 	{
 	  struct crec *cache;
 	  int fqdn, nomem;
 	  char *canon;
 	  
-	  if ((atnl = gettok(f, token, MAXDNAMESTR)) == -1)
+	  if ((atnl = hosts_gettok_unlocked(f, token, MAXDNAMESTR)) == -1)
 	    break;
 
 	  fqdn = !!strchr(token, '.');
@@ -1787,6 +1791,7 @@ int read_hostsfile(char *filename, unsigned int index, int cache_size, struct cr
     } 
 
   if (ferror(f)) dns_reload_fail("hosts memory snapshot read failed");
+  funlockfile(f);
   dns_reload_close(&input);
   
   if (rhash && dns_reload_ok())

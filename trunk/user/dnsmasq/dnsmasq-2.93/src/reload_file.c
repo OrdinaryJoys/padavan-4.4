@@ -25,7 +25,7 @@ static struct {
   const char *reason;
   size_t input_bytes, model_bytes, memory_limit;
   struct dns_runtime_file live_input;
-  unsigned int files, directory_entries;
+  unsigned int files, directory_entries, work_checks;
   long long deadline;
   struct reload_identity *identities;
   struct reload_allocation *allocations[RELOAD_HASH];
@@ -95,10 +95,24 @@ int dns_reload_ok(void)
   long long now;
   if (!reload.active)
     return 1;
+  reload.work_checks = 0;
   if (!reload.failed && !reload.publishing && ((now = reload_clock()) < 0 || now >= reload.deadline))
     dns_reload_fail(reload.initial ? "initial reload cooperative time budget exceeded" :
                     "hot reload cooperative time budget exceeded");
   return !reload.failed;
+}
+
+/* These calls represent bounded small operations, not an IO boundary. The
+ * monotonic deadline is unchanged: read/validate callers and long walks use
+ * dns_reload_ok directly. In particular, do not batch dns_reload_step again. */
+int dns_reload_work_ok(void)
+{
+  if (!reload.active) return 1;
+  if (reload.failed) return 0;
+  if (reload.publishing) return 1;
+  if (++reload.work_checks >= DNS_RELOAD_CHECK_WORK)
+    return dns_reload_ok();
+  return 1;
 }
 
 int dns_reload_begin(void)
@@ -122,7 +136,8 @@ void *dns_reload_track(void *pointer, size_t size)
   unsigned int bucket;
   if (!reload.active || !pointer)
     return pointer;
-  if (!dns_reload_ok() || DNS_RELOAD_MODEL_BYTES - reload.model_bytes < sizeof(*item) ||
+  if (!(size >= DNS_RELOAD_FORCE_ALLOCATION ? dns_reload_ok() : dns_reload_work_ok()) ||
+      DNS_RELOAD_MODEL_BYTES - reload.model_bytes < sizeof(*item) ||
       size > DNS_RELOAD_MODEL_BYTES - reload.model_bytes - sizeof(*item) ||
       reload_memory_remaining() < sizeof(*item) ||
       size > reload_memory_remaining() - sizeof(*item) ||
@@ -146,7 +161,8 @@ void *dns_reload_malloc(size_t size)
   void *pointer;
   if (!reload.active)
     return whine_malloc(size);
-  if (!dns_reload_ok() || size > DNS_RELOAD_MODEL_BYTES - reload.model_bytes ||
+  if (!(size >= DNS_RELOAD_FORCE_ALLOCATION ? dns_reload_ok() : dns_reload_work_ok()) ||
+      size > DNS_RELOAD_MODEL_BYTES - reload.model_bytes ||
       size > reload_memory_remaining())
     { dns_reload_fail("reload candidate allocation budget exhausted"); return NULL; }
   if (!(pointer = calloc(1, size)))

@@ -32,9 +32,56 @@ static void fixture_index_report(const char *stage)
 }
 '''
 
+CHECKPOINTS = r'''
+#include "runtime_file.h"
+static void fixture_checkpoint_checks(void)
+{
+ unsigned int i,work=0;void *small;struct dns_runtime_file input;
+ dns_reload_initial(0);
+ fixture_clock_jump=0;
+ fixture_clock_error=1;assert(!dns_reload_begin()&&!dns_reload_active());fixture_clock_error=0;
+ assert(dns_reload_begin());
+ fixture_clock_calls=0;fixture_clock_jump=1;fixture_clock_add_ms=500;
+ for(i=0;i<DNS_RELOAD_CHECK_WORK-1;i++)assert(dns_reload_work_ok());
+ assert(fixture_clock_calls==0);
+ assert(!dns_reload_work_ok()&&fixture_clock_calls==1);
+ assert(!dns_reload_work_ok());dns_reload_end(0);
+ fixture_clock_jump=0;assert(dns_reload_begin());
+ fixture_clock_calls=0;fixture_clock_jump=1;
+ assert(!dns_reload_ok()&&fixture_clock_calls==1);dns_reload_end(0);
+ fixture_clock_jump=0;assert(dns_reload_begin());
+ fixture_clock_calls=0;fixture_clock_jump=1;
+ /* A chain's256-step check is forced, never another64-way batch. */
+ for(i=0;i<255;i++)assert(dns_reload_step(&work));
+ assert(fixture_clock_calls==0);
+ assert(!dns_reload_step(&work)&&fixture_clock_calls==1);dns_reload_end(0);
+ fixture_clock_jump=0;assert(dns_reload_begin());
+ fixture_clock_calls=0;fixture_clock_jump=1;
+ assert(!dns_reload_malloc(DNS_RELOAD_FORCE_ALLOCATION)&&fixture_clock_calls==1);dns_reload_end(0);
+ fixture_clock_jump=0;assert(dns_reload_begin());
+ fixture_clock_calls=0;fixture_expire_after_calloc=1;
+ assert(!dns_reload_malloc(DNS_RELOAD_FORCE_ALLOCATION)&&fixture_clock_calls==1);dns_reload_end(0);
+ fixture_clock_jump=0;assert(dns_reload_begin());
+ fixture_clock_calls=0;fixture_clock_jump=1;
+ assert(!dns_reload_read(&input,getenv("K2P_RELOAD_H1"),1)&&fixture_clock_calls==1);dns_reload_end(0);
+ fixture_clock_jump=0;assert(dns_reload_begin());
+ fixture_clock_calls=0;fixture_clock_jump=1;
+ small=dns_reload_malloc(8);assert(small&&fixture_clock_calls==0);
+ assert(!dns_reload_validate()&&fixture_clock_calls==1);dns_reload_end(0);
+ fixture_clock_jump=0;assert(dns_reload_begin());fixture_clock_error=1;
+ assert(!dns_reload_validate()&&!dns_reload_work_ok());fixture_clock_error=0;dns_reload_end(0);
+ fixture_clock_jump=0;fixture_clock_calls=0;
+}
+'''
+
 PROBES = r'''
+static int fixture_hosts_stream_locks;
+static void fixture_hosts_lock(FILE *stream) { flockfile(stream);fixture_hosts_stream_locks++; }
+static void fixture_hosts_unlock(FILE *stream) { assert(fixture_hosts_stream_locks>0);fixture_hosts_stream_locks--;funlockfile(stream); }
+#define flockfile(stream) fixture_hosts_lock(stream)
+#define funlockfile(stream) fixture_hosts_unlock(stream)
 int fixture_hosts_index_empty(void)
-{ return !hosts_index.names && !hosts_index.addresses && !hosts_index.name_blocks && !hosts_index.address_blocks; }
+{ return !hosts_index.names && !hosts_index.addresses && !hosts_index.name_blocks && !hosts_index.address_blocks && fixture_hosts_stream_locks==0; }
 unsigned int fixture_hosts_hash_size(void) { return (unsigned int)hash_size; }
 unsigned int fixture_hosts_total(void)
 { int i;unsigned int count=0;struct crec *entry;for(i=0;i<hash_size;i++)for(entry=hash_table[i];entry;entry=entry->hash_next)if((entry->flags&F_HOSTS)&&(entry->flags&(F_IPV4|F_IPV6)))count++;return count; }
@@ -45,20 +92,34 @@ class DNSHostsIndexTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         original_driver = transaction.DRIVER
+        original_replay = transaction.REPLAY
+        original_alloc = transaction.ALLOC_SHIM
         original_copy = transaction.shutil.copytree
         def copy(*args, **kwargs):
             result = original_copy(*args, **kwargs)
             if Path(args[0]) == transaction.SOURCE:
                 path = Path(result)/'src/cache.c'
-                path.write_text(path.read_text()+'\n'+PROBES)
+                # Wrappers are defined before real lock sites; only private
+                # host snapshot FILE lock/unlock calls are observed.
+                code=path.read_text()
+                lock_code=PROBES[:PROBES.index('int fixture_hosts_index_empty')]
+                code=code.replace('#include "reload_file.h"','#include "reload_file.h"\n#include <assert.h>\n'+lock_code,1)
+                path.write_text(code+'\n'+PROBES[PROBES.index('int fixture_hosts_index_empty'):])
             return result
-        transaction.DRIVER = ('static void fixture_index_report(const char *);\n'+
-            original_driver.replace('fflush(stdout);', 'fflush(stdout);fixture_index_report(stage);', 1)+REPORT)
+        transaction.DRIVER = ('int fixture_clock_error,fixture_expire_after_calloc;\nstatic void fixture_index_report(const char *);\n'+
+            original_driver.replace('fflush(stdout);', 'fflush(stdout);fixture_index_report(stage);', 1)+REPORT+CHECKPOINTS)
+        transaction.ALLOC_SHIM = ('extern int fixture_clock_error,fixture_expire_after_calloc;\n'+original_alloc.replace(
+            ' int result=clock_gettime(id,now);',
+            ' int result;if(fixture_clock_error){errno=EIO;return -1;}result=clock_gettime(id,now);',1).replace(
+            ' return calloc(n,size);',' {void *value=calloc(n,size);if(fixture_expire_after_calloc){fixture_clock_jump=1;fixture_expire_after_calloc=0;}return value;}',1))
+        transaction.REPLAY = original_replay.replace('fixture_print("repaired",accepted);','fixture_print("repaired",accepted);if(getenv("K2P_RELOAD_CHECKPOINTS"))fixture_checkpoint_checks();',1)
         try:
             with patch.object(transaction.shutil, 'copytree', side_effect=copy):
                 transaction.DNSReloadTransactionTests.setUpClass.__func__(cls)
         finally:
             transaction.DRIVER = original_driver
+            transaction.REPLAY = original_replay
+            transaction.ALLOC_SHIM = original_alloc
 
     @classmethod
     def tearDownClass(cls):
@@ -196,6 +257,24 @@ class DNSHostsIndexTests(unittest.TestCase):
         self.assertEqual(reports[1]['v4'][1], 2)
         self.assertEqual(reports[1]['configured'], 1)
         self.assertTrue(all(report['cname'] == 1 for report in reports))
+
+    def test_private_locked_snapshot_tokenizer_keeps_whitespace_comments_and_final_eof(self):
+        first=self.new['H1']+'\t10.0.0.1 Multi.Fixture\talias.fixture # public comment\r\n\n2001:db8::1 multi.fixture\t# tail\n10.0.0.2 MULTI.fixture'
+        rows,reports,_=self.indexed_replay(bad={'H1':first})
+        self.assertEqual(rows[1]['accepted'],1)
+        self.assertEqual(reports[1]['v4'][1:3],[2,1])
+        self.assertEqual(reports[1]['v6'][1],1)
+
+    def test_stream_unlocks_after_forced_mid_parse_deadline_and_repairs(self):
+        rows,reports,_=self.indexed_replay(bad={'H1':self.new['H1']+self.same_name(2000)},clock=20)
+        self.assertEqual(rows[1]['accepted'],0)
+        self.assert_state(rows[1],False)
+        self.assertTrue(all(report['empty']==1 for report in reports))
+
+    def test_small_work_batch_and_forced_large_read_validate_and_chain_boundaries(self):
+        with patch.dict(transaction.os.environ,{'K2P_RELOAD_CHECKPOINTS':'1'}):
+            rows,_,_=self.indexed_replay()
+        self.assertEqual(rows[1]['accepted'],1)
 
 
 if __name__ == '__main__':
