@@ -1,6 +1,7 @@
 """Real header and central producers, private Unix sockets, ASan/UBSan only."""
 from pathlib import Path
 import errno
+import hashlib
 import json
 import os
 import re
@@ -251,10 +252,52 @@ class BoundedSyslogTests(unittest.TestCase):
 
     def test_actual_producers_remain_bounded_with_unread_queue(self):
         self.server()
-        for component in ('busybox','miniupnpd','igmp','lldt','pppd','pptpd','inadyn'):
+        for component in ('busybox','busybox-info','miniupnpd','igmp','lldt','pppd','pptpd','inadyn'):
             with self.subTest(component=component):
                 out,_=self.run_binary('producer',component,'2000','normal')
                 self.assertIn('count=2000',out);self.assertGreater(len(self.drain()),0)
+
+    def test_actual_info_formatter_errno_is_observed_separately_from_transport(self):
+        self.server()
+        current=(ROOT/'trunk/user/busybox/busybox-1.24.x/libbb/info_msg.c').read_text()
+        old=current.replace('bb_vsyslog(','vsyslog(').replace('bb_syslog(','syslog(')
+        self.assertEqual(hashlib.sha256(old.encode()).hexdigest(),
+                         '9c260b7758a9345223cd3112dd59eb095a96c29cc61209da2ae1cf6fad124fe9')
+        for label,body in (('a602',old),('current',current)):
+            inputs=read_source_inputs(ROOT)
+            # Successful libc formatting/free may change errno. Keep the real
+            # old/current complete body and the real transport; only these
+            # libc success side effects are deterministic fault controls.
+            inputs['busybox_info']=r'''
+static int fixture_success_vasprintf(char **out,const char *format,va_list args)
+{int result=vasprintf(out,format,args);if(result>=0)errno=ENOTTY;return result;}
+static void fixture_success_free(void *memory){free(memory);errno=ERANGE;}
+#define vasprintf fixture_success_vasprintf
+#define free fixture_success_free
+#define syslog fixture_info_syslog
+#define vsyslog fixture_info_vsyslog
+'''+body+r'''
+#undef vasprintf
+#undef free
+#undef syslog
+#undef vsyslog
+'''
+            source=self.base/('info-errno-'+label+'.c');source.write_text(generate_source(inputs,str(self.path),str(self.base/'console')))
+            name='info-errno-'+label
+            built=subprocess.run(['clang','-std=gnu99','-O1','-g','-Wall','-Wextra','-Werror=implicit-function-declaration',
+                                  '-fsanitize=address,undefined',str(source),'-o',str(self.base/name)],
+                                 capture_output=True,text=True)
+            self.assertEqual(built.returncode,0,built.stdout+built.stderr)
+            out,_=self.run_binary(name,'busybox-info','1','normal')
+            lines=[line for line in out.splitlines() if line.startswith('ERRNO_TRACE ')]
+            self.assertEqual(len(lines),1)
+            trace={key:int(value) for key,value in re.findall(r'(\w+)=(-?\d+)',lines[0])}
+            self.assertEqual(set(trace),{'call','entry','transport_entry','transport_exit','final'})
+            self.assertEqual(trace['call'],0)
+            self.assertEqual((trace['transport_entry'],trace['transport_exit']),(errno.ENOTTY,errno.ENOTTY))
+            self.assertEqual(trace['final'],errno.ERANGE)
+            self.assertNotEqual(trace['entry'],trace['final'])
+            wire=self.drain();self.assertEqual(len(wire),1);self.assertIn(b'PUBLIC seq=0',wire[0])
 
     def test_actual_igmp_long_errno_append_has_no_overflow(self):
         self.server();out,_=self.run_binary('producer','igmp','1','long')

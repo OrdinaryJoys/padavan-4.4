@@ -141,7 +141,32 @@ static void xfunc_die(void) { exit(77); }
     prefix += '#define PADAVAN_LOG_SOCKET ' + json.dumps(str(socket_path)) + '\n'
     prefix += '#define PADAVAN_LOG_CONSOLE ' + json.dumps(str(console_path)) + '\n'
     parts = [prefix, inputs['common']]
-    for key in ('busybox', 'busybox_error', 'busybox_info', 'miniupnpd', 'igmp'):
+    for key in ('busybox', 'busybox_error'):
+        parts.append(without_includes(inputs[key]))
+    parts.append(r'''
+/* Observe only the formatter's transport call. All bytes still pass through
+ * the real bb_vsyslog; formatting/allocation/free retain their native errno
+ * semantics. These local aliases exist only in this isolated source probe. */
+static int fixture_info_calls,fixture_info_transport_entry,fixture_info_transport_exit;
+static void fixture_info_vsyslog(int priority,const char *format,va_list arguments)
+{
+ fixture_info_calls++;
+ fixture_info_transport_entry=errno;
+ bb_vsyslog(priority,format,arguments);
+ fixture_info_transport_exit=errno;
+}
+static void fixture_info_syslog(int priority,const char *format,...)
+{
+ va_list arguments;va_start(arguments,format);
+ fixture_info_vsyslog(priority,format,arguments);
+ va_end(arguments);
+}
+#define bb_vsyslog fixture_info_vsyslog
+#define bb_syslog fixture_info_syslog
+''')
+    parts.append(without_includes(inputs['busybox_info']))
+    parts.append('#undef bb_vsyslog\n#undef bb_syslog\n')
+    for key in ('miniupnpd', 'igmp'):
         parts.append(without_includes(inputs[key]))
     text = inputs['lldt']
     parts.extend((declaration(text, 'static bool_t use_syslog;'),
@@ -161,13 +186,13 @@ static void xfunc_die(void) { exit(77); }
 int main(int argc,char **argv) {
  const char *component=argc>1?argv[1]:"header";
  const char *mode=argc>3?argv[3]:"normal";
- int count=argc>2?atoi(argv[2]):1,i,saved;
+ int count=argc>2?atoi(argv[2]):1,i,saved,final_errno;
  char payload[4096],line[4608];
  struct padavan_log_context direct=PADAVAN_LOG_CONTEXT_INIT;
  if(count<0||count>20000)return 90;
  memset(payload,'x',sizeof(payload)-1);payload[sizeof(payload)-1]=0;
  if(strcmp(mode,"long"))payload[70]=0;
- if(!strcmp(component,"busybox")) {bb_openlog("busybox-probe",LOG_PID,LOG_DAEMON);logmode=LOGMODE_SYSLOG;}
+ if(!strcmp(component,"busybox")||!strcmp(component,"busybox-info")) {bb_openlog("busybox-probe",LOG_PID,LOG_DAEMON);logmode=LOGMODE_SYSLOG;}
  else if(!strcmp(component,"miniupnpd"))miniupnpd_openlog("miniupnpd",LOG_PID|LOG_CONS,LOG_DAEMON);
  else if(!strcmp(component,"igmp")) {igmp_log_open();LogLevel=LOG_DEBUG;}
  else if(!strcmp(component,"lldt"))util_use_syslog();
@@ -180,7 +205,16 @@ int main(int argc,char **argv) {
  for(i=0;i<count;i++) {
   snprintf(line,sizeof(line),"PUBLIC seq=%d %s",i,payload);
   saved=errno;
-  if(!strcmp(component,"busybox"))bb_info_msg("%s",line);
+  if(!strcmp(component,"busybox"))bb_syslog(LOG_INFO,"%s",line);
+  else if(!strcmp(component,"busybox-info")) {
+   fixture_info_calls=0;
+   bb_info_msg("%s",line);
+   final_errno=errno;
+   if(fixture_info_calls!=1||fixture_info_transport_entry!=fixture_info_transport_exit)return 92;
+   printf("ERRNO_TRACE call=%d entry=%d transport_entry=%d transport_exit=%d final=%d\n",
+          i,saved,fixture_info_transport_entry,fixture_info_transport_exit,final_errno);
+   errno=final_errno; /* The diagnostic printf is outside the observed call. */
+  }
   else if(!strcmp(component,"miniupnpd"))miniupnpd_syslog(LOG_WARNING,"%s",line);
   else if(!strcmp(component,"igmp"))my_log(LOG_WARNING,!strcmp(mode,"long")?EINVAL:0,"%s",line);
   else if(!strcmp(component,"lldt"))warn("%s",line);
@@ -188,7 +222,7 @@ int main(int argc,char **argv) {
   else if(!strcmp(component,"pptpd"))pptpd_syslog(LOG_WARNING,"%s",line);
   else if(!strcmp(component,"inadyn"))logit(LOG_WARNING,"%s",line);
   else padavan_log_write(&direct,LOG_WARNING,"%s",line);
-  if(errno!=saved)return 92;
+  if(strcmp(component,"busybox-info")&&errno!=saved)return 92;
  }
  if(!strcmp(component,"pptpd"))pptpd_closelog();
  printf("PRODUCER component=%s count=%d errno=%d\n",component,count,errno);
