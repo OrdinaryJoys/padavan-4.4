@@ -291,6 +291,25 @@ char *canonicalise(char *in, int *nomem)
   return ret;
 }
 
+/* The hosts parser immediately copies the result into its name blocks before
+ * reusing its private token buffer. Without IDN, check_name already performs
+ * every validation and trailing-dot transformation: no temporary name copy
+ * is needed. IDN keeps the existing conversion/allocation and failure rules.
+ * Other canonicalise callers retain their original owned-return contract. */
+char *canonicalise_hosts(char *in, int *nomem, int *owned)
+{
+  char *ret;
+  *owned = 0;
+#if defined(HAVE_IDN) || defined(HAVE_LIBIDN2)
+  ret = canonicalise(in, nomem);
+  if (ret) *owned = 1;
+#else
+  if (nomem) *nomem = 0;
+  ret = check_name(in) ? in : NULL;
+#endif
+  return ret;
+}
+
 unsigned char *do_rfc1035_name(unsigned char *p, char *sval, unsigned char *limit)
 {
   int j;

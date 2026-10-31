@@ -23,6 +23,8 @@ static int forks, waits, exits_seen, group_signals, after_reap, pipe_count;
 static int pipe_reads[2] = { -1, -1 };
 static unsigned long read_bytes[2];
 static int read_error_once;
+static int close_barrier[2] = { -1, -1 };
+static const char close_witness[] = "CLOSE31_EIO_WITNESS\n";
 static volatile sig_atomic_t signals_seen[4], reaped_direct;
 static void old_signal(int sig)
 {
@@ -41,14 +43,71 @@ static void old_reaper(int sig)
 	}
 	errno = saved;
 }
+static int fixture_fd_close_fault(void)
+{
+	return !strcmp(fault, "fd-close") || !strcmp(fault, "fd-close-pinned-exit");
+}
 static pid_t fixture_fork(void)
 {
 	pid_t pid;
+	int barrier = !strcmp(fault, "fd-close");
 	forks++;
 	if (!strcmp(fault, "fork")) { errno = EAGAIN; return -1; }
+	if (barrier)
+		assert(pipe(close_barrier) == 0);
 	pid = fork();
-	if (pid > 0) owned_child = pid;
+	if (pid < 0 && barrier) {
+		int saved = errno;
+		close(close_barrier[0]); close(close_barrier[1]);
+		close_barrier[0] = close_barrier[1] = -1;
+		errno = saved;
+	} else if (pid == 0 && barrier) {
+		char byte;
+		ssize_t got;
+		assert(close(close_barrier[1]) == 0);
+		close_barrier[1] = -1;
+		do { got = read(close_barrier[0], &byte, 1); } while (got < 0 && errno == EINTR);
+		if (got != 1 || byte != 'G') _exit(125);
+		assert(close(close_barrier[0]) == 0);
+		close_barrier[0] = -1;
+	} else if (pid > 0) {
+		owned_child = pid;
+		if (barrier) {
+			assert(close(close_barrier[0]) == 0);
+			close_barrier[0] = -1;
+		} else if (!strcmp(fault, "fd-close-pinned-exit")) {
+			siginfo_t info;
+			char witness[sizeof(close_witness)];
+			int result;
+			ssize_t got;
+			memset(&info, 0, sizeof(info));
+			do { result = waitid(P_PID, (id_t)pid, &info, WEXITED | WNOWAIT); }
+			while (result < 0 && errno == EINTR);
+			assert(result == 0 && info.si_pid == pid && info.si_code == CLD_EXITED && info.si_status == 126);
+			/* A real close31 witness proves this was the injected setup
+			 * exit, rather than an earlier setup failure. Preserve the
+			 * existing report schema and account the bytes actually read. */
+			do { got = read(pipe_reads[1], witness, sizeof(witness)); }
+			while (got < 0 && errno == EINTR);
+			assert(got == 20 && !memcmp(witness, close_witness, 20));
+			read_bytes[1] += (unsigned long)got;
+		}
+	}
 	return pid;
+}
+static int fixture_setpgid(pid_t pid, pid_t group)
+{
+	int result = setpgid(pid, group), saved = errno;
+	if (getpid() == owner && !strcmp(fault, "fd-close") && pid == owned_child) {
+		/* Release only after the parent has really established the group.
+		 * Closing on failure gives the child EOF; its normal setup error
+		 * cannot hang this fixture beyond the outer test deadline. */
+		if (result == 0) assert(write(close_barrier[1], "G", 1) == 1);
+		assert(close(close_barrier[1]) == 0);
+		close_barrier[1] = -1;
+	}
+	errno = saved;
+	return result;
 }
 static int fixture_pipe(int pair[2])
 {
@@ -60,7 +119,14 @@ static int fixture_pipe(int pair[2])
 }
 static int fixture_close(int fd)
 {
-	if (getpid() != owner && !strcmp(fault, "fd-close") && fd == 31) { errno = EIO; return -1; }
+	if (getpid() != owner && fixture_fd_close_fault() && fd == 31) {
+		ssize_t wrote;
+		do { wrote = write(STDERR_FILENO, close_witness, sizeof(close_witness) - 1); }
+		while (wrote < 0 && errno == EINTR);
+		assert(wrote == 20);
+		errno = EIO;
+		return -1;
+	}
 	return close(fd);
 }
 static ssize_t fixture_read(int fd, void *buffer, size_t size)
@@ -125,6 +191,7 @@ static int fixture_execv(const char *path, char *const arguments[])
 }
 #define HOOK_RUNNER_PROC_ROOT fixture_proc
 #define fork fixture_fork
+#define setpgid fixture_setpgid
 #define pipe fixture_pipe
 #define close fixture_close
 #define read fixture_read
@@ -133,6 +200,7 @@ static int fixture_execv(const char *path, char *const arguments[])
 #define execv fixture_execv
 #include "hook_runner.h"
 #undef fork
+#undef setpgid
 #undef pipe
 #undef close
 #undef read
@@ -181,8 +249,8 @@ int main(int argc, char **argv)
 	assert(sigaction(SIGCHLD, &action, NULL) == 0);
 	assert(sigaction(SIGCHLD, NULL, &expected_child) == 0);
 	sigemptyset(&before); sigaddset(&before, SIGUSR2); assert(sigprocmask(SIG_SETMASK, &before, NULL) == 0);
-	if (!strcmp(argv[9], "high-fd") || !strcmp(fault, "fd-close")) {
-		int fd = open("/dev/null", O_RDONLY), wanted = !strcmp(fault, "fd-close") ? 31 : 512;
+	if (!strcmp(argv[9], "high-fd") || fixture_fd_close_fault()) {
+		int fd = open("/dev/null", O_RDONLY), wanted = fixture_fd_close_fault() ? 31 : 512;
 		struct rlimit limit;
 		assert(fd >= 0 && fcntl(fd, F_DUPFD, wanted) == wanted && close(fd) == 0);
 		assert(getrlimit(RLIMIT_NOFILE, &limit) == 0); limit.rlim_cur = 64;

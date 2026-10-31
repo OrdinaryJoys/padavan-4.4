@@ -54,11 +54,12 @@ static char *querystr(char *desc, unsigned short type);
  * allocator as the candidate, and are released before publication. */
 #define HOSTS_INDEX_BUCKETS 1024U
 #define HOSTS_INDEX_BLOCK 64U
+#define HOSTS_REVERSE_BUCKETS 4096U
 struct hosts_index_name {
   struct hosts_index_name *next;
   const char *name;
   struct crec *first, *tail;
-  unsigned int generation, hash;
+  unsigned int generation, hash, bucket_hash;
   int nonterminals;
 };
 struct hosts_index_address {
@@ -78,7 +79,9 @@ struct hosts_address_block {
 };
 static struct {
   struct hosts_index_name **names;
+  struct hosts_index_name *recent_name;
   struct hosts_index_address **addresses;
+  struct crec **reverse;
   struct hosts_name_block *name_blocks;
   struct hosts_address_block *address_blocks;
   unsigned int generation, work;
@@ -100,16 +103,19 @@ static void hosts_index_end(void)
     }
   free(hosts_index.names);
   free(hosts_index.addresses);
+  free(hosts_index.reverse);
   memset(&hosts_index, 0, sizeof(hosts_index));
 }
 
 static int hosts_index_begin(void)
 {
-  if (hosts_index.names || hosts_index.addresses || hosts_index.name_blocks || hosts_index.address_blocks)
+  if (hosts_index.names || hosts_index.addresses || hosts_index.reverse ||
+      hosts_index.name_blocks || hosts_index.address_blocks)
     { dns_reload_fail("hosts preparation index is already active"); return 0; }
   hosts_index.names = whine_malloc(HOSTS_INDEX_BUCKETS * sizeof(*hosts_index.names));
   hosts_index.addresses = whine_malloc(HOSTS_INDEX_BUCKETS * sizeof(*hosts_index.addresses));
-  if (!hosts_index.names || !hosts_index.addresses)
+  hosts_index.reverse = whine_malloc(HOSTS_REVERSE_BUCKETS * sizeof(*hosts_index.reverse));
+  if (!hosts_index.names || !hosts_index.addresses || !hosts_index.reverse)
     { hosts_index_end(); return 0; }
   hosts_index.generation = 1;
   return 1;
@@ -127,15 +133,24 @@ static unsigned int hosts_name_hash(const char *name)
   return hash;
 }
 
+static unsigned int cache_name_hash(const char *name);
+
 static struct hosts_index_name *hosts_index_name(char *name, int create)
 {
   struct hosts_index_name *item;
-  unsigned int hash = hosts_name_hash(name), bucket = hash & (HOSTS_INDEX_BUCKETS - 1), work = 0;
+  unsigned int hash, bucket, work = 0;
   if (!hosts_index.names) return NULL;
+  /* A repeated canonical name is already validated and owned by this
+   * candidate. Avoid rehashing it for every address and during rehash. */
+  if (hosts_index.recent_name && hostname_isequal(hosts_index.recent_name->name, name))
+    return hosts_index.recent_name;
+  hash = hosts_name_hash(name);
+  bucket = hash & (HOSTS_INDEX_BUCKETS - 1);
   for (item = hosts_index.names[bucket]; item; item = item->next)
     {
       if (!cache_reload_step(&work)) return NULL;
-      if (item->hash == hash && hostname_isequal(item->name, name)) return item;
+      if (item->hash == hash && hostname_isequal(item->name, name))
+        { hosts_index.recent_name = item; return item; }
     }
   if (!create || !dns_reload_step(&hosts_index.work)) return NULL;
   if (!hosts_index.name_blocks || hosts_index.name_blocks->used == HOSTS_INDEX_BLOCK)
@@ -148,8 +163,10 @@ static struct hosts_index_name *hosts_index_name(char *name, int create)
   item = &hosts_index.name_blocks->entries[hosts_index.name_blocks->used++];
   item->name = name;
   item->hash = hash;
+  item->bucket_hash = cache_name_hash(name);
   item->next = hosts_index.names[bucket];
   hosts_index.names[bucket] = item;
+  hosts_index.recent_name = item;
   return item;
 }
 
@@ -310,6 +327,7 @@ static void cache_unlink(struct crec *crecp);
 static void cache_link(struct crec *crecp);
 static void rehash(int size);
 static int cache_hash(struct crec *crecp);
+static int cache_hash_known(struct crec *crecp, struct hosts_index_name *indexed);
 
 unsigned short rrtype(char *in)
 {
@@ -467,7 +485,7 @@ static void rehash(int size)
     }
 }
   
-static struct crec **hash_bucket(char *name)
+static unsigned int cache_name_hash(const char *name)
 {
   unsigned int c, val = 017465; /* Barker code - minimum self-correlation in cyclic shift */
   const unsigned char *mix_tab = (const unsigned char*)typestr; 
@@ -480,11 +498,16 @@ static struct crec **hash_bucket(char *name)
       val = ((val << 7) | (val >> (32 - 7))) + (mix_tab[(val + c) & 0x3F] ^ c);
     } 
   
-  /* hash_size is a power of two */
-  return hash_table + ((val ^ (val >> 16)) & (hash_size - 1));
+  return val ^ (val >> 16);
 }
 
-static int cache_hash(struct crec *crecp)
+static struct crec **hash_bucket(char *name)
+{
+  /* hash_size is a power of two. */
+  return hash_table + (cache_name_hash(name) & (hash_size - 1));
+}
+
+static int cache_hash_known(struct crec *crecp, struct hosts_index_name *indexed)
 {
   /* maintain an invariant that all entries with F_REVERSE set
      are at the start of the hash-chain  and all non-reverse
@@ -492,22 +515,26 @@ static int cache_hash(struct crec *crecp)
      This allows reverse searches and garbage collection to be optimised */
 
   char *name = cache_get_name(crecp);
-  struct crec **up = hash_bucket(name);
-  struct crec *first = *up;
-  struct hosts_index_name *indexed = NULL;
+  struct crec **up;
+  struct crec *first;
   unsigned int flags = crecp->flags & (F_IMMORTAL | F_REVERSE), reload_work = 0;
   if (!cache_rehashing && !dns_reload_work_ok()) return 0;
 
-  if (hosts_index.names && (crecp->flags & F_HOSTS) && (flags & F_REVERSE))
+  if (!hosts_index.names || !(crecp->flags & F_HOSTS) || !(flags & F_REVERSE))
+    indexed = NULL;
+  else if (!indexed)
     indexed = hosts_index_name(name, 0);
+  up = indexed ? hash_table + (indexed->bucket_hash & (hash_size - 1)) : hash_bucket(name);
+  first = *up;
 
   /* Only the first contiguous reverse group is eligible. A different name
    * inserted ahead of it, or a different generation, forces the original
-   * search. No pointer is used in the live cache or across preparation. */
+   * search. The saved first was checked for equal name when established
+   * below; its candidate name is immutable. No pointer is used in the live
+   * cache or across preparation. */
   if (indexed && indexed->generation == hosts_index.generation &&
       indexed->first == first && indexed->tail &&
-      (first->flags & (F_IMMORTAL | F_REVERSE)) == flags &&
-      hostname_isequal(cache_get_name(first), name))
+      (first->flags & (F_IMMORTAL | F_REVERSE)) == flags)
     {
       crecp->hash_next = indexed->tail->hash_next;
       indexed->tail->hash_next = crecp;
@@ -544,6 +571,11 @@ static int cache_hash(struct crec *crecp)
       indexed->generation = hosts_index.generation;
     }
   return 1;
+}
+
+static int cache_hash(struct crec *crecp)
+{
+  return cache_hash_known(crecp, NULL);
 }
 
 static void cache_blockdata_free(struct crec *crecp)
@@ -1573,9 +1605,24 @@ static void add_hosts_entry(struct crec *cache, union all_addr *addr, int addrle
   
   if (rhash)
     {
-      /* hash address */
-      for (j = 0, i = 0; i < addrlen; i++)
-	j = (j*2 +((unsigned char *)addr)[i]) % hashsz;
+      if (hosts_index.reverse)
+        {
+          /* The borrowed packet table is small and its original hash has
+           * long chains for sequential addresses. Only the shadow image
+           * uses this tracked fixed-size table; first-address PTR ordering
+           * and the existing temporary ->next links remain unchanged. */
+          rhash = hosts_index.reverse;
+          j = 2166136261U ^ (cache->flags & (F_IPV4 | F_IPV6));
+          for (i = 0; i < addrlen; i++)
+            j = (j ^ ((unsigned char *)addr)[i]) * 16777619U;
+          j &= HOSTS_REVERSE_BUCKETS - 1;
+        }
+      else
+        {
+          /* Preserve the incremental/legacy packet-table path. */
+          for (j = 0, i = 0; i < addrlen; i++)
+            j = (j*2 + ((unsigned char *)addr)[i]) % hashsz;
+        }
       
       for (lookup = rhash[j]; lookup && dns_reload_step(&reload_work); lookup = lookup->next)
 	if ((lookup->flags & cache->flags & (F_IPV4 | F_IPV6)) &&
@@ -1604,7 +1651,7 @@ static void add_hosts_entry(struct crec *cache, union all_addr *addr, int addrle
 
   cache->uid = index;
   memcpy(&cache->addr, addr, addrlen);  
-  if (!cache_hash(cache)) { free_config_crec(cache); return; }
+  if (!cache_hash_known(cache, indexed)) { free_config_crec(cache); return; }
   if (indexed)
     {
       if (!hosts_index_address(cache, address_hash)) return;
@@ -1733,7 +1780,7 @@ int read_hostsfile(char *filename, unsigned int index, int cache_size, struct cr
       while (atnl == 0 && dns_reload_work_ok())
 	{
 	  struct crec *cache;
-	  int fqdn, nomem;
+	  int fqdn, nomem, owned;
 	  char *canon;
 	  
 	  if ((atnl = hosts_gettok_unlocked(f, token, MAXDNAMESTR)) == -1)
@@ -1741,7 +1788,7 @@ int read_hostsfile(char *filename, unsigned int index, int cache_size, struct cr
 
 	  fqdn = !!strchr(token, '.');
 
-	  if ((canon = canonicalise(token, &nomem)))
+	  if ((canon = canonicalise_hosts(token, &nomem, &owned)))
 	    {
 	      /* If set, add a version of the name with a default domain appended */
 	      if (option_bool(OPT_EXPAND) && domain_suffix && !fqdn && (cache = get_config_crec()))
@@ -1775,7 +1822,7 @@ int read_hostsfile(char *filename, unsigned int index, int cache_size, struct cr
 		    }
 		}
 	      
-	      free(canon);
+	      if (owned) free(canon);
 	      
 	    }
 	  else if (!nomem)

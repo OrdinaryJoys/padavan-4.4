@@ -1503,6 +1503,7 @@ u64 rand64(void);
 int rr_on_list(struct rrlist *list, unsigned short rr);
 int legal_hostname(char *name);
 char *canonicalise(char *in, int *nomem);
+char *canonicalise_hosts(char *in, int *nomem, int *owned);
 unsigned char *do_rfc1035_name(unsigned char *p, char *sval, unsigned char *limit);
 void *safe_malloc(size_t size);
 void safe_strncpy(char *dest, const char *src, size_t size);

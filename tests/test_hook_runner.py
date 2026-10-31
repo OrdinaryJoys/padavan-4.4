@@ -153,9 +153,24 @@ fi
 
     def test_descriptor_close_error_prevents_exec(self):
         result = self.run_case(body='touch "$HOOK_EFFECT"\n', fault='fd-close')
-        self.assertEqual(result['status'], 126 << 8)
-        self.assertFalse(self.audit.exists())
-        self.assertFalse(self.effect.exists())
+        self.assertEqual(result['status'], 126 << 8, result)
+        self.assertEqual(result['error'], 0, result)
+        self.assertEqual(result['read_bytes'], [0,20], result)
+        self.assertFalse(self.audit.exists(), result)
+        self.assertFalse(self.effect.exists(), result)
+
+    def test_descriptor_close_pinned_exit_preserves_platform_group_failure_semantics(self):
+        result = self.run_case(body='touch "$HOOK_EFFECT"\n', fault='fd-close-pinned-exit')
+        if sys.platform == 'darwin':
+            self.assertEqual((result['status'], result['error']), (-1,errno.ESRCH), result)
+        else:
+            self.assertTrue(sys.platform.startswith('linux'), result)
+            self.assertEqual((result['status'], result['error']), (126 << 8,0), result)
+        self.assertEqual(result['read_bytes'], [0,20], result)
+        self.assertEqual(result['group_signals'], 0, result)
+        self.assertEqual(result['reaped_direct_by_old_handler'], 0, result)
+        self.assertFalse(self.audit.exists(), result)
+        self.assertFalse(self.effect.exists(), result)
 
     def test_fork_and_pipe_setup_failure_never_exec(self):
         for fault in ('fork', 'pipe'):
@@ -211,6 +226,7 @@ fi
 
     def test_term_ignoring_group_is_killed_within_absolute_budget(self):
         result = self.run_case(body="trap '' TERM\nprintf ready > \"$HOOK_EFFECT\"\nwhile :; do sleep 100; done\n", timeout=400)
+        self.assertTrue(self.effect.exists(), result)
         self.assertEqual(self.effect.read_text(), 'ready')
         self.assertLess(result['status'], 0)
         self.assertEqual(result['timeout'], 1)

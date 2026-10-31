@@ -81,7 +81,7 @@ static void fixture_hosts_unlock(FILE *stream) { assert(fixture_hosts_stream_loc
 #define flockfile(stream) fixture_hosts_lock(stream)
 #define funlockfile(stream) fixture_hosts_unlock(stream)
 int fixture_hosts_index_empty(void)
-{ return !hosts_index.names && !hosts_index.addresses && !hosts_index.name_blocks && !hosts_index.address_blocks && fixture_hosts_stream_locks==0; }
+{ return !hosts_index.names && !hosts_index.recent_name && !hosts_index.addresses && !hosts_index.reverse && !hosts_index.name_blocks && !hosts_index.address_blocks && fixture_hosts_stream_locks==0; }
 unsigned int fixture_hosts_hash_size(void) { return (unsigned int)hash_size; }
 unsigned int fixture_hosts_total(void)
 { int i;unsigned int count=0;struct crec *entry;for(i=0;i<hash_size;i++)for(entry=hash_table[i];entry;entry=entry->hash_next)if((entry->flags&F_HOSTS)&&(entry->flags&(F_IPV4|F_IPV6)))count++;return count; }
@@ -186,6 +186,51 @@ class DNSHostsIndexTests(unittest.TestCase):
         self.assertEqual(reports[1]['v6'][1:3], [1,1])
         self.assertEqual(reports[1]['reverse'].lower(), 'multi.fixture')
         self.assertEqual(reports[1]['ancestor'], 1)
+
+    def test_reverse_bucket_collisions_keep_first_PTR_mapping_across_files(self):
+        # Construct200 distinct IPv4 inputs in the same real4096 reverse
+        # bucket as10.0.0.1. Assertions inspect actual cached addresses/PTR,
+        # not a Python implementation of the cache's output model.
+        def bucket(parts):
+            value=2166136261 ^ (1<<7)
+            for part in parts:value=((value^part)*16777619)&4095
+            return value
+        target=bucket((10,0,0,1));inverse=pow(16777619,-1,4096)
+        addresses=[]
+        for prefix in range(65536):
+            first,second=198,prefix&255
+            value=bucket((first,second))
+            for third in range(256):
+                fourth=(((value^third)*16777619)&4095)^((target*inverse)&4095)
+                if fourth<256:
+                    address='%d.%d.%d.%d'%(first,second,third,fourth)
+                    if address not in addresses:addresses.append(address)
+                    if len(addresses)==200:break
+            if len(addresses)==200:break
+        self.assertEqual(len(addresses),200)
+        self.assertTrue(all(bucket(tuple(map(int,address.split('.'))))==target for address in addresses))
+        # This public replay's addn-hosts options are prepended, soH2 is
+        # visited first; the followingH1 alias must not replace its PTR.
+        first=self.new['H1']+'10.0.0.1 alias.fixture\n'+''.join(address+' repeated.fixture\n' for address in addresses)
+        second=self.new['H2']+'10.0.0.1 Multi.Fixture\n2001:db8::1 Multi.Fixture\n'
+        rows,reports,_=self.indexed_replay(bad={'H1':first,'H2':second})
+        self.assertEqual(rows[1]['accepted'],1)
+        self.assertEqual(reports[1]['v4'][0],200)
+        self.assertEqual(reports[1]['v6'][1],1)
+        self.assertEqual(reports[1]['reverse'],'Multi.Fixture')
+
+    def test_borrowed_names_preserve_expand_alias_case_and_reject_embedded_NUL(self):
+        original_run=transaction.subprocess.run
+        def run(argv,**kwargs):return original_run(list(argv)+['--expand-hosts','--domain=fixture'],**kwargs)
+        with patch.object(transaction.subprocess,'run',side_effect=run):
+            rows,reports,_=self.indexed_replay(bad={'H1':self.new['H1']+'10.0.0.1 Multi alias\n10.0.0.2 MULTI.fixture.\n'})
+        self.assertEqual(rows[1]['accepted'],1)
+        self.assertEqual(reports[1]['v4'][1:3],[2,1])
+        self.assertEqual(reports[1]['reverse'],'Multi.fixture')
+        rows,reports,_=self.indexed_replay(bad={'H1':self.new['H1']+'10.0.0.1 Multi.Fixture\x00hidden\n'})
+        self.assertEqual(rows[1]['accepted'],0)
+        self.assert_state(rows[1],False)
+        self.assertTrue(all(row['empty']==1 for row in reports))
 
     def test_real_ancestor_replaces_empty_then_additional_addresses_do_not_remove_it(self):
         first = self.new['H1']+'10.0.0.3 child.b.fixture\n10.0.0.4 B.fixture\n10.0.0.5 b.fixture\n'
