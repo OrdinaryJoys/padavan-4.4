@@ -100,6 +100,14 @@ static int mock_ioctl(int fd,unsigned long command,void*arg){
 static ssize_t device_write(int fd,const void*p,size_t n){
  if(fd!=device_fd||!state_is_maybe()||!memory_resident){event("UNSAFE-WRITE");errno=EPERM;return -1;}
  event("write");device_writes++;
+ {
+  const char *requests=getenv("WRITER_REQUESTS");
+  if(requests){char size[64];int f=open(requests,O_WRONLY|O_CREAT|O_APPEND,0600);int z=snprintf(size,sizeof(size),"%lu\n",(unsigned long)n);
+   if(f>=0){write(f,size,z);close(f);}}
+ }
+ if(fault("second-block-error")&&device_writes==2){errno=EIO;return -1;}
+ if(fault("second-block-zero")&&device_writes==2)return 0;
+ if(fault("over-request"))return (ssize_t)n+1;
  if(fault("write")){errno=EIO;return -1;}
  if(fault("zero"))return 0;
  if(fault("write-eintr")&&device_writes==1){errno=EINTR;return -1;}
@@ -203,12 +211,13 @@ int main(int argc,char**argv){if(argc!=4)return 99;_exit(firmware_upgrade_write(
         self.device = self.base / 'ordinary-file-mtd'
         with self.device.open('wb') as stream: stream.truncate(LIMIT)
         self.log = self.base / 'events'
+        self.requests = self.base / 'write-requests'
 
     def tearDown(self): self.temp.cleanup()
 
     def environment(self, fault=None):
         env = dict(os.environ, WRITER_DEVICE=str(self.device), WRITER_IMAGE=str(self.image),
-                   WRITER_LOG=str(self.log), WRITER_STATUS=str(self.status))
+                   WRITER_LOG=str(self.log), WRITER_STATUS=str(self.status), WRITER_REQUESTS=str(self.requests))
         if fault: env['WRITER_FAULT'] = fault
         else: env.pop('WRITER_FAULT', None)
         return env
@@ -401,6 +410,35 @@ int main(int argc,char**argv){if(argc!=4)return 99;_exit(firmware_upgrade_write(
                 finally:
                     if child.poll() is None: child.kill(); child.wait(timeout=2)
                     child.stdout.close(); os.close(readfd)
+
+    def test_large_image_device_requests_are_bounded_without_losing_short_or_eintr_progress(self):
+        self.image.write_bytes(image(payload_bytes=150000)); self.expected = self.image.read_bytes()
+        for fault in (None, 'write-eintr', 'short'):
+            with self.subTest(fault=fault):
+                self.status.unlink(missing_ok=True); self.log.unlink(missing_ok=True); self.requests.unlink(missing_ok=True)
+                result = self.run_writer(fault)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.record()['state'], 'VERIFIED')
+                requests = [int(n) for n in self.requests.read_text().splitlines()]
+                self.assertGreater(len(requests), 2)
+                self.assertEqual(max(requests), 65536)
+                self.assertTrue(all(0 < n <= 65536 for n in requests))
+                self.assertEqual(self.device.read_bytes()[:len(self.expected)], self.expected)
+                if fault is None: self.assertEqual(requests, [65536, 65536, 20480])
+                if fault == 'write-eintr': self.assertEqual(requests, [65536, 65536, 65536, 20480])
+                self.assertNotIn('memory-free', self.events())
+
+    def test_later_chunk_failure_zero_and_over_request_return_are_unknown(self):
+        self.image.write_bytes(image(payload_bytes=150000)); self.expected = self.image.read_bytes()
+        for fault in ('second-block-error', 'second-block-zero', 'over-request'):
+            with self.subTest(fault=fault):
+                self.status.unlink(missing_ok=True); self.log.unlink(missing_ok=True); self.requests.unlink(missing_ok=True)
+                result = self.run_writer(fault)
+                self.assert_unknown(result)
+                requests = [int(n) for n in self.requests.read_text().splitlines()]
+                self.assertEqual(requests, [65536] if fault == 'over-request' else [65536, 65536])
+                self.assertNotIn('readback', self.events())
+                self.assertNotIn('memory-free', self.events())
 
     def test_dynamic_binding_is_eager_in_production_link(self):
         self.assertIn('-Wl,-z,now',(SOURCE/'Makefile').read_text())

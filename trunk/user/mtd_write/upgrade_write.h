@@ -10,6 +10,7 @@
 #define FWUP_LIMIT 15925248U
 #define FWUP_SAFE 20
 #define FWUP_UNKNOWN 21
+#define FWUP_DEVICE_CHUNK (64U * 1024U)
 #ifndef FWUP_OPERATION_DIR
 #define FWUP_OPERATION_DIR "/tmp/.firmware_write"
 #endif
@@ -140,9 +141,15 @@ static int fwup_split(const char *path, char *parent, char *leaf, size_t capacit
 static int fwup_write_all(int fd, const unsigned char *data, size_t length, int state)
 {
 	while (length) {
-		ssize_t n = state ? FWUP_STATE_WRITE(fd, data, length) : FWUP_DEVICE_WRITE(fd, data, length);
+		size_t request = length;
+		ssize_t n;
+		/* mtdchar allocates a bounce buffer per write request. Bound that
+		 * kernel allocation without changing short-write/EINTR semantics. */
+		if (!state && request > FWUP_DEVICE_CHUNK)
+			request = FWUP_DEVICE_CHUNK;
+		n = state ? FWUP_STATE_WRITE(fd, data, request) : FWUP_DEVICE_WRITE(fd, data, request);
 		if (n < 0 && errno == EINTR) continue;
-		if (n <= 0 || (size_t)n > length) return -1;
+		if (n <= 0 || (size_t)n > request) return -1;
 		data += n; length -= (size_t)n;
 	}
 	return 0;
