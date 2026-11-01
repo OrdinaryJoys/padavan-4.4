@@ -81,6 +81,7 @@ static void m25p80_write(struct spi_nor *nor, loff_t to, size_t len,
 	struct spi_transfer t[2] = {};
 	struct spi_message m;
 	int cmd_sz = m25p_cmdsz(nor);
+	int ret;
 
 	spi_message_init(&m);
 
@@ -98,9 +99,13 @@ static void m25p80_write(struct spi_nor *nor, loff_t to, size_t len,
 	t[1].len = len;
 	spi_message_add_tail(&t[1], &m);
 
-	spi_sync(spi, &m);
-
-	*retlen += m.actual_length - cmd_sz;
+	ret = spi_sync(spi, &m);
+	/* The void callback communicates success only through its byte count.
+	 * Never turn a command-only/error completion into unsigned progress. */
+	if (ret || m.actual_length < (unsigned int)cmd_sz ||
+	    m.actual_length - cmd_sz != len || *retlen > SIZE_MAX - len)
+		return;
+	*retlen += len;
 }
 
 static inline unsigned int m25p80_rx_nbits(struct spi_nor *nor)
@@ -127,6 +132,7 @@ static int m25p80_read(struct spi_nor *nor, loff_t from, size_t len,
 	struct spi_transfer t[2];
 	struct spi_message m;
 	unsigned int dummy = nor->read_dummy;
+	int ret;
 
 	/* convert the dummy cycles to the number of bytes */
 	dummy /= 8;
@@ -146,9 +152,14 @@ static int m25p80_read(struct spi_nor *nor, loff_t from, size_t len,
 	t[1].len = len;
 	spi_message_add_tail(&t[1], &m);
 
-	spi_sync(spi, &m);
-
-	*retlen = m.actual_length - m25p_cmdsz(nor) - dummy;
+	*retlen = 0;
+	ret = spi_sync(spi, &m);
+	if (ret)
+		return ret < 0 ? ret : -EIO;
+	if (m.actual_length < m25p_cmdsz(nor) + dummy ||
+	    m.actual_length - m25p_cmdsz(nor) - dummy != len)
+		return -EIO;
+	*retlen = len;
 	return 0;
 }
 
@@ -163,9 +174,7 @@ static int m25p80_erase(struct spi_nor *nor, loff_t offset)
 	flash->command[0] = nor->erase_opcode;
 	m25p_addr2cmd(nor, offset, flash->command);
 
-	spi_write(flash->spi, flash->command, m25p_cmdsz(nor));
-
-	return 0;
+	return spi_write(flash->spi, flash->command, m25p_cmdsz(nor));
 }
 
 /*

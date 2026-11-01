@@ -445,7 +445,9 @@ static int spi_nor_erase(struct mtd_info *mtd, struct erase_info *instr)
 	if (len == mtd->size) {
 		unsigned long timeout;
 
-		write_enable(nor);
+		ret = write_enable(nor);
+		if (ret)
+			goto erase_err;
 
 		if (erase_chip(nor)) {
 			ret = -EIO;
@@ -473,7 +475,9 @@ static int spi_nor_erase(struct mtd_info *mtd, struct erase_info *instr)
 	/* "sector"-at-a-time erase */
 	} else {
 		while (len) {
-			write_enable(nor);
+			ret = write_enable(nor);
+			if (ret)
+				goto erase_err;
 
 			ret = spi_nor_erase_sector(nor, addr);
 			if (ret)
@@ -1085,6 +1089,22 @@ time_out:
 	return ret;
 }
 
+static int spi_nor_write_page(struct spi_nor *nor, loff_t to, size_t len,
+			    size_t *retlen, const u_char *buf)
+{
+	/* A void callback must report a complete page, even when status reads
+	 * ready after a failed or malformed transfer. */
+	size_t before = *retlen;
+	int ret = write_enable(nor);
+
+	if (ret)
+		return ret;
+	nor->write(nor, to, len, retlen, buf);
+	if (*retlen < before || *retlen - before != len)
+		return -EIO;
+	return 0;
+}
+
 /*
  * Write an address range to the nor chip.  Data must be written in
  * FLASH_PAGESIZE chunks.  The address range may be any size provided
@@ -1103,17 +1123,19 @@ static int spi_nor_write(struct mtd_info *mtd, loff_t to, size_t len,
 	if (ret)
 		return ret;
 
-	write_enable(nor);
-
 	page_offset = to & (nor->page_size - 1);
 
 	/* do all the bytes fit onto one page? */
 	if (page_offset + len <= nor->page_size) {
-		nor->write(nor, to, len, retlen, buf);
+		ret = spi_nor_write_page(nor, to, len, retlen, buf);
+		if (ret)
+			goto write_err;
 	} else {
 		/* the size of data remaining on the first page */
 		page_size = nor->page_size - page_offset;
-		nor->write(nor, to, page_size, retlen, buf);
+		ret = spi_nor_write_page(nor, to, page_size, retlen, buf);
+		if (ret)
+			goto write_err;
 
 		/* write everything in nor->page_size chunks */
 		for (i = page_size; i < len; i += page_size) {
@@ -1125,9 +1147,9 @@ static int spi_nor_write(struct mtd_info *mtd, loff_t to, size_t len,
 			if (ret)
 				goto write_err;
 
-			write_enable(nor);
-
-			nor->write(nor, to + i, page_size, retlen, buf + i);
+			ret = spi_nor_write_page(nor, to + i, page_size, retlen, buf + i);
+			if (ret)
+				goto write_err;
 		}
 	}
 

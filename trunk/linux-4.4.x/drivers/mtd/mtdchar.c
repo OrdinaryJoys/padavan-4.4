@@ -177,6 +177,7 @@ static ssize_t mtdchar_read(struct file *file, char __user *buf, size_t count,
 	while (count) {
 		len = min_t(size_t, count, size);
 
+		retlen = 0;
 		switch (mfi->mode) {
 		case MTD_FILE_MODE_OTP_FACTORY:
 			ret = mtd_read_fact_prot_reg(mtd, *ppos, len,
@@ -189,6 +190,8 @@ static ssize_t mtdchar_read(struct file *file, char __user *buf, size_t count,
 		case MTD_FILE_MODE_RAW:
 		{
 			struct mtd_oob_ops ops;
+
+			memset(&ops, 0, sizeof(ops));
 
 			ops.mode = MTD_OPS_RAW;
 			ops.datbuf = kbuf;
@@ -212,6 +215,11 @@ static ssize_t mtdchar_read(struct file *file, char __user *buf, size_t count,
 		 * must be aware of the fact that it deals with NAND
 		 */
 		if (!ret || mtd_is_bitflip_or_eccerr(ret)) {
+			/* A driver count must not overrun kbuf or underflow count. */
+			if (retlen > (size_t)len) {
+				kfree(kbuf);
+				return -EIO;
+			}
 			*ppos += retlen;
 			if (copy_to_user(buf, kbuf, retlen)) {
 				kfree(kbuf);
@@ -271,6 +279,7 @@ static ssize_t mtdchar_write(struct file *file, const char __user *buf, size_t c
 			return -EFAULT;
 		}
 
+		retlen = 0;
 		switch (mfi->mode) {
 		case MTD_FILE_MODE_OTP_FACTORY:
 			ret = -EROFS;
@@ -283,6 +292,8 @@ static ssize_t mtdchar_write(struct file *file, const char __user *buf, size_t c
 		case MTD_FILE_MODE_RAW:
 		{
 			struct mtd_oob_ops ops;
+
+			memset(&ops, 0, sizeof(ops));
 
 			ops.mode = MTD_OPS_RAW;
 			ops.datbuf = kbuf;
@@ -308,6 +319,11 @@ static ssize_t mtdchar_write(struct file *file, const char __user *buf, size_t c
 			break;
 
 		if (!ret) {
+			/* Every successful iteration must make bounded progress. */
+			if (!retlen || retlen > (size_t)len) {
+				kfree(kbuf);
+				return -EIO;
+			}
 			*ppos += retlen;
 			total_retlen += retlen;
 			count -= retlen;
