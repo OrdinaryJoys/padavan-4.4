@@ -10,6 +10,9 @@ include $(SHDIR)/boards.mk
 include $(SHDIR)/cflags.mk
 
 CFLAGS += -s -I. -I$(SHDIR) -I$(SHDIR)/include
+# The shared admission header uses openat/fstatat and GNU open flags in every
+# rc.h consumer, including files which do not define feature macros locally.
+CFLAGS += -D_GNU_SOURCE=
 CFLAGS += -I$(USERDIR)/wireless_tools
 CFLAGS += -I$(ROOTDIR)/$(LINUXDIR)/include/ralink
 
@@ -19,6 +22,9 @@ CFLAGS += -I$(ROOTDIR)/$(LINUXDIR)/include/ralink
 LDFLAGS += -L. -lm -lrt
 LDFLAGS += -L$(USERDIR)/wireless_tools -liw
 LDFLAGS += -L$(SHDIR) -lshared
+# Resolve signal/quarantine and post-write symbols while the old ROMfs is
+# intact. This does not establish complete code/data residency under pressure.
+LDFLAGS += -Wl,-z,now
 ifeq ($(STORAGE_ENABLED),y)
 CFLAGS += -I$(USERDIR)/libdisk
 LDFLAGS += -L$(USERDIR)/libdisk -ldisk
@@ -68,6 +74,8 @@ endif
 all: $(OBJS) Makefile
 	$(CC) -o $(EXEC) $(OBJS) $(LDFLAGS)
 	$(STRIP) $(EXEC)
+
+$(OBJS): rc.h $(SHDIR)/upgrade_guard.h
 
 rc.o: hook_runner.h
 

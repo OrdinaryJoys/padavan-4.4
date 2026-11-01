@@ -11,6 +11,7 @@
 #include <errno.h>
 
 #include "rc.h"
+#include <upgrade_guard.h>
 #include "gpio_pins.h"
 #include <gpioutils.h>
 
@@ -145,6 +146,13 @@ static void nlmsg_handle(const char *msg, int len, btn_event *ev)
 	}
 }
 
+static void
+upgrade_gpio_event_release(int *fd)
+{
+	if (*fd >= 0)
+		upgrade_action_leave(*fd);
+}
+
 static void sig_handle(int signum)
 {
 	running = 0;
@@ -152,6 +160,9 @@ static void sig_handle(int signum)
 
 static void btn_released_handle(int btn_id, int count)
 {
+	int upgrade_fd __attribute__((cleanup(upgrade_gpio_event_release))) = upgrade_action_enter();
+	if (upgrade_fd < 0)
+		return;
 	btn_dbg("released_handle: btn=0x%x, count=%d\n", btn_id, count);
 
 	if (btn_id == BTN_RESET) {
@@ -177,6 +188,16 @@ static void btn_released_handle(int btn_id, int count)
 static void btn_ev_handle(btn_event *ev)
 {
 	struct btn_entrys_t *btn;
+	int upgrade_fd __attribute__((cleanup(upgrade_gpio_event_release))) = upgrade_action_enter();
+	if (upgrade_fd < 0) {
+		/* Do not replay a partially counted press after a safe abort. Only
+		 * reset local input bookkeeping; no GPIO/config/service effect. */
+		for (btn = &btn_entrys[0]; btn->btn_id; btn++)
+			btn->count = 0;
+		ev->event = 0;
+		ev->btn_id = 0;
+		return;
+	}
 	int cnt;
 	int pwr_led;
 

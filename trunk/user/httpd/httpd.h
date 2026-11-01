@@ -62,6 +62,15 @@ extern int http_csrf_allowed(const char *host, const char *origin, const char *r
                             const char *fetch_site, int explicit_request, int secure, int is_get);
 extern int http_request_changes_state(int post, int head, const char *file, const char *query);
 
+/* The daemon handles one request at a time. Nested CGI helpers borrow the
+ * request lease; direct helper calls own one until every return path exits. */
+extern int http_upgrade_action_acquire(void);
+extern void http_upgrade_action_release(int *owned);
+extern void http_upgrade_action_handoff(void);
+#define HTTP_UPGRADE_ACTION_GUARD(failure) \
+	int http_upgrade_owned __attribute__((cleanup(http_upgrade_action_release))) = http_upgrade_action_acquire(); \
+	if (http_upgrade_owned < 0) return failure
+
 /* CGI helper functions */
 extern void init_cgi(char *query);
 extern char *get_cgi(char *name);

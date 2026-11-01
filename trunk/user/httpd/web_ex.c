@@ -89,6 +89,7 @@ extern int http_is_ssl;
 void
 nvram_commit_safe(void)
 {
+	HTTP_UPGRADE_ACTION_GUARD();
 	if (nvram_get_int("nvram_manual") == 1)
 		return;
 
@@ -98,6 +99,7 @@ nvram_commit_safe(void)
 void
 sys_reboot(void)
 {
+	HTTP_UPGRADE_ACTION_GUARD();
 #ifdef MTD_FLASH_32M_REBOOT_BUG
 	doSystem("/sbin/mtd_storage.sh %s", "save");
 	system("/bin/mtd_write -r unlock mtd1");
@@ -150,6 +152,7 @@ websRedirect(webs_t wp, const char *url)
 static void
 sys_script(char *name)
 {
+	HTTP_UPGRADE_ACTION_GUARD();
 	char scmd[64];
 	int u2ec_fifo;
 #if defined(USE_IPV6)
@@ -264,6 +267,7 @@ sys_script(char *name)
 static int
 write_file_dos2unix(const char* value, const char* file_path)
 {
+	HTTP_UPGRADE_ACTION_GUARD(-1);
 	FILE *fp;
 	int i_len;
 	char *v1, *v2, *v3;
@@ -299,6 +303,7 @@ write_file_dos2unix(const char* value, const char* file_path)
 static int
 write_textarea_to_file(const char* value, const char* dir_name, const char* file_name)
 {
+	HTTP_UPGRADE_ACTION_GUARD(-1);
 	int file_type, ret;
 	char *extensions;
 	char temp_path[64];
@@ -732,6 +737,7 @@ ej_dump(int eid, webs_t wp, int argc, char **argv)
 static void
 validate_cgi(webs_t wp, int sid)
 {
+	HTTP_UPGRADE_ACTION_GUARD();
 	struct variable *v;
 	char *value;
 	char name[64];
@@ -867,6 +873,7 @@ validate_nvram_lan_subnet(void)
 static int
 validate_asp_apply(webs_t wp, int sid)
 {
+	HTTP_UPGRADE_ACTION_GUARD(0);
 	u64 event_mask;
 	int user_changed = 0;
 	int pass_changed = 0;
@@ -1165,6 +1172,7 @@ pinvalidate(char *pin_string)
 static int
 update_variables_ex(int eid, webs_t wp, int argc, char **argv)
 {
+	HTTP_UPGRADE_ACTION_GUARD(0);
 	int sid;
 	char *action_mode;
 	char *sid_list;
@@ -1324,6 +1332,7 @@ update_variables_ex(int eid, webs_t wp, int argc, char **argv)
 static int
 asus_nvram_commit(int eid, webs_t wp, int argc, char **argv)
 {
+	HTTP_UPGRADE_ACTION_GUARD(0);
 	if (nvram_modified) {
 		nvram_modified = 0;
 		nvram_commit_safe();
@@ -1335,6 +1344,7 @@ asus_nvram_commit(int eid, webs_t wp, int argc, char **argv)
 static int
 ej_notify_services(int eid, webs_t wp, int argc, char **argv)
 {
+	HTTP_UPGRADE_ACTION_GUARD(0);
 	int i;
 
 	if (!restart_needed_bits)
@@ -2014,6 +2024,7 @@ static int
 applydb_cgi(webs_t wp, char *urlPrefix, char *webDir, int arg,
 		char *url, char *path, char *query)
 {
+	HTTP_UPGRADE_ACTION_GUARD(-1);
 	char *action_mode;
 	char *action_script;
 	char dbjson[100][9999];
@@ -2345,6 +2356,7 @@ static int update_action_hook(int eid, webs_t wp, int argc, char **argv)
 static int
 ej_detect_internet_hook(int eid, webs_t wp, int argc, char **argv)
 {
+	HTTP_UPGRADE_ACTION_GUARD(0);
 	kill_pidfile_s("/var/run/detect_internet.pid", SIGHUP);
 
 	return 0;
@@ -3479,6 +3491,7 @@ int ej_shown_language_option(int eid, webs_t wp, int argc, char **argv) {
 static int
 apply_cgi(const char *url, webs_t wp)
 {
+	HTTP_UPGRADE_ACTION_GUARD(-1);
 	char *value;
 	char *current_url;
 	char *next_url;
@@ -3613,7 +3626,7 @@ apply_cgi(const char *url, webs_t wp)
 				char *value1 = websGetVar(wp, "action_mode", NULL);
 				if (value1 != NULL) {
 					char groupId[64];
-					snprintf(groupId, sizeof(groupId), websGetVar(wp, "group_id", ""));
+					snprintf(groupId, sizeof(groupId), "%s", websGetVar(wp, "group_id", ""));
 					
 					if (!strncmp(value1, " Delete ", 8))
 						apply_cgi_group(wp, sid, NULL, groupId, GROUP_FLAG_DELETE);
@@ -3998,7 +4011,11 @@ do_apply_cgi(const char *url, FILE *stream)
 static void
 do_upgrade_fw_cgi(const char *url, FILE *stream)
 {
+	HTTP_UPGRADE_ACTION_GUARD();
 	if (f_exists(FW_IMG_NAME) && (get_login_safe() || get_login_valid())) {
+		/* Upload/CRC are finished. Relinquish this request's SH before PID1
+		 * starts PREPARE; the remaining response only renders Updating.asp. */
+		http_upgrade_action_handoff();
 		notify_rc("flash_firmware");
 		websApply(stream, "Updating.asp");
 	} else {
@@ -4010,6 +4027,7 @@ do_upgrade_fw_cgi(const char *url, FILE *stream)
 static void
 do_restore_nv_cgi(const char *url, FILE *stream)
 {
+	HTTP_UPGRADE_ACTION_GUARD();
 	char *upload_file = PROFILE_FIFO_UPLOAD;
 	int ret = -1;
 
@@ -4039,6 +4057,7 @@ do_restore_nv_cgi(const char *url, FILE *stream)
 static void
 do_restore_st_cgi(const char *url, FILE *stream)
 {
+	HTTP_UPGRADE_ACTION_GUARD();
 	const char *upload_file = STORAGE_FIFO_FILENAME;
 	int ret = -1;
 
@@ -4064,6 +4083,7 @@ cleanup_nvram_download(void)
 static int
 prepare_nvram_download(const char *url)
 {
+	HTTP_UPGRADE_ACTION_GUARD(503);
 	struct stat info;
 	cleanup_nvram_download();
 	if (!get_login_safe())
@@ -4092,6 +4112,7 @@ cleanup_storage_download(void)
 static int
 prepare_storage_download(const char *url)
 {
+	HTTP_UPGRADE_ACTION_GUARD(503);
 	struct stat info;
 	cleanup_storage_download();
 	if (!get_login_safe())
@@ -4313,6 +4334,7 @@ ej_netdev(int eid, webs_t wp, int argc, char **argv)
 static int
 ej_bandwidth(int eid, webs_t wp, int argc, char **argv)
 {
+	HTTP_UPGRADE_ACTION_GUARD(0);
 	char *netdev;
 	const char *fname = RSTATS_JS_SPEED, *nvkey = RSTATS_NVKEY_24;
 	int bw_id = 0, sig = SIGUSR1;

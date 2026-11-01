@@ -120,7 +120,7 @@ class UpgradeStorageGateTests(unittest.TestCase):
             with self.subTest(options=options):
                 result = self.run_case(**options)
                 self.assert_before_quiesce(result)
-                self.assertFalse(list((self.root / 'private').iterdir()))
+                self.assertEqual([p.name for p in (self.root / 'private').iterdir()], ['firmware-action.lock'])
         self.assert_safe_recovery(self.run_case(stage_fault=5))
 
     def test_initially_absent_watchdog_is_rejected_without_hardware_open(self):
@@ -143,7 +143,7 @@ class UpgradeStorageGateTests(unittest.TestCase):
                 trace = result['trace'].strip(',').split(',')
                 self.assertLess(trace.index('hardware-disable'), trace.index('writer'))
                 self.assertEqual(trace[-2:], ['start:watchdog', 'unpin'])
-                self.assertFalse(list((self.root / 'private').iterdir()))
+                self.assertEqual([p.name for p in (self.root / 'private').iterdir()], ['firmware-action.lock'])
 
     def test_storage_usb_superset_compiles_without_detach_or_unknown_service_restart(self):
         original = self.binary

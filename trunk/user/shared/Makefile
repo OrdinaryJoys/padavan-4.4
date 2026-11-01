@@ -14,8 +14,10 @@ OBJS := shutils.o netutils.o rtutils.o defaults.o nvram_linux.o notify_rc.o bin_
 
 all: libshared.so
 
-libshared.so: $(OBJS)
-	$(LD) -shared -o $@ $^
+libshared.so: $(OBJS) Makefile
+	# Resolve this DSO's own imports before a later firmware write can replace
+	# ROMfs. This does not imply recursive libc binding or full page residency.
+	$(LD) -shared -z now -o $@ $(OBJS)
 
 romfs:
 	$(ROMFSINST) -S /lib/libshared.so

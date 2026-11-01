@@ -4,8 +4,16 @@
 #include <unistd.h>
 
 #include "rc.h"
+#include <upgrade_guard.h>
 #include "gpio_pins.h"
 #include <gpioutils.h>
+
+static void
+upgrade_gpio_action_release(int *fd)
+{
+	if (*fd >= 0)
+		upgrade_action_leave(*fd);
+}
 
 static void
 ez_action_toggle_wifi2(void)
@@ -232,6 +240,9 @@ ez_action_led_toggle(void)
 void
 btn_event_short(int btn_id)
 {
+	int upgrade_fd __attribute__((cleanup(upgrade_gpio_action_release))) = upgrade_action_enter();
+	if (upgrade_fd < 0)
+		return;
 	int ez_action = 0;
 	int ez_param = 1;
 
@@ -314,6 +325,9 @@ btn_event_short(int btn_id)
 void
 btn_event_long(int btn_id)
 {
+	int upgrade_fd __attribute__((cleanup(upgrade_gpio_action_release))) = upgrade_action_enter();
+	if (upgrade_fd < 0)
+		return;
 	int ez_action = 0;
 	int ez_param = 2;
 
@@ -400,6 +414,9 @@ btn_event_long(int btn_id)
 void
 btn_reset_action(void)
 {
+	int upgrade_fd __attribute__((cleanup(upgrade_gpio_action_release))) = upgrade_action_enter();
+	if (upgrade_fd < 0)
+		return;
 	erase_nvram();
 	erase_storage();
 	sys_exit();

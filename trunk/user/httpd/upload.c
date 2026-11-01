@@ -390,6 +390,7 @@ out:
 void
 do_upgrade_fw_post(const char *url, FILE *stream, int clen, char *boundary)
 {
+	HTTP_UPGRADE_ACTION_GUARD();
 	const char *upload_file = FW_IMG_NAME;
 	struct statvfs vfs;
 	unsigned long long avail = 0;
@@ -431,6 +432,7 @@ do_upgrade_fw_post(const char *url, FILE *stream, int clen, char *boundary)
 void
 do_restore_nv_post(const char *url, FILE *stream, int clen, char *boundary)
 {
+	HTTP_UPGRADE_ACTION_GUARD();
 	const char *upload_file = PROFILE_FIFO_UPLOAD;
 
 	do_upload_file(stream, clen, NULL, upload_file, "file_nv", check_header_nvram, 8);
@@ -439,6 +441,7 @@ do_restore_nv_post(const char *url, FILE *stream, int clen, char *boundary)
 void
 do_restore_st_post(const char *url, FILE *stream, int clen, char *boundary)
 {
+	HTTP_UPGRADE_ACTION_GUARD();
 	const char *upload_file = STORAGE_FIFO_FILENAME;
 	char bndr[128];
 

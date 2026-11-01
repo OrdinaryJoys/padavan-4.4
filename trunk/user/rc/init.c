@@ -87,6 +87,19 @@ notify_shutdown(void)
 static void
 catch_sig_fatal(int sig)
 {
+	/* This path can interrupt the writer wait after the rootfs was replaced.
+	 * No filesystem, logging, allocation or ordinary shutdown is safe here.
+	 * Reject management signals; quarantine a genuine fault without returning
+	 * to a faulting instruction or exiting PID1 and panicking the kernel. */
+	if (firmware_upgrade_signal_inhibited()) {
+		if (sig == SIGTERM || sig == SIGQUIT)
+			return;
+		firmware_upgrade_signal_fault();
+		sig_term_received = 1;
+		for (;;)
+			pause();
+	}
+
 	sig_term_received = 1;
 
 	printf("%s signal: %s\n", "fatal", strsignal(sig));
@@ -118,6 +131,15 @@ catch_sig_fatal(int sig)
 static void
 catch_sig_event(int sig)
 {
+	/* Retain coalesced work for a safe abort, without logging or executing it
+	 * against a possibly replaced ROMfs. The main loop stays parked on hold. */
+	if (firmware_upgrade_signal_inhibited()) {
+		if (sig == SIGUSR1)
+			sig_usr1_received = 1;
+		else if (sig == SIGALRM)
+			sig_alrm_received = 1;
+		return;
+	}
 	printf("%s signal: %s\n", "event", strsignal(sig));
 
 	if (sig_term_received)
@@ -145,7 +167,8 @@ catch_sig_reap(int sig)
 	pid_t pid;
 
 	while ((pid = waitpid(-1, NULL, WNOHANG)) > 0)
-		dprintf("Reaped %d\n", pid);
+		if (!firmware_upgrade_signal_inhibited())
+			dprintf("Reaped %d\n", pid);
 }
 
 /* Set terminal settings to reasonable defaults */
@@ -317,6 +340,8 @@ init_signals(void)
 		sigaddset(&sa.sa_mask, signals_event[i]);
 	for (i = 0; i < ARRAY_SIZE(signals_fatal); i++)
 		sigaddset(&sa.sa_mask, signals_fatal[i]);
+	/* A quarantined fatal handler must not enter the logging child reaper. */
+	sigaddset(&sa.sa_mask, SIGCHLD);
 	for (i = 0; i < ARRAY_SIZE(signals_fatal); i++)
 		sigaction(signals_fatal[i], &sa, NULL);
 
@@ -496,6 +521,12 @@ init_main_loop(void)
 	for (;;) {
 		sigset_t ss;
 		sigemptyset(&ss);
+		/* A write with no safe outcome, or a reboot syscall that returned,
+		 * must not resume console spawning or deferred hotplug/USB work. */
+		if (firmware_upgrade_signal_inhibited()) {
+			sigsuspend(&ss);
+			continue;
+		}
 		
 		/* Wait for user input or state change */
 		while ( !sig_usr1_received &&
@@ -511,6 +542,8 @@ init_main_loop(void)
 			sig_usr1_received = 0;
 			handle_notifications();
 		}
+		if (firmware_upgrade_signal_inhibited())
+			continue;
 		
 		/* Handle SIGALRM signal */
 		if (sig_alrm_received) {
@@ -525,11 +558,21 @@ init_main_loop(void)
 int
 sys_exit(void)
 {
-	return kill(1, SIGTERM);
+	int result, lease = upgrade_action_enter();
+	if (lease < 0)
+		return -1;
+	result = kill(1, SIGTERM);
+	upgrade_action_leave(lease);
+	return result;
 }
 
 int
 sys_stop(void)
 {
-	return kill(1, SIGQUIT);
+	int result, lease = upgrade_action_enter();
+	if (lease < 0)
+		return -1;
+	result = kill(1, SIGQUIT);
+	upgrade_action_leave(lease);
+	return result;
 }

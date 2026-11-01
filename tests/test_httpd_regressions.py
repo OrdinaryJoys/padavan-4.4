@@ -79,7 +79,13 @@ struct mime_handler { const char *pattern; const char *mime_type; const char *ex
  void (*input)(const char*,FILE*,int,char*); void (*output)(const char*,FILE*); int need_auth; int (*prepare)(const char*); void (*cleanup)(void); };
 static void fake_input(const char*u,FILE*f,int n,char*b){input_calls++;}
 static void fake_output(const char*u,FILE*f){action_calls++;}
-static struct mime_handler mime_handlers[]={{"*","text/html",NULL,fake_input,fake_output,1},{0}};
+static struct mime_handler mime_handlers[]={{"*","text/html",NULL,fake_input,fake_output,1,NULL,NULL},{0}};
+/* Legacy HTTP tests model an idle lease. Real SH/EX contention and busy
+ * request/helper behavior are covered by test_upgrade_transaction.py. */
+static int http_upgrade_action_acquire(void){return 0;}
+static void http_upgrade_action_release(int*owned){}
+static void http_upgrade_action_handoff(void){}
+#define HTTP_UPGRADE_ACTION_GUARD(failure) int http_upgrade_owned __attribute__((cleanup(http_upgrade_action_release)))=http_upgrade_action_acquire();if(http_upgrade_owned<0)return failure
 static void http_request_allow_body(void){}
 static void do_cgi_clear(void){}
 static void do_uncgi_query(char*q){}

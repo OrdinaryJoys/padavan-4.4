@@ -8,7 +8,7 @@ SHDIR = $(ROOTDIR)/user/shared
 include $(SHDIR)/boards.mk
 include $(SHDIR)/cflags.mk
 
-CFLAGS += -Wall -I. -I$(SHDIR) -I$(SHDIR)/include
+CFLAGS += -Wall -D_GNU_SOURCE= -I. -I$(SHDIR) -I$(SHDIR)/include
 CFLAGS += -I$(USERDIR)/wireless_tools
 
 LDFLAGS += -L. -lm -lrt
@@ -49,6 +49,9 @@ OBJS += dbapi.o
 all: $(OBJS) Makefile
 	$(CC) -o $(EXEC) $(OBJS) $(LDFLAGS)
 	$(STRIP) $(EXEC)
+
+httpd.o web_ex.o upload.o: httpd.h
+httpd.o: $(SHDIR)/upgrade_guard.h
 
 c.o:
 	$(CC) -c $*.c $(CFLAGS)

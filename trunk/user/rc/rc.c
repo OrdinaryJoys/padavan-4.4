@@ -482,28 +482,41 @@ erase_nvram(void)
 #define FW_UPGRADE_WRITER "/bin/mtd_write"
 #define FW_UPGRADE_MAX_BYTES 15925248UL
 
+/* PID1-only state. Signal handlers read/write only these memory latches,
+ * never the inter-process marker/lease or libc diagnostics. */
+static volatile sig_atomic_t firmware_upgrade_pid1_active;
+static volatile sig_atomic_t firmware_upgrade_pid1_fault;
+
+int
+firmware_upgrade_signal_inhibited(void)
+{
+	return firmware_upgrade_pid1_active;
+}
+
+void
+firmware_upgrade_signal_fault(void)
+{
+	firmware_upgrade_pid1_fault = 1;
+}
+
 /* A marker in the boot-created private directory also stops WAN callbacks
  * from rearming the watchdog after an indeterminate firmware write. An
  * unsafe/inaccessible private directory or marker must fail closed. */
 int
 firmware_upgrade_inhibited(void)
 {
-	struct stat st;
-	int fd, result;
+	return upgrade_actions_blocked();
+}
 
-	fd = open(FW_UPGRADE_PRIVATE, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-	if (fd < 0)
-		return errno != ENOENT;
-	if (fstat(fd, &st) != 0 || st.st_uid != 0 || (st.st_mode & 07777) != 0700) {
-		close(fd);
-		return 1;
-	}
-	result = fstatat(fd, FW_UPGRADE_INHIBIT, &st, AT_SYMLINK_NOFOLLOW);
-	if (result == 0)
-		result = 1; /* Even a malformed existing marker is not permission to reboot. */
-	else
-		result = errno != ENOENT;
-	close(fd);
+int
+reset_to_defaults(void)
+{
+	int result, lease = upgrade_action_enter();
+	if (lease < 0)
+		return -1;
+	erase_nvram();
+	result = sys_exit();
+	upgrade_action_leave(lease);
 	return result;
 }
 
@@ -782,7 +795,8 @@ flash_firmware(void)
 	char attempt[] = FW_UPGRADE_PRIVATE "/fwupgrade.XXXXXX";
 	char writer[sizeof(attempt) + 16], record[sizeof(attempt) + 16];
 	pid_t child;
-	int status, result, i, resident = 0;
+	int status, result, i, resident = 0, lease = -1, marker_owned = 0;
+	int attempt_created = 0;
 	struct firmware_upgrade_service services[] = {
 		{ "watchdog", firmware_upgrade_stop_watchdog, start_watchdog, 0 },
 		{ "rstats", stop_rstats, start_rstats, 0 },
@@ -794,10 +808,27 @@ flash_firmware(void)
 	};
 	int service_count = sizeof(services) / sizeof(services[0]);
 
+	firmware_upgrade_pid1_active = 1;
 	if (firmware_upgrade_inhibited()) {
 		logmessage("firmware", "Previous upgrade state is unresolved; queued upgrade/reboot and watchdog rearm inhibited");
 		return 1;
 	}
+	/* Arm the asynchronous PID1 guard before asking for exclusive admission.
+	 * Existing supported management actions hold shared leases; abort without
+	 * waiting or doing Storage/hook side effects if any are still in flight. */
+	lease = upgrade_transaction_enter();
+	if (lease < 0) {
+		logmessage("firmware", "Upgrade admission is busy or unsafe; upgrade aborted before preparation");
+		if (firmware_upgrade_inhibited())
+			return 1;
+		firmware_upgrade_pid1_active = 0;
+		return 0;
+	}
+	if (firmware_upgrade_inhibit(1) != 0) {
+		logmessage("firmware", "Cannot inhibit management actions safely; upgrade aborted before preparation");
+		goto safe_cleanup;
+	}
+	marker_owned = 1;
 
 	/* Fail while management services and the watchdog are still running.
 	 * This is a validated save snapshot, not a lock on non-cooperating
@@ -806,7 +837,7 @@ flash_firmware(void)
 	status = write_storage_to_mtd();
 	if (status != 0) {
 		logmessage("firmware", "Storage save failed before upgrade (status %d); upgrade aborted", status);
-		return 0;
+		goto safe_cleanup;
 	}
 
 	/* Run the user hook while core services are still available, so its
@@ -815,7 +846,7 @@ flash_firmware(void)
 		status = shutdown_hook_run(script_name, 0, HOOK_RUNNER_TIMEOUT_MS, HOOK_RUNNER_TERM_MS, HOOK_RUNNER_KILL_MS);
 		if (status != 0) {
 			logmessage("firmware", "Shutdown hook failed (status %d, runner error %d); upgrade aborted", status, errno);
-			return 0;
+			goto safe_cleanup;
 		}
 		/* Preserve completed hook edits before stopping services. On failure
 		 * the hook's own side effects cannot be undone, but do not stop any
@@ -823,14 +854,15 @@ flash_firmware(void)
 		status = write_storage_to_mtd();
 		if (status != 0) {
 			logmessage("firmware", "Storage save after shutdown hook failed (status %d); upgrade aborted", status);
-			return 0;
+			goto safe_cleanup;
 		}
 	}
 
 	if (!mkdtemp(attempt)) {
 		logmessage("firmware", "Cannot create private upgrade attempt; upgrade aborted");
-		return 0;
+		goto safe_cleanup;
 	}
+	attempt_created = 1;
 	snprintf(writer, sizeof(writer), "%s/writer", attempt);
 	snprintf(record, sizeof(record), "%s/status", attempt);
 	if (firmware_upgrade_stage_writer(writer) != 0) {
@@ -852,10 +884,6 @@ flash_firmware(void)
 		goto safe_cleanup;
 	}
 	resident = 1;
-	if (firmware_upgrade_inhibit(1) != 0) {
-		logmessage("firmware", "Cannot inhibit automatic reboot safely; upgrade aborted");
-		goto safe_cleanup;
-	}
 	if (firmware_upgrade_services(services, service_count, 0) != 0) {
 		logmessage("firmware", "Upgrade quiesce failed before writer; recovering stopped services");
 		goto safe_recover;
@@ -879,6 +907,8 @@ flash_firmware(void)
 	} else {
 		logmessage("firmware", "CRITICAL: firmware may be partially written (wait status %d); no rollback; automatic watchdog/queued retry/reboot inhibited; manual recovery required", status);
 	}
+	/* Intentionally retain the exclusive fd, marker, memory latch and locks.
+	 * Only a verified, non-returning controller reboot may end this state. */
 	return 1;
 
 safe_recover:
@@ -886,15 +916,26 @@ safe_recover:
 		logmessage("firmware", "CRITICAL: cannot clear upgrade inhibit after safe abort; manual recovery required");
 		return 1;
 	}
+	marker_owned = 0;
 	if (firmware_upgrade_services(services, service_count, 1) != 0)
 		logmessage("firmware", "CRITICAL: upgrade aborted without firmware write; some previous services failed to recover");
 safe_cleanup:
-	unlink(record);
-	unlink(writer);
-	rmdir(attempt);
+	if (marker_owned && firmware_upgrade_inhibit(0) != 0) {
+		logmessage("firmware", "CRITICAL: cannot clear preparation inhibit after safe abort; manual recovery required");
+		return 1;
+	}
+	if (attempt_created) {
+		unlink(record);
+		unlink(writer);
+		rmdir(attempt);
+	}
 	if (resident && munlockall() != 0)
 		logmessage("firmware", "CRITICAL: safe upgrade abort could not release resident memory locks");
-	return firmware_upgrade_inhibited() ? 1 : 0;
+	if (firmware_upgrade_inhibited())
+		return 1;
+	upgrade_action_leave(lease);
+	firmware_upgrade_pid1_active = 0;
+	return 0;
 }
 
 static void
@@ -1981,8 +2022,7 @@ main(int argc, char **argv)
 
 	ret = 0;
 	if (!strcmp(base, "reset_to_defaults")) {
-		erase_nvram();
-		sys_exit();
+		return reset_to_defaults();
 	}
 	else if (!strcmp(base, "run_telnetd")) {
 		run_telnetd();

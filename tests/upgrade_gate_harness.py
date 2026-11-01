@@ -5,7 +5,8 @@ import subprocess
 from test_httpd_regressions import function, source
 
 FUNCTIONS = (
-    'write_storage_to_mtd', 'firmware_upgrade_inhibited', 'firmware_upgrade_inhibit',
+    'write_storage_to_mtd', 'firmware_upgrade_signal_inhibited', 'firmware_upgrade_signal_fault',
+    'firmware_upgrade_inhibited', 'firmware_upgrade_inhibit',
     'firmware_upgrade_stage_writer', 'firmware_upgrade_number', 'firmware_upgrade_result',
     'firmware_upgrade_run', 'firmware_upgrade_start_networkmap', 'firmware_upgrade_start_detect',
     'firmware_upgrade_stop_watchdog', 'firmware_upgrade_disable_watchdog',
@@ -155,6 +156,9 @@ static int _eval(char*const argv[],char*redirect,int timeout,int*child){
 #define sigaction(...) fixture_sigaction(__VA_ARGS__)
 #define pause fixture_pause
 '''
+    code += '#define UPGRADE_GUARD_PRIVATE FW_UPGRADE_PRIVATE\n'
+    code += source('trunk/user/shared/upgrade_guard.h') + '\n'
+    code += 'static volatile sig_atomic_t firmware_upgrade_pid1_active, firmware_upgrade_pid1_fault;\n'
     code += 'struct firmware_upgrade_service {' + structure + '};\n'
     watchdog = source('trunk/user/rc/watchdog.c')
     code += function(watchdog, 'start_watchdog') + '\n' + function(watchdog, 'notify_watchdog_time') + '\n'

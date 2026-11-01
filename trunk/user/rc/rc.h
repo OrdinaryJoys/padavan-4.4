@@ -32,6 +32,7 @@
 #include <shutils.h>
 #include <notify_rc.h>
 #include <bin_sem_asus.h>
+#include <upgrade_guard.h>
 
 /* do not set current year, it used for ntp done check! */
 #define SYS_START_YEAR			2015
@@ -151,6 +152,9 @@ void LED_CONTROL(int gpio_led, int flag);
 void storage_save_time(time_t delta);
 int write_storage_to_mtd(void);
 int firmware_upgrade_inhibited(void);
+int firmware_upgrade_signal_inhibited(void);
+void firmware_upgrade_signal_fault(void);
+int reset_to_defaults(void);
 void erase_storage(void);
 void erase_nvram(void);
 

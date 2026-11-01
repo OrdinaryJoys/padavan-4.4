@@ -44,6 +44,35 @@
 
 #include "httpd.h"
 #include "common.h"
+#include <upgrade_guard.h>
+
+static int http_upgrade_action_fd = -1;
+
+int
+http_upgrade_action_acquire(void)
+{
+	if (http_upgrade_action_fd >= 0)
+		return 0;
+	http_upgrade_action_fd = upgrade_action_enter();
+	return http_upgrade_action_fd >= 0 ? 1 : -1;
+}
+
+void
+http_upgrade_action_handoff(void)
+{
+	if (http_upgrade_action_fd >= 0) {
+		int fd = http_upgrade_action_fd;
+		http_upgrade_action_fd = -1;
+		upgrade_action_leave(fd);
+	}
+}
+
+void
+http_upgrade_action_release(int *owned)
+{
+	if (*owned > 0)
+		http_upgrade_action_handoff();
+}
 
 #define LOGIN_TIMEOUT		30
 #define SERVER_NAME		"httpd"
@@ -932,6 +961,7 @@ handle_request(FILE *conn_fp, const conn_item_t *item)
 	char *cur, *end, *cp, *file, *query;
 	int len, login_state, method_id, do_logout, clen = 0, have_clen = 0, headers_done = 0;
 	int explicit_request = 0, is_secure = 0;
+	int upgrade_owned __attribute__((cleanup(http_upgrade_action_release))) = 0;
 	time_t if_modified_since = (time_t)-1;
 	struct mime_handler *handler;
 	struct stat st, *p_st = NULL;
@@ -1152,6 +1182,14 @@ handle_request(FILE *conn_fp, const conn_item_t *item)
 	                       method_id == HTTP_METHOD_GET)) {
 		send_error(403, "Forbidden", NULL,
 		           "Same-origin proof required. CLI writes require X-K2P-Request: 1.", conn_fp);
+		return;
+	}
+	/* Do this after authentication/origin checks, before request input can
+	 * truncate an upload or apply configuration. prepare also writes private
+	 * backup files, including on HEAD. Hold SH through synchronous output. */
+	if ((http_request_changes_state(method_id == HTTP_METHOD_POST, method_id == HTTP_METHOD_HEAD, file, query) ||
+	     handler->prepare) && (upgrade_owned = http_upgrade_action_acquire()) < 0) {
+		send_error(503, "Service Unavailable", NULL, "A firmware upgrade is active; changes are temporarily refused.", conn_fp);
 		return;
 	}
 	if (handler->need_auth && login_state == 2 && !do_logout)

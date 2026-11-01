@@ -87,6 +87,8 @@ int main(int argc,char **argv) {
 #include <string.h>
 #include <sys/statvfs.h>
 #define FW_IMG_NAME "/fixture/linux.trx"
+/* Idle admission here; transaction/busy controls use the real lease header. */
+#define HTTP_UPGRADE_ACTION_GUARD(failure)
 typedef struct { unsigned char bytes[64]; } image_header_t;
 static int copies, uploads, crcs, crc_result, low_space;
 static int unlink_stub(const char *path) { (void)path; return 0; }
