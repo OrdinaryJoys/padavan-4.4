@@ -479,7 +479,7 @@ erase_nvram(void)
 
 #define FW_UPGRADE_PRIVATE "/var/private"
 #define FW_UPGRADE_INHIBIT "firmware-upgrade-inhibit"
-#define FW_UPGRADE_WRITER "/bin/mtd_write"
+#define FW_UPGRADE_WRITER "/bin/fw_upgrade"
 #define FW_UPGRADE_MAX_BYTES 15925248UL
 
 /* PID1-only state. Signal handlers read/write only these memory latches,
@@ -695,10 +695,63 @@ out:
 	return state;
 }
 
+/* Only this PID1-owned path can lend the exclusive action description to the
+ * resident worker. Never use _eval: it closes the lease and inherits stdio,
+ * environment and a window of unblocked termination signals. */
 static int
-firmware_upgrade_run(const char *writer, const char *record, pid_t *child)
+firmware_upgrade_spawn(const char *writer, const char *record, int lease, pid_t *child)
 {
-	char *args[] = { (char *)writer, "--upgrade-write", FW_IMG_NAME, FW_MTD_NAME, (char *)record, NULL };
+	char *args[] = { (char *)writer, "--resident-upgrade", FW_IMG_NAME,
+		FW_MTD_NAME, (char *)record, "3", NULL };
+	char *environment[] = { NULL };
+	pid_t pid;
+	sigset_t block;
+	DIR *directory;
+	struct dirent *entry;
+	int fd, own;
+
+	*child = -1;
+	if (lease < 0 || (pid = fork()) < 0)
+		return -1;
+	if (pid) {
+		*child = pid;
+		return 0;
+	}
+	/* The mask survives exec. A management TERM must not interrupt the
+	 * worker between its admission check and the first potentially destructive
+	 * operation. Fatal faults/SIGKILL/STOP remain outside this guarantee. */
+	sigfillset(&block);
+	sigdelset(&block, SIGKILL);
+	sigdelset(&block, SIGSTOP);
+	if (sigprocmask(SIG_SETMASK, &block, NULL) != 0 ||
+	    dup2(lease, 3) != 3 || fcntl(3, F_SETFD, 0) != 0 || setsid() < 0)
+		_exit(21);
+	close(0);
+	close(1);
+	close(2);
+	directory = opendir("/proc/self/fd");
+	if (!directory)
+		_exit(21);
+	own = dirfd(directory);
+	errno = 0;
+	while ((entry = readdir(directory)) != NULL) {
+		/* proc fd names are kernel-provided decimal integers. Closing the
+		 * current entry cannot move the directory's monotonically increasing
+		 * fd cursor backwards, and the iterator itself is retained. */
+		fd = atoi(entry->d_name);
+		if (fd > 3 && fd != own && close(fd) != 0 && errno != EBADF)
+			_exit(21);
+		errno = 0;
+	}
+	if (errno || closedir(directory) != 0)
+		_exit(21);
+	execve(writer, args, environment);
+	_exit(21);
+}
+
+static int
+firmware_upgrade_run(const char *writer, const char *record, int lease, pid_t *child)
+{
 	sigset_t block, previous;
 	pid_t waited;
 	int status = -1;
@@ -706,9 +759,13 @@ firmware_upgrade_run(const char *writer, const char *record, pid_t *child)
 	*child = -1;
 	sigemptyset(&block);
 	sigaddset(&block, SIGCHLD);
+	/* Carry blocked management termination signals across fork as well as
+	 * exec. Actual fault signals remain handled in PID1 while it waits. */
+	sigaddset(&block, SIGTERM);
+	sigaddset(&block, SIGQUIT);
 	if (sigprocmask(SIG_BLOCK, &block, &previous) != 0)
 		return -1;
-	if (_eval(args, NULL, 0, child) == 0) {
+	if (firmware_upgrade_spawn(writer, record, lease, child) == 0) {
 		do waited = waitpid(*child, &status, 0); while (waited < 0 && errno == EINTR);
 		if (waited != *child)
 			status = -1;
@@ -884,6 +941,10 @@ flash_firmware(void)
 		goto safe_cleanup;
 	}
 	resident = 1;
+	/* Best-effort global writeback can wait on unrelated filesystems. Keep
+	 * services and the watchdog running throughout that prewrite wait. The
+	 * RAM writer separately checks its MTD flush, close and full readback. */
+	sync();
 	if (firmware_upgrade_services(services, service_count, 0) != 0) {
 		logmessage("firmware", "Upgrade quiesce failed before writer; recovering stopped services");
 		goto safe_recover;
@@ -892,23 +953,21 @@ flash_firmware(void)
 		logmessage("firmware", "Hardware watchdog disable was not confirmed; no firmware write, recovering services");
 		goto safe_recover;
 	}
-	sync();
-	status = firmware_upgrade_run(writer, record, &child);
+	status = firmware_upgrade_run(writer, record, lease, &child);
+	/* The static RAM worker owns readback, VERIFIED publication and reset.
+	 * A possible write must never require PID1 to format logs, inspect ROMfs
+	 * or request a second reset. Only normal exit20 may consult the private
+	 * PREWRITE record and enter the safe recovery branch. */
+	if (status < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 20)
+		return 1;
 	result = firmware_upgrade_result(record, status, child);
 	if (result == 1) {
 		logmessage("firmware", "Writer rejected upgrade before erase/write; recovering stopped services");
 		goto safe_recover;
 	}
-	if (result == 2) {
-		logmessage("firmware", "Firmware readback verified; requesting reboot");
-		sync();
-		reboot(RB_AUTOBOOT);
-		logmessage("firmware", "CRITICAL: verified firmware reboot returned; queued reboot/watchdog rearm remain inhibited");
-	} else {
-		logmessage("firmware", "CRITICAL: firmware may be partially written (wait status %d); no rollback; automatic watchdog/queued retry/reboot inhibited; manual recovery required", status);
-	}
 	/* Intentionally retain the exclusive fd, marker, memory latch and locks.
-	 * Only a verified, non-returning controller reboot may end this state. */
+	 * An untrusted exit20 record is also UNKNOWN. The worker, rather than this
+	 * parent, requests the only post-write reset from its RAM-resident image. */
 	return 1;
 
 safe_recover:
@@ -1281,7 +1340,7 @@ handle_notifications(void)
 	/* Do not execute queued reboots/retries or restart services from a rootfs
 	 * which a failed writer may already have replaced. Keep markers for
 	 * diagnosis; existing WAN, DNS and management processes were preserved. */
-	if (firmware_upgrade_inhibited())
+	if (firmware_upgrade_signal_inhibited() || firmware_upgrade_inhibited())
 		return;
 
 	queue_fd = rc_notification_open_dir(DIR_RC_NOTIFY);
@@ -1329,6 +1388,11 @@ handle_notifications(void)
 			/* A preflight abort leaves services running: continue draining
 			 * coalesced notifications instead of leaving them stranded. */
 			stop_handle = flash_firmware();
+			/* A possible write or returned reset must not enter the stdio,
+			 * pathname cleanup or closedir/free tail. Retain this one queue
+			 * descriptor together with the transaction until manual recovery. */
+			if (stop_handle)
+				return;
 		}
 #if defined (USE_IPV6)
 		else if (!strcmp(entry->d_name, RCN_RESTART_IPV6))

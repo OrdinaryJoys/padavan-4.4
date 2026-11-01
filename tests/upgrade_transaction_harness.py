@@ -164,7 +164,7 @@ int main(int argc,char**argv){int i,fd,phase,action_fd,held=-1;const char*name;a
  for(i=0;i<7;i++){running[i]=1;}
  kind=1;
  if(!strcmp(name,"flash-unknown-return"))kind=2;
- else if(!strcmp(name,"flash-verified-reboot-return"))kind=0;
+ else if(!strcmp(name,"flash-verified-worker-exit"))kind=0;
  else if(!strcmp(name,"flash-save-abort"))first_status=256;
  else if(!strcmp(name,"flash-hook-abort")){hook_exists=1;hook_status=256;}
  else if(!strcmp(name,"flash-action-already-admitted")){held=upgrade_action_enter();assert(held>=0);}
@@ -178,7 +178,7 @@ int main(int argc,char**argv){int i,fd,phase,action_fd,held=-1;const char*name;a
 FLASH_CASES = (
  ('flash-safe-prewrite-return',{'case':'flash-safe-prewrite-return','trace':['phase:0','active:0','marker:0','action-refused:0','writer:1','reboot:0','raw-shared-after:1','prepare-checks:1','prepare-admission-valid:1']}),
  ('flash-unknown-return',{'case':'flash-unknown-return','trace':['phase:1','active:1','marker:1','action-refused:1','writer:1','reboot:0','raw-shared-after:0','prepare-checks:1','prepare-admission-valid:1']}),
- ('flash-verified-reboot-return',{'case':'flash-verified-reboot-return','trace':['phase:1','active:1','marker:1','action-refused:1','writer:1','reboot:1','raw-shared-after:0','prepare-checks:1','prepare-admission-valid:1']}),
+ ('flash-verified-worker-exit',{'case':'flash-verified-worker-exit','trace':['phase:1','active:1','marker:1','action-refused:1','writer:1','reboot:0','raw-shared-after:0','prepare-checks:1','prepare-admission-valid:1']}),
  ('flash-save-abort',{'case':'flash-save-abort','trace':['phase:0','active:0','marker:0','action-refused:0','writer:0','reboot:0','raw-shared-after:1','prepare-checks:1','prepare-admission-valid:1']}),
  ('flash-hook-abort',{'case':'flash-hook-abort','trace':['phase:0','active:0','marker:0','action-refused:0','writer:0','reboot:0','raw-shared-after:1','prepare-checks:1','prepare-admission-valid:1']}),
  ('flash-action-already-admitted',{'case':'flash-action-already-admitted','trace':['phase:0','active:0','marker:0','action-refused:0','writer:0','reboot:0','raw-shared-after:1','prepare-checks:0','prepare-admission-valid:1']}),

@@ -117,10 +117,11 @@ static int fixture_mlockall(int flags){assert(flags==(MCL_CURRENT|MCL_FUTURE));m
 static int fixture_munlockall(void){munlocks++;event("unpin");return 0;}
 /* The child creates synthetic protocol records only; it never execs a tool,
  * opens MTD, runs hooks, mounts a filesystem, or changes services. */
-static int _eval(char*const argv[],char*redirect,int timeout,int*child){
- pid_t pid;char record[256];int fd,n,exit_status=20;const char*state="PREWRITE";unsigned long bytes=0;assert(!redirect&&!timeout&&child);
+static int firmware_upgrade_spawn(const char*writer,const char*path,int lease,pid_t*child){
+ char*argv[]={(char*)writer,"--resident-upgrade",FW_IMG_NAME,"firmware",(char*)path,"3",NULL};
+ pid_t pid;char record[256];int fd,n,exit_status=20;const char*state="PREWRITE";unsigned long bytes=0;assert(lease>=0&&fcntl(lease,F_GETFD)>=0&&child);
  assert(strstr(argv[0],FW_UPGRADE_PRIVATE "/fwupgrade.")&&strstr(argv[0],"/writer"));
- assert(!strcmp(argv[1],"--upgrade-write")&&!strcmp(argv[2],FW_IMG_NAME)&&!strcmp(argv[3],"firmware")&&!argv[5]);
+ assert(!strcmp(argv[1],"--resident-upgrade")&&!strcmp(argv[2],FW_IMG_NAME)&&!strcmp(argv[3],"firmware")&&!strcmp(argv[5],"3")&&!argv[6]);
  writer_calls++;event("writer");if(kind==10){errno=ENOENT;return ENOENT;}
  pid=fork();assert(pid>=0);if(pid){*child=pid;return 0;}
  if(kind==6)_exit(20);
@@ -210,6 +211,11 @@ def compile_consumer(root):
 static char queue_path[1024],pending_path[1024],names_queue[32][32];
 static int total_names,cursor,notification_events,notification_signals,notification_actions;
 static int nvram_nf_nat_type,nvram_modem_type,nvram_modem_rule;
+/* A real held PID1 never exits; this short-lived fixture explicitly closes
+ * the one intentionally retained queue after observing the held outcome. */
+static DIR *fixture_held_queue;
+static DIR *fixture_fdopendir(int fd){return fixture_held_queue=fdopendir(fd);}
+static int fixture_closedir(DIR*d){if(d==fixture_held_queue)fixture_held_queue=NULL;return closedir(d);}
 #define DIR_RC_NOTIFY queue_path
 #define DIR_RC_INCOMPLETE pending_path
 /* Real queue files/ownership validation; deterministic order exercises the
@@ -229,7 +235,7 @@ static int notification_printf(const char*fmt,...){if(!strcmp(fmt,"rc notificati
     for line in source('trunk/user/shared/notify_rc.h').splitlines():
         if line.startswith('#define RCN_'):
             code += line + '\n'
-    standard = {'handle_notifications', 'flash_firmware', 'firmware_upgrade_inhibited',
+    standard = {'handle_notifications', 'flash_firmware', 'firmware_upgrade_inhibited', 'firmware_upgrade_signal_inhibited',
                 'rc_notification_open_dir', 'rc_notification_valid_marker', 'fdopendir',
                 'close', 'readdir', 'strcmp', 'unlinkat', 'snprintf', 'remove', 'printf',
                 'fopen', 'fclose', 'closedir', 'kill', 'getpid', 'if', 'for', 'while', 'sizeof', 'defined'}
@@ -237,8 +243,8 @@ static int notification_printf(const char*fmt,...){if(!strcmp(fmt,"rc notificati
     for name in sorted(calls - standard):
         code += '#define ' + name + '(...) 0\n'
     code += '#undef start_logger\n#define start_logger(...) (notification_actions++,0)\n'
-    code += '#define readdir ordered_readdir\n#define kill fake_rearm\n#define printf notification_printf\n'
-    code += consumer + '\n#undef readdir\n#undef printf\n'
+    code += '#define readdir ordered_readdir\n#define kill fake_rearm\n#define printf notification_printf\n#define fdopendir fixture_fdopendir\n#define closedir fixture_closedir\n'
+    code += consumer + '\n#undef readdir\n#undef printf\n#undef fdopendir\n#undef closedir\n'
     code += r'''
 static int remaining(void){int count=0;struct dirent*entry;DIR*d=opendir(queue_path);assert(d);while((entry=readdir(d)))if(entry->d_name[0]!='.')count++;closedir(d);return count;}
 int main(int argc,char**argv){
@@ -256,6 +262,7 @@ int main(int argc,char**argv){
  for(i=0;i<7;i++)running[i]=1;
  for(i=0;i<rounds;i++){cursor=0;handle_notifications();}
  printf("{\"events\":%d,\"signals\":%d,\"recognized_actions\":%d,\"remaining\":%d,\"writes\":%d,\"watchdog\":%d,\"watchdog_restarts\":%d,\"inhibited\":%d}\n",notification_events,notification_signals,notification_actions,remaining(),writer_calls,running[0],starts[0],firmware_upgrade_inhibited());
+ if(fixture_held_queue)closedir(fixture_held_queue);
  return 0;
 }
 '''

@@ -160,6 +160,19 @@ class UpgradeStorageGateTests(unittest.TestCase):
         self.assertEqual(result['snapshot_revisions'], [0, 1])
         self.assertEqual(result['trace'].split(',')[:4], ['time', 'save', 'hook', 'save'])
 
+    def test_global_writeback_precedes_any_service_stop_or_watchdog_disable(self):
+        for options in ({}, {'kind': 0}, {'stop_fail': 1}, {'hardware': 4}):
+            with self.subTest(options=options):
+                result = self.run_case(**options)
+                trace = result['trace'].strip(',').split(',')
+                self.assertEqual(trace.count('sync'), 1)
+                position = trace.index('sync')
+                stops = [i for i, value in enumerate(trace) if value.startswith('stop:')]
+                self.assertTrue(stops)
+                self.assertLess(position, min(stops))
+                if 'hardware-disable' in trace:
+                    self.assertLess(position, trace.index('hardware-disable'))
+
     def test_quiesce_failure_does_not_open_hardware_or_run_writer(self):
         for index in (0, 1, 6):
             with self.subTest(index=index):
@@ -201,17 +214,18 @@ class UpgradeStorageGateTests(unittest.TestCase):
                 self.assertEqual(result['running'], [0] * 7)
                 self.assertEqual(result['inhibited'], 1)
                 self.assertEqual(result['reboots'], 0)
-                self.assertEqual(result['criticals'], 1)
+                self.assertEqual(result['criticals'], 0)
+                self.assertEqual(result['logs'], 0)  # no post-write shared logger
                 self.assertEqual((result['mlocks'], result['munlocks']), (1, 0))
                 self.assertTrue(list((self.root / 'private').glob('fwupgrade.*/writer')))
 
-    def test_verified_normal_exit_requests_direct_reboot_without_recovery(self):
+    def test_unexpected_verified_normal_exit_holds_without_parent_reset_or_IO(self):
         result = self.run_case(kind=0)
-        self.assertEqual((result['phase'], result['writes'], result['reboots']), (1, 1, 1))
+        self.assertEqual((result['phase'], result['writes'], result['reboots']), (1, 1, 0))
         self.assertEqual(result['starts'], [0] * 7)
         self.assertEqual(result['inhibited'], 1)
-        self.assertEqual(result['criticals'], 1)  # inert reboot returns: no success claim
-        self.assertEqual(result['syncs'], 2)
+        self.assertEqual((result['criticals'], result['logs']), (0, 0))
+        self.assertEqual(result['syncs'], 1)
         self.assertEqual((result['mlocks'], result['munlocks']), (1, 0))
 
     def test_existing_inhibit_refuses_retry_before_save_hook_or_stops(self):
@@ -257,7 +271,7 @@ class UpgradeStorageGateTests(unittest.TestCase):
             self.assertEqual((result['events'], result['signals'], result['remaining']), (26, 2, 0))
             self.assertEqual(result['recognized_actions'], 1)
 
-    def test_consumer_unknown_and_reboot_return_hold_this_and_future_batches(self):
+    def test_consumer_unknown_and_worker_return_hold_this_and_future_batches(self):
         for kind in (0, 2, 3, 6):
             with self.subTest(kind=kind):
                 result = self.queue_case(first=0, later=25, kind=kind, rounds=3)

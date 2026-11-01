@@ -158,8 +158,9 @@ static int state_rename(int a,const char*b,int c,const char*d){
  if((stage==2&&fault("maybe-rename"))||(stage==3&&fault("verified-rename"))){errno=EIO;return -1;}return renameat(a,b,c,d);}
 static void*allocate(size_t n){if(fault("memory")){errno=ENOMEM;return NULL;}return malloc(n);}
 static int memory_lock(int flags){event("memory-lock");if(flags!=(MCL_CURRENT|MCL_FUTURE)){errno=EINVAL;return -1;}
- if(fault("memory-lock")){errno=ENOMEM;return -1;}memory_resident=1;return 0;}
-static int memory_unlock(void){event("memory-unlock");memory_resident=0;return 0;}
+ if(fault("memory-lock")||fault("memory-unlock")){errno=ENOMEM;return -1;}memory_resident=1;return 0;}
+static int memory_unlock(void){event("memory-unlock");memory_resident=0;if(fault("memory-unlock")){errno=EIO;return -1;}return 0;}
+static void memory_free(void*p){event("memory-free");if(stage>=2)event("UNSAFE-POSTWRITE-FREE");free(p);}
 #define FWUP_OPEN_DEVICE mock_open
 #define FWUP_IOCTL mock_ioctl
 #define FWUP_DEVICE_WRITE device_write
@@ -173,10 +174,11 @@ static int memory_unlock(void){event("memory-unlock");memory_resident=0;return 0
 #define FWUP_STATE_CLOSE state_close
 #define FWUP_STATE_RENAME state_rename
 #define FWUP_ALLOC allocate
+#define FWUP_FREE memory_free
 #define FWUP_MLOCKALL memory_lock
 #define FWUP_MUNLOCKALL memory_unlock
 #include "upgrade_write.h"
-int main(int argc,char**argv){if(argc!=4)return 99;return firmware_upgrade_write(argv[1],argv[2],argv[3]);}
+int main(int argc,char**argv){if(argc!=4)return 99;_exit(firmware_upgrade_write(argv[1],argv[2],argv[3]));}
 ''')
         cls.binary = cls.code / 'writer'
         command = [shutil.which('clang') or shutil.which('cc'), '-Wall', '-Wextra', '-Werror',
@@ -358,6 +360,48 @@ int main(int argc,char**argv){if(argc!=4)return 99;return firmware_upgrade_write
                 self.assertIn('memory-lock',self.events());self.assertNotIn('memory-unlock',self.events())
                 if 'erase' in self.events():self.assertLess(self.events().index('memory-lock'),self.events().index('erase'))
 
+    def test_allocator_cleanup_only_for_proven_prewrite(self):
+        self.assert_prewrite(self.run_writer('memory-lock'))
+        self.assertIn('memory-free', self.events())
+        for fault in (None, 'erase', 'write', 'readback', 'verified-write'):
+            with self.subTest(fault=fault):
+                self.status.unlink(missing_ok=True); self.log.unlink(missing_ok=True)
+                result = self.run_writer(fault)
+                self.assertEqual(result.returncode, 0 if fault is None else 21, result.stderr)
+                self.assertNotIn('memory-free', self.events())
+                self.assertNotIn('UNSAFE-POSTWRITE-FREE', self.events())
+
+    def test_full_inherited_stderr_cannot_block_safe_or_unknown_result(self):
+        for fault in ('memory-lock', 'memory-unlock', 'erase', 'verified-write'):
+            with self.subTest(fault=fault):
+                self.status.unlink(missing_ok=True); self.log.unlink(missing_ok=True)
+                readfd, writefd = os.pipe()
+                flags = fcntl.fcntl(writefd, fcntl.F_GETFL)
+                fcntl.fcntl(writefd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+                filled = 0
+                while True:
+                    try: filled += os.write(writefd, b'X' * 4096)
+                    except BlockingIOError: break
+                self.assertGreater(filled, 0)
+                fcntl.fcntl(writefd, fcntl.F_SETFL, flags)
+                child = subprocess.Popen([str(self.binary), str(self.image), 'firmware', str(self.status)],
+                    env=self.environment(fault), stdout=subprocess.PIPE, stderr=writefd)
+                os.close(writefd)
+                try:
+                    child.wait(timeout=5)  # No stderr draining before the required exit.
+                    self.assertEqual(child.returncode, 20 if fault.startswith('memory-') else 21)
+                    fcntl.fcntl(readfd, fcntl.F_SETFL, fcntl.fcntl(readfd, fcntl.F_GETFL) | os.O_NONBLOCK)
+                    captured = bytearray()
+                    while True:
+                        try: part = os.read(readfd, 65536)
+                        except BlockingIOError: break
+                        if not part: break
+                        captured.extend(part)
+                    self.assertEqual(bytes(captured), b'X' * filled)
+                finally:
+                    if child.poll() is None: child.kill(); child.wait(timeout=2)
+                    child.stdout.close(); os.close(readfd)
+
     def test_dynamic_binding_is_eager_in_production_link(self):
         self.assertIn('-Wl,-z,now',(SOURCE/'Makefile').read_text())
 
@@ -425,7 +469,8 @@ int main(int argc,char**argv){if(argc!=4)return 99;return firmware_upgrade_write
         text = (SOURCE / 'mtd.c').read_text()
         branch = text.index('if (argc > 1 && !strcmp(argv[1], "--upgrade-write"))')
         self.assertLess(branch, text.index('while ((ch = getopt'))
-        self.assertIn('return firmware_upgrade_write(argv[2], argv[3], argv[4]);', text)
+        self.assertNotIn('return firmware_upgrade_write(argv[2], argv[3], argv[4]);', text)
+        self.assertIn('return 21;', text[text.index('if (argc > 1 && !strcmp(argv[1], "--upgrade-write"))'):text.index('while ((ch = getopt')])
         self.assertIn('case CMD_WRITE:', text)
         self.assertIn('if (boot)\n\t\tdo_reboot();', text)
 

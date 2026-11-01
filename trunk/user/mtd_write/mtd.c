@@ -723,7 +723,7 @@ resume:
 	return 0;
 }
 
-#include "upgrade_write.h"
+#include "legacy_guard.h"
 
 static void usage(void)
 {
@@ -817,11 +817,11 @@ int main (int argc, char **argv)
 		CMD_DUMP,
 		CMD_RESETBC,
 	} cmd = -1;
-	/* The dedicated protocol never reaches legacy exit()/erase/reboot paths. */
+	/* This dynamic legacy tool must never start a firmware transaction. The
+	 * PID1 controller admits only the separate resident helper/session. */
 	if (argc > 1 && !strcmp(argv[1], "--upgrade-write")) {
-		if (argc != 5)
-			return fwup_error("usage: --upgrade-write IMAGE firmware STATUS", FWUP_UNKNOWN);
-		return firmware_upgrade_write(argv[2], argv[3], argv[4]);
+		fputs("mtd_write: firmware protocol moved to the controlled resident upgrade helper\n", stderr);
+		return 21;
 	}
 
 	erase[0] = NULL;
@@ -865,6 +865,10 @@ int main (int argc, char **argv)
 				while ((erase[i] != NULL) && ((i + 1) < MAX_ARGS))
 					i++;
 
+				if (i + 1 >= MAX_ARGS) {
+					fputs("mtd_write: too many pre-erase targets\n", stderr);
+					return 21;
+				}
 				erase[i++] = optarg;
 				erase[i] = NULL;
 				break;
@@ -917,6 +921,15 @@ int main (int argc, char **argv)
 
 	if (argc < 2)
 		usage();
+
+#if defined(MTD_K2P_LEGACY_GUARD) && MTD_K2P_LEGACY_GUARD
+	/* Before mtd_check(), image opens, sync(), pre-erase or any writable MTD
+	 * operation. Classification failure never authorizes a legacy write. */
+	if (!legacy_firmware_command_allowed(argc, argv, erase, boot)) {
+		fputs("mtd_write: legacy firmware/whole-flash mutation and -r are disabled; use the controlled upgrade transaction\n", stderr);
+		return 21;
+	}
+#endif
 
 	if ((strcmp(argv[0], "unlock") == 0) && (argc == 2)) {
 		cmd = CMD_UNLOCK;

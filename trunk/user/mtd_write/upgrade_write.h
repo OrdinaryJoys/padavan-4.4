@@ -63,6 +63,9 @@
 #ifndef FWUP_ALLOC
 #define FWUP_ALLOC malloc
 #endif
+#ifndef FWUP_FREE
+#define FWUP_FREE free
+#endif
 #ifndef FWUP_MLOCKALL
 #define FWUP_MLOCKALL mlockall
 #endif
@@ -80,7 +83,9 @@ struct fwup_status {
 
 static int fwup_error(const char *message, int result)
 {
-	fprintf(stderr, "Firmware upgrade writer: %s\n", message);
+	/* Diagnostics must not gate SAFE recovery or an unknown write outcome.
+	 * The private status record and exit protocol are authoritative. */
+	(void)message;
 	return result;
 }
 
@@ -381,14 +386,17 @@ out:
 	if (imagefd >= 0) close(imagefd);
 	if (device >= 0) close(device);
 	if (reader >= 0) close(reader);
-	free(snapshot);
+	/* Only a proven prewrite abort may use allocator cleanup. After MAYBE,
+	 * keep RAM mappings intact until the dedicated entry calls _exit/reset. */
+	if (result == FWUP_SAFE)
+		FWUP_FREE(snapshot);
 	if (lock >= 0) close(lock);
 	if (state.parent >= 0) close(state.parent);
-	/* Preserve residency through error reporting and CRT exit after a
+	/* Preserve residency through the dedicated _exit/reset entry after a
 	 * possible write. The kernel releases those locks when this process
 	 * exits. A safe prewrite abort may release any partial mlockall work. */
-	if (result == FWUP_SAFE && memory_lock_attempted && FWUP_MUNLOCKALL() != 0)
-		fprintf(stderr, "Firmware upgrade writer: prewrite memory unlock warning\n");
+	if (result == FWUP_SAFE && memory_lock_attempted)
+		(void)FWUP_MUNLOCKALL();
 	if (result) fwup_error(message, result);
 	return result;
 }
