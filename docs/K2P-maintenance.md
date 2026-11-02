@@ -1,5 +1,8 @@
 # K2P maintenance (2026-10-01)
 
+K2P 4.4 upgrade preparation and recovery boundaries, including the efd2 first
+migration and memory/reset limitations, are in [K2P-upgrade-recovery.md](K2P-upgrade-recovery.md).
+
 The direct upstream main branch is already included in this fork. Preserve this fork's board and network drivers.
 
 Components: curl 8.22.0, OpenSSL 3.5.9 LTS, OpenSSH 9.9p2 and OpenVPN 2.6.23. Verify each source archive's pinned SHA256 before extraction. OpenSSL uses built-in providers and ships the MIPS atomic runtime. Deprecated APIs remain available for legacy Padavan consumers. Post-quantum algorithms are omitted from this 16MB profile; ordinary TLS 1.2/1.3, RSA, ECC, AES and ChaCha20 remain.

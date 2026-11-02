@@ -24,6 +24,8 @@ def generate_source(texts, fixture_root, owner_uid=0):
         raise ValueError('Exact sources and absolute ASCII fixture required')
     if type(owner_uid) is not int or not 0<=owner_uid<2**32:
         raise ValueError('Invalid fixture owner')
+    if len(re.findall(r'^#define FW_UPGRADE_NOT_STARTED \(-2\)$', texts['rc'], re.M)) != 1:
+        raise ValueError('Exact production no-child sentinel required')
     code = PREFIX + '\n#define FIXTURE_ROOT ' + json.dumps(fixture_root) + '\n'
     code += '#define FIXTURE_OWNER ' + str(owner_uid) + '\n'
     code += BODY
@@ -51,6 +53,7 @@ PREFIX = r'''
 #include <unistd.h>
 #define FW_IMG_NAME "/fixture/image"
 #define FW_MTD_NAME "firmware"
+#define FW_UPGRADE_NOT_STARTED (-2)
 '''
 
 BODY = r'''
@@ -60,7 +63,7 @@ static int high_fd, wait_interrupted;
 static char marker_path[PATH_MAX],lock_path[PATH_MAX];
 static int fault(const char *name){return !strcmp(mode,name);}
 static int is_child(void){return getpid()!=controller;}
-static pid_t fixture_fork(void){if(fault("fork-failure")){errno=EAGAIN;return -1;}return fork();}
+static pid_t fixture_fork(void){if(fault("fork-failure")||fault("fork-restore-failure")){errno=EAGAIN;return -1;}return fork();}
 static int fixture_dup2(int a,int b){if(fault("dup-failure")){errno=EBADF;return -1;}return dup2(a,b);}
 static int fixture_fcntl(int fd,int command,...){
  va_list ap;int arg=0;if(command==F_SETFD){va_start(ap,command);arg=va_arg(ap,int);va_end(ap);}
@@ -69,9 +72,12 @@ static int fixture_fcntl(int fd,int command,...){
 }
 static int fixture_close(int fd){int result=close(fd);if(is_child()&&fd==high_fd&&fault("close-failure")){errno=EIO;return -1;}return result;}
 static int fixture_sigprocmask(int how,const sigset_t *set,sigset_t *old){
+ if(set&&!is_child()&&how==SIG_BLOCK&&fault("parent-mask-copy-failure")){
+  assert(sigprocmask(how,set,old)==0);errno=EFAULT;return -1;
+ }
  if(set&&((is_child()&&how==SIG_SETMASK&&fault("child-mask-failure"))||
    (!is_child()&&how==SIG_BLOCK&&fault("parent-mask-failure"))||
-   (!is_child()&&how==SIG_SETMASK&&fault("parent-restore-failure")))){errno=EIO;return -1;}
+   (!is_child()&&how==SIG_SETMASK&&(fault("parent-restore-failure")||fault("fork-restore-failure"))))){errno=EIO;return -1;}
  return sigprocmask(how,set,old);
 }
 static pid_t fixture_setsid(void){if(fault("setsid-failure")){errno=EPERM;return -1;}return setsid();}
@@ -167,9 +173,11 @@ def expected(name, status=5376, child=1, restored=1, executed=1):
 CASES = (
     expected('fd3'), expected('fd-high'), expected('child-safe20',status=5120),
     expected('unexpected-zero',status=0), expected('exec-failure'), expected('wait-eintr'),
-    expected('fork-failure',status=-1,child=0,executed=0),
-    expected('invalid-lease',status=-1,child=0,executed=0),
+    expected('fork-failure',status=-2,child=0,executed=0),
+    expected('invalid-lease',status=-2,child=0,executed=0),
     expected('parent-mask-failure',status=-1,child=0,executed=0),
+    expected('parent-mask-copy-failure',status=-1,child=0,restored=0,executed=0),
+    expected('fork-restore-failure',status=-1,child=0,restored=0,executed=0),
     expected('parent-restore-failure',status=-1,restored=0),
     *(expected(name,executed=0) for name in ('child-mask-failure','dup-failure',
        'cloexec-failure','setsid-failure','opendir-failure','readdir-failure',

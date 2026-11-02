@@ -62,6 +62,9 @@ class ResidentUpgradeTests(unittest.TestCase):
     def test_exact_invocation_and_empty_environment(self):
         self.check(('bad-argc', 'bad-command', 'bad-target', 'bad-fd-argument', 'nonempty-environment'))
 
+    def test_efd2_old_caller_arguments_cannot_enter_new_resident_writer(self):
+        self.run_case('efd2-legacy-argv')
+
     def test_inherited_real_exclusive_lease_not_upgraded_unlocked_or_shared(self):
         self.check(('lease-unlocked', 'lease-shared', 'lease-other-inode', 'foreign-exclusive',
                     'lease-hardlink', 'lease-mode'))

@@ -15,6 +15,8 @@ FUNCTIONS = (
 
 def generate(root):
     text = source('trunk/user/rc/rc.c')
+    if text.count('\n#define FW_UPGRADE_NOT_STARTED (-2)\n') != 1:
+        raise ValueError('Exact production no-child sentinel required')
     structure = text.split('struct firmware_upgrade_service {', 1)[1].split('};', 1)[0]
     code = r'''
 #define _GNU_SOURCE
@@ -38,6 +40,7 @@ def generate(root):
 #define FW_MTD_NAME "firmware"
 #define FW_UPGRADE_INHIBIT "firmware-upgrade-inhibit"
 #define FW_UPGRADE_MAX_BYTES 15925248UL
+#define FW_UPGRADE_NOT_STARTED (-2)
 #define HOOK_RUNNER_TIMEOUT_MS 30000U
 #define HOOK_RUNNER_TERM_MS 2000U
 #define HOOK_RUNNER_KILL_MS 1000U
@@ -124,6 +127,7 @@ static int firmware_upgrade_spawn(const char*writer,const char*path,int lease,pi
  assert(!strcmp(argv[1],"--resident-upgrade")&&!strcmp(argv[2],FW_IMG_NAME)&&!strcmp(argv[3],"firmware")&&!strcmp(argv[5],"3")&&!argv[6]);
  writer_calls++;event("writer");if(kind==10){errno=ENOENT;return ENOENT;}
  pid=fork();assert(pid>=0);if(pid){*child=pid;return 0;}
+ if(kind==23)_exit(21); /* Child existed; simulated exec failure is UNKNOWN. */
  if(kind==6)_exit(20);
  if(kind==0||kind==5||kind==13||kind==15||kind==21){state="VERIFIED";bytes=kind==13?0:kind==15?FW_UPGRADE_MAX_BYTES+1:4096;exit_status=kind==5?21:0;}
  if(kind==2){state="MAYBE_WRITTEN";bytes=4096;exit_status=21;}

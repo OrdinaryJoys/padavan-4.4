@@ -24,6 +24,7 @@ NAMES = (
     'status-other-parent', 'status-other-leaf', 'exe-symlink', 'exe-other-inode',
     'exe-mode', 'lease-not-tmpfs', 'status-not-tmpfs', 'exe-not-tmpfs', 'statfs-error',
     'owner-mismatch', 'marker-hardlink', 'exe-hardlink', 'exe-open-error',
+    'efd2-legacy-argv',
 )
 
 def expected(name):
@@ -181,6 +182,13 @@ int main(int argc,char **argv){
  if(is("bad-target"))args[3]="Storage";
  if(is("bad-fd-argument"))args[5]="03";
  if(is("nonempty-environment"))environment=badenv;
+ /* efd2's real old caller supplies -r write IMAGE firmware with inherited
+  * environment, not the PID1-only resident protocol. This refusal does not
+  * retrofit that running old caller or make first-hop flashing safe. */
+ if(is("efd2-legacy-argv")){
+  ac=5;args[1]="-r";args[2]="write";args[3]="/tmp/linux.trx";args[4]="firmware";args[5]=NULL;
+  environment=badenv;
+ }
  if(is("lease-unlocked")&&flock(3,LOCK_UN))return 91;
  if(is("lease-shared")&&flock(3,LOCK_SH|LOCK_NB))return 91;
  if(is("lease-other-inode")){

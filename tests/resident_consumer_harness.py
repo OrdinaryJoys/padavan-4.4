@@ -188,7 +188,8 @@ int main(int argc,char**argv){
  if(!strcmp(name,"consumer-unknown"))kind=2;
  else if(!strcmp(name,"consumer-verified-return"))kind=0;
  else if(!strcmp(name,"consumer-signal"))kind=3;
- else if(!strcmp(name,"consumer-exec-failure"))kind=10;
+ else if(!strcmp(name,"consumer-exec-failure"))kind=23;
+ else if(!strcmp(name,"consumer-no-child-spawn-failure"))kind=10;
  else if(!strcmp(name,"consumer-untrusted20"))kind=6;
  else if(!strcmp(name,"consumer-mismatched20"))kind=7;
  else if(!strcmp(name,"consumer-first-save-abort"))first_status=256;
@@ -221,6 +222,7 @@ CASES = tuple((name, record(name)) for name in (
     'consumer-unknown', 'consumer-verified-return', 'consumer-signal',
     'consumer-exec-failure', 'consumer-untrusted20', 'consumer-mismatched20')) + (
     ('consumer-safe20', record('consumer-safe20', False)),
+    ('consumer-no-child-spawn-failure', record('consumer-no-child-spawn-failure', False)),
     ('consumer-first-save-abort', record('consumer-first-save-abort', False, 0)),
     ('consumer-hook-abort', record('consumer-hook-abort', False, 0)),
     ('old-consumer-negative', record('old-consumer-negative', old=True)),

@@ -54,7 +54,7 @@ class ResidentConsumerTests(unittest.TestCase):
         self.run_cases({'consumer-signal', 'consumer-exec-failure', 'consumer-untrusted20', 'consumer-mismatched20'})
 
     def test_authenticated_prewrite_recovers_and_preserves_full_drain_rearm(self):
-        self.run_cases({'consumer-safe20'})
+        self.run_cases({'consumer-safe20', 'consumer-no-child-spawn-failure'})
 
     def test_preparation_aborts_retain_original_queue_cleanup(self):
         self.run_cases({'consumer-first-save-abort', 'consumer-hook-abort'})

@@ -36,10 +36,10 @@ class ResidentParentTests(unittest.TestCase):
         self.cases({'fd3','fd-high'})
     def test_raw_statuses_and_exec_return_cannot_fall_into_parent_code(self):
         self.cases({'child-safe20','unexpected-zero','exec-failure','wait-eintr'})
-    def test_spawn_and_mask_failures_keep_explicit_unknown_status(self):
-        self.cases({'fork-failure','invalid-lease','parent-mask-failure','parent-restore-failure'})
+    def test_no_child_failure_is_distinct_from_unknown_after_failed_mask_restoration(self):
+        self.cases({'fork-failure','invalid-lease','parent-mask-failure','parent-mask-copy-failure','parent-restore-failure','fork-restore-failure'})
     def test_every_child_setup_failure_exits_before_exec(self):
-        self.cases({n for n,_ in h.CASES}-{ 'fd3','fd-high','child-safe20','unexpected-zero','exec-failure','wait-eintr','fork-failure','invalid-lease','parent-mask-failure','parent-restore-failure'})
+        self.cases({n for n,_ in h.CASES}-{ 'fd3','fd-high','child-safe20','unexpected-zero','exec-failure','wait-eintr','fork-failure','invalid-lease','parent-mask-failure','parent-mask-copy-failure','parent-restore-failure','fork-restore-failure'})
     def test_generator_embeds_actual_functions_and_rejects_ambiguous_inputs(self):
         for name in h.FUNCTIONS['rc']:
             self.assertEqual(self.generated.count(h.extract(self.texts['rc'],name)),1)
@@ -47,3 +47,5 @@ class ResidentParentTests(unittest.TestCase):
             with self.assertRaises(ValueError):h.generate_source(self.texts,str(self.fixture),uid)
         with self.assertRaises(ValueError):h.generate_source({},str(self.fixture))
         with self.assertRaises(ValueError):h.generate_source(self.texts,'relative',0)
+        changed = dict(self.texts, rc=self.texts['rc'].replace('#define FW_UPGRADE_NOT_STARTED (-2)', '#define FW_UPGRADE_NOT_STARTED (-3)'))
+        with self.assertRaises(ValueError):h.generate_source(changed,str(self.fixture),os.geteuid())

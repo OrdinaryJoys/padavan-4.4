@@ -50,6 +50,7 @@ class FirmwareWriterProtocolTests(unittest.TestCase):
 #include <sys/ioctl.h>
 #include <sys/file.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -59,7 +60,9 @@ class FirmwareWriterProtocolTests(unittest.TestCase):
 #include <stdlib.h>
 #include <string.h>
 #include "mtd-abi.h"
-static int device_fd=-1,reader_fd=-1,stage=0,device_writes=0,image_reads=0,readbacks=0,sync_calls=0,memory_resident=0;
+static int device_fd=-1,reader_fd=-1,stage=0,device_writes=0,image_reads=0,readbacks=0,sync_calls=0,memory_resident=0,range_locks=0;
+static void *allocated_memory;
+static size_t allocated_bytes;
 static int fault(const char*s){const char*p=getenv("WRITER_FAULT");return p&&!strcmp(p,s);}
 static void event(const char*s){
  int fd=open(getenv("WRITER_LOG"),O_WRONLY|O_CREAT|O_APPEND,0600);
@@ -164,9 +167,24 @@ static int state_close(int fd){int r=close(fd);
  if((stage==1&&fault("initial-close"))||(stage==2&&fault("maybe-close"))||(stage==3&&fault("verified-close"))){errno=EIO;return -1;}return r;}
 static int state_rename(int a,const char*b,int c,const char*d){
  if((stage==2&&fault("maybe-rename"))||(stage==3&&fault("verified-rename"))){errno=EIO;return -1;}return renameat(a,b,c,d);}
-static void*allocate(size_t n){if(fault("memory")){errno=ENOMEM;return NULL;}return malloc(n);}
+static void*allocate(size_t n){if(fault("memory")){errno=ENOMEM;return NULL;}allocated_bytes=n;return allocated_memory=malloc(n);}
 static int memory_lock(int flags){event("memory-lock");if(flags!=(MCL_CURRENT|MCL_FUTURE)){errno=EINVAL;return -1;}
  if(fault("memory-lock")||fault("memory-unlock")){errno=ENOMEM;return -1;}memory_resident=1;return 0;}
+static int memory_range_lock(const void*p,size_t n){
+ const char *name=++range_locks==1?"snapshot-lock":"readback-lock";
+ event(name);
+ if(!p||!n||range_locks>2||!memory_resident||
+    (range_locks==1&&(p!=allocated_memory||n!=allocated_bytes))||
+    (range_locks==2&&(p==allocated_memory||n!=16384))){event("UNSAFE-RANGE-LOCK");errno=EINVAL;return -1;}
+ if(fault("real-range-lock")){
+  struct rlimit limit={0,0};
+  if(setrlimit(RLIMIT_MEMLOCK,&limit)){event("LIMIT-SETUP-ERROR");return -1;}
+  if(mlock(p,n)){event("OS-RANGE-LOCK-REFUSED");return -1;}
+  event("OS-RANGE-LOCK-ACCEPTED");return 0;
+ }
+ if(fault(name)){errno=ENOMEM;return -1;}
+ return 0;
+}
 static int memory_unlock(void){event("memory-unlock");memory_resident=0;if(fault("memory-unlock")){errno=EIO;return -1;}return 0;}
 static void memory_free(void*p){event("memory-free");if(stage>=2)event("UNSAFE-POSTWRITE-FREE");free(p);}
 #define FWUP_OPEN_DEVICE mock_open
@@ -184,6 +202,7 @@ static void memory_free(void*p){event("memory-free");if(stage>=2)event("UNSAFE-P
 #define FWUP_ALLOC allocate
 #define FWUP_FREE memory_free
 #define FWUP_MLOCKALL memory_lock
+#define FWUP_MLOCK memory_range_lock
 #define FWUP_MUNLOCKALL memory_unlock
 #include "upgrade_write.h"
 int main(int argc,char**argv){if(argc!=4)return 99;_exit(firmware_upgrade_write(argv[1],argv[2],argv[3]));}
@@ -194,6 +213,13 @@ int main(int argc,char**argv){if(argc!=4)return 99;_exit(firmware_upgrade_write(
                    '-DFWUP_OPERATION_DIR="' + str(cls.operation) + '"',
                    '-I' + str(SOURCE), '-I' + str(ROOT / 'trunk/user/shared/include'),
                    str(harness), str(SOURCE / 'crc32.c'), '-o', str(cls.binary)]
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode: raise AssertionError(result.stderr)
+        # ASan deliberately intercepts mlock as a no-op. Use an otherwise
+        # identical uninstrumented process only for the real OS refusal test.
+        cls.os_binary = cls.code / 'writer-real-mlock'
+        command = [part for part in command if part != '-fsanitize=address,undefined']
+        command[-1] = str(cls.os_binary)
         result = subprocess.run(command, capture_output=True, text=True)
         if result.returncode: raise AssertionError(result.stderr)
 
@@ -222,8 +248,8 @@ int main(int argc,char**argv){if(argc!=4)return 99;_exit(firmware_upgrade_write(
         else: env.pop('WRITER_FAULT', None)
         return env
 
-    def run_writer(self, fault=None, target='firmware'):
-        result = subprocess.run([str(self.binary), str(self.image), target, str(self.status)],
+    def run_writer(self, fault=None, target='firmware', binary=None):
+        result = subprocess.run([str(binary or self.binary), str(self.image), target, str(self.status)],
                                 env=self.environment(fault), capture_output=True, text=True, timeout=10)
         self.assertNotIn('AddressSanitizer', result.stderr)
         self.assertNotIn('runtime error:', result.stderr)
@@ -359,6 +385,64 @@ int main(int argc,char**argv){if(argc!=4)return 99;_exit(firmware_upgrade_write(
         self.assert_prewrite(self.run_writer('memory-lock'))
         self.assertIn('memory-lock', self.events());self.assertIn('memory-unlock', self.events())
         self.assertLess(self.events().index('memory-lock'), self.events().index('memory-unlock'))
+
+    def test_checked_range_failure_after_successful_mlockall_is_safe_and_never_erases(self):
+        for fault in ('snapshot-lock', 'readback-lock'):
+            with self.subTest(fault=fault):
+                self.status.unlink(missing_ok=True); self.log.unlink(missing_ok=True)
+                self.assert_prewrite(self.run_writer(fault))
+                events = self.events()
+                self.assertIn('memory-lock', events)
+                self.assertIn(fault, events)
+                self.assertLess(events.index('memory-lock'), events.index(fault))
+                self.assertLess(events.index(fault), events.index('memory-free'))
+                self.assertIn('memory-unlock', events)
+                self.assertNotIn('erase', events)
+                self.assertNotIn('write', events)
+                self.assertNotIn('UNSAFE-RANGE-LOCK', events)
+
+    def test_both_checked_ranges_are_locked_before_maybe_and_retained_after_write(self):
+        result = self.run_writer()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        events = self.events()
+        self.assertEqual(events.count('snapshot-lock'), 1)
+        self.assertEqual(events.count('readback-lock'), 1)
+        self.assertLess(events.index('memory-lock'), events.index('snapshot-lock'))
+        self.assertLess(events.index('snapshot-lock'), events.index('readback-lock'))
+        self.assertLess(events.index('readback-lock'), events.index('erase'))
+        self.assertNotIn('memory-unlock', events)
+
+    def test_actual_os_range_lock_refusal_is_safe_after_mocked_mlockall_success(self):
+        self.assert_prewrite(self.run_writer('real-range-lock', binary=self.os_binary))
+        events = self.events()
+        self.assertIn('OS-RANGE-LOCK-REFUSED', events)
+        self.assertNotIn('OS-RANGE-LOCK-ACCEPTED', events)
+        self.assertNotIn('LIMIT-SETUP-ERROR', events)
+        self.assertNotIn('erase', events)
+        self.assertIn('memory-free', events)
+        self.assertIn('memory-unlock', events)
+
+    def test_missing_checked_ranges_negative_control_would_erase_despite_population_failure(self):
+        original = (SOURCE / 'upgrade_write.h').read_text()
+        check = 'FWUP_MLOCK(snapshot, padded) != 0 || FWUP_MLOCK(readback, sizeof(readback)) != 0'
+        self.assertEqual(original.count(check), 1)
+        variant = self.code / 'unchecked-ranges'
+        variant.mkdir(exist_ok=True)
+        (variant / 'upgrade_write.h').write_text(original.replace(check, '0'))
+        binary = variant / 'writer'
+        command = [shutil.which('clang') or shutil.which('cc'), '-Wall', '-Wextra', '-Werror',
+                   '-Wno-unused-function', '-DFWUP_TEST_UID=geteuid()',
+                   '-DFWUP_OPERATION_DIR="' + str(self.operation) + '"',
+                   '-I' + str(variant), '-I' + str(SOURCE),
+                   '-I' + str(ROOT / 'trunk/user/shared/include'),
+                   str(self.code / 'writer.c'), str(SOURCE / 'crc32.c'), '-o', str(binary)]
+        built = subprocess.run(command, capture_output=True, text=True, timeout=20)
+        self.assertEqual(built.returncode, 0, built.stderr)
+        result = self.run_writer('snapshot-lock', binary=binary)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.record()['state'], 'VERIFIED')
+        self.assertIn('erase', self.events())
+        self.assertNotIn('snapshot-lock', self.events())
 
     def test_post_touch_paths_remain_locked_until_process_exit(self):
         for fault in (None, 'erase', 'write', 'readback', 'verified-write'):

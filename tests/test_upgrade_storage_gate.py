@@ -7,10 +7,12 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from test_httpd_regressions import source
 import test_storage_regressions as storage_fixture
 from upgrade_gate_harness import compile_harness, compile_consumer
+import upgrade_gate_harness
 
 
 class UpgradeStorageGateTests(unittest.TestCase):
@@ -114,6 +116,15 @@ class UpgradeStorageGateTests(unittest.TestCase):
     def test_int_save_header_prototype(self):
         self.assertIn('int write_storage_to_mtd(void);', source('trunk/user/rc/rc.h'))
 
+    def test_no_child_sentinel_is_bound_to_the_actual_production_macro(self):
+        original_source = upgrade_gate_harness.source
+        def changed_source(path):
+            text = original_source(path)
+            return text.replace('#define FW_UPGRADE_NOT_STARTED (-2)', '#define FW_UPGRADE_NOT_STARTED (-3)') if path == 'trunk/user/rc/rc.c' else text
+        with patch.object(upgrade_gate_harness, 'source', side_effect=changed_source):
+            with self.assertRaisesRegex(ValueError, 'production no-child sentinel'):
+                upgrade_gate_harness.generate(self.root)
+
     def test_private_trusted_writer_failure_stops_nothing(self):
         for options in ({'trusted_mode': 0o777}, {'trusted_mode': 0o644},
                         *({'stage_fault': mode} for mode in (1, 2, 3, 4))):
@@ -205,7 +216,7 @@ class UpgradeStorageGateTests(unittest.TestCase):
         self.assertEqual(result['reboots'], 0)
 
     def test_unknown_signal_exec_missing_stale_unsafe_and_malformed_results_never_restore(self):
-        for kind in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22):
+        for kind in (2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23):
             with self.subTest(kind=kind):
                 result = self.run_case(kind=kind)
                 self.assertEqual(result['phase'], 1)
@@ -218,6 +229,14 @@ class UpgradeStorageGateTests(unittest.TestCase):
                 self.assertEqual(result['logs'], 0)  # no post-write shared logger
                 self.assertEqual((result['mlocks'], result['munlocks']), (1, 0))
                 self.assertTrue(list((self.root / 'private').glob('fwupgrade.*/writer')))
+
+    def test_no_child_spawn_failure_restores_services_after_checked_watchdog_disable(self):
+        result = self.run_case(kind=10)
+        self.assert_safe_recovery(result)
+        self.assertEqual(result['writes'], 1)  # Inert spawn attempt, no child/write.
+        self.assertEqual(result['hardware_disables'], 1)
+        self.assertEqual(result['starts'], [1] * 7)
+        self.assertEqual([p.name for p in (self.root / 'private').iterdir()], ['firmware-action.lock'])
 
     def test_unexpected_verified_normal_exit_holds_without_parent_reset_or_IO(self):
         result = self.run_case(kind=0)

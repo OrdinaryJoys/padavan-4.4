@@ -70,6 +70,9 @@
 #ifndef FWUP_MLOCKALL
 #define FWUP_MLOCKALL mlockall
 #endif
+#ifndef FWUP_MLOCK
+#define FWUP_MLOCK mlock
+#endif
 #ifndef FWUP_MUNLOCKALL
 #define FWUP_MUNLOCKALL munlockall
 #endif
@@ -359,6 +362,14 @@ static int firmware_upgrade_write(const char *image, const char *target, const c
 	memory_lock_attempted = 1;
 	if (FWUP_MLOCKALL(MCL_CURRENT | MCL_FUTURE) != 0) {
 		message = "cannot lock complete writer memory before flash"; goto out;
+	}
+	/* Unlike mlockall, Linux 4.4 mlock returns range population errors.
+	 * Check both large immutable input and the readback stack pages while
+	 * PREWRITE is still authoritative; mlockall success alone can hide a
+	 * failed population or VMA fixup. This does not certify every code page,
+	 * future stack growth, kernel allocations or the system's memory peak. */
+	if (FWUP_MLOCK(snapshot, padded) != 0 || FWUP_MLOCK(readback, sizeof(readback)) != 0) {
+		message = "cannot populate and lock firmware snapshot/readback memory"; goto out;
 	}
 	state.image_bytes = (uint32_t)size;
 	result = FWUP_UNKNOWN;

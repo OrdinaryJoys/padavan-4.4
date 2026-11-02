@@ -481,6 +481,7 @@ erase_nvram(void)
 #define FW_UPGRADE_INHIBIT "firmware-upgrade-inhibit"
 #define FW_UPGRADE_WRITER "/bin/fw_upgrade"
 #define FW_UPGRADE_MAX_BYTES 15925248UL
+#define FW_UPGRADE_NOT_STARTED (-2)
 
 /* PID1-only state. Signal handlers read/write only these memory latches,
  * never the inter-process marker/lease or libc diagnostics. */
@@ -763,13 +764,18 @@ firmware_upgrade_run(const char *writer, const char *record, int lease, pid_t *c
 	 * exec. Actual fault signals remain handled in PID1 while it waits. */
 	sigaddset(&block, SIGTERM);
 	sigaddset(&block, SIGQUIT);
+	/* The kernel may apply the mask and then fail copying the old mask to
+	 * userspace. With no reliable previous mask, do not resume normal PID1. */
 	if (sigprocmask(SIG_BLOCK, &block, &previous) != 0)
 		return -1;
 	if (firmware_upgrade_spawn(writer, record, lease, child) == 0) {
 		do waited = waitpid(*child, &status, 0); while (waited < 0 && errno == EINTR);
 		if (waited != *child)
 			status = -1;
-	}
+	} else
+		/* No child ever existed, hence neither exec nor a firmware write is
+		 * possible. This is distinct from a failed wait after child creation. */
+		status = FW_UPGRADE_NOT_STARTED;
 	if (sigprocmask(SIG_SETMASK, &previous, NULL) != 0)
 		status = -1;
 	return status;
@@ -954,6 +960,10 @@ flash_firmware(void)
 		goto safe_recover;
 	}
 	status = firmware_upgrade_run(writer, record, lease, &child);
+	if (status == FW_UPGRADE_NOT_STARTED) {
+		logmessage("firmware", "Upgrade worker could not start; no firmware write, recovering services");
+		goto safe_recover;
+	}
 	/* The static RAM worker owns readback, VERIFIED publication and reset.
 	 * A possible write must never require PID1 to format logs, inspect ROMfs
 	 * or request a second reset. Only normal exit20 may consult the private
