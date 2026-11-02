@@ -51,6 +51,11 @@ class FirmwareWriterProtocolTests(unittest.TestCase):
 #include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
+#ifdef __linux__
+#include <sys/vfs.h>
+#else
+#include <sys/mount.h>
+#endif
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -63,6 +68,7 @@ class FirmwareWriterProtocolTests(unittest.TestCase):
 static int device_fd=-1,reader_fd=-1,stage=0,device_writes=0,image_reads=0,readbacks=0,sync_calls=0,memory_resident=0,range_locks=0;
 static void *allocated_memory;
 static size_t allocated_bytes;
+static int oom_fd=-1,oom_writes,oom_reads;
 static int fault(const char*s){const char*p=getenv("WRITER_FAULT");return p&&!strcmp(p,s);}
 static void event(const char*s){
  int fd=open(getenv("WRITER_LOG"),O_WRONLY|O_CREAT|O_APPEND,0600);
@@ -187,6 +193,50 @@ static int memory_range_lock(const void*p,size_t n){
 }
 static int memory_unlock(void){event("memory-unlock");memory_resident=0;if(fault("memory-unlock")){errno=EIO;return -1;}return 0;}
 static void memory_free(void*p){event("memory-free");if(stage>=2)event("UNSAFE-POSTWRITE-FREE");free(p);}
+static int oom_open(const char *path,int flags){
+ event("oom-open");
+ if(strcmp(path,"/fixture/oom_score_adj")||flags!=(O_RDWR|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC)){
+  event("UNSAFE-OOM-OPEN");errno=EINVAL;return -1;
+ }
+ if(fault("oom-open")){errno=EACCES;return -1;}
+ return oom_fd=open(getenv("WRITER_OOM"),flags);
+}
+static int oom_fstat(int fd,struct stat *st){
+ if(fault("oom-fstat")){errno=EIO;return -1;}
+ if(fd!=oom_fd||fstat(fd,st))return -1;
+ if(fault("oom-owner"))st->st_uid++;
+ return 0;
+}
+static int oom_statfs(int fd,struct statfs *fs){
+ if(fd!=oom_fd||fault("oom-statfs")){errno=EIO;return -1;}
+ memset(fs,0,sizeof(*fs));fs->f_type=fault("oom-not-proc")?0x01021994:0x9fa0;return 0;
+}
+static ssize_t oom_write(int fd,const void *p,size_t n){
+ event("oom-write");oom_writes++;
+ if(fd!=oom_fd||n!=6||memcmp(p,"-1000\n",6)){event("UNSAFE-OOM-WRITE");errno=EINVAL;return -1;}
+ if(fault("oom-write-eintr")&&oom_writes==1){errno=EINTR;return -1;}
+ if(fault("oom-write")){errno=EACCES;return -1;}
+ if(fault("oom-write-zero"))return 0;
+ if(fault("oom-write-over"))return (ssize_t)n+1;
+ if(fault("oom-write-short"))return write(fd,p,4);
+ if(fault("oom-mismatch")){if(write(fd,"-0999\n",6)!=6)return -1;return (ssize_t)n;}
+ return write(fd,p,n);
+}
+static off_t oom_seek(int fd,off_t offset,int whence){
+ if(fd!=oom_fd||fault("oom-seek")){errno=EIO;return -1;}return lseek(fd,offset,whence);
+}
+static ssize_t oom_read(int fd,void *p,size_t n){
+ event("oom-read");oom_reads++;
+ if(fd!=oom_fd||fault("oom-read")){errno=EIO;return -1;}
+ if(fault("oom-read-eintr")&&oom_reads==1){errno=EINTR;return -1;}
+ if(fault("oom-read-over"))return (ssize_t)n+1;
+ if(fault("oom-read-eof"))return 0;
+ if(fault("oom-read-extra")){memcpy(p,"-1000\nX",n);return (ssize_t)n;}
+ if(fault("oom-read-short")&&n>2)n=2;
+ return read(fd,p,n);
+}
+static int oom_close(int fd){int result;event("oom-close");result=close(fd);oom_fd=-1;
+ if(fault("oom-close")){errno=EIO;return -1;}return result;}
 #define FWUP_OPEN_DEVICE mock_open
 #define FWUP_IOCTL mock_ioctl
 #define FWUP_DEVICE_WRITE device_write
@@ -204,6 +254,14 @@ static void memory_free(void*p){event("memory-free");if(stage>=2)event("UNSAFE-P
 #define FWUP_MLOCKALL memory_lock
 #define FWUP_MLOCK memory_range_lock
 #define FWUP_MUNLOCKALL memory_unlock
+#define FWUP_OOM_PATH "/fixture/oom_score_adj"
+#define FWUP_OOM_OPEN oom_open
+#define FWUP_OOM_FSTAT oom_fstat
+#define FWUP_OOM_STATFS oom_statfs
+#define FWUP_OOM_WRITE oom_write
+#define FWUP_OOM_READ oom_read
+#define FWUP_OOM_SEEK oom_seek
+#define FWUP_OOM_CLOSE oom_close
 #include "upgrade_write.h"
 int main(int argc,char**argv){if(argc!=4)return 99;_exit(firmware_upgrade_write(argv[1],argv[2],argv[3]));}
 ''')
@@ -238,12 +296,15 @@ int main(int argc,char**argv){if(argc!=4)return 99;_exit(firmware_upgrade_write(
         with self.device.open('wb') as stream: stream.truncate(LIMIT)
         self.log = self.base / 'events'
         self.requests = self.base / 'write-requests'
+        self.oom = self.base / 'ordinary-file-oom-score'
+        self.oom.write_bytes(b'0\n'); self.oom.chmod(0o644)
 
     def tearDown(self): self.temp.cleanup()
 
     def environment(self, fault=None):
         env = dict(os.environ, WRITER_DEVICE=str(self.device), WRITER_IMAGE=str(self.image),
-                   WRITER_LOG=str(self.log), WRITER_STATUS=str(self.status), WRITER_REQUESTS=str(self.requests))
+                   WRITER_LOG=str(self.log), WRITER_STATUS=str(self.status), WRITER_REQUESTS=str(self.requests),
+                   WRITER_OOM=str(self.oom))
         if fault: env['WRITER_FAULT'] = fault
         else: env.pop('WRITER_FAULT', None)
         return env
@@ -256,6 +317,21 @@ int main(int argc,char**argv){if(argc!=4)return 99;_exit(firmware_upgrade_write(
         return result
 
     def events(self): return self.log.read_text().splitlines() if self.log.exists() else []
+
+    def compile_variant(self, name, header):
+        variant = self.code / name
+        variant.mkdir(exist_ok=True)
+        (variant / 'upgrade_write.h').write_text(header)
+        binary = variant / 'writer'
+        command = [shutil.which('clang') or shutil.which('cc'), '-Wall', '-Wextra', '-Werror',
+                   '-Wno-unused-function', '-DFWUP_TEST_UID=geteuid()',
+                   '-DFWUP_OPERATION_DIR="' + str(self.operation) + '"',
+                   '-I' + str(variant), '-I' + str(SOURCE),
+                   '-I' + str(ROOT / 'trunk/user/shared/include'),
+                   str(self.code / 'writer.c'), str(SOURCE / 'crc32.c'), '-o', str(binary)]
+        built = subprocess.run(command, capture_output=True, text=True, timeout=20)
+        self.assertEqual(built.returncode, 0, built.stderr)
+        return binary
 
     def record(self):
         text = self.status.read_text()
@@ -301,6 +377,77 @@ int main(int argc,char**argv){if(argc!=4)return 99;_exit(firmware_upgrade_write(
             with self.subTest(fault=fault):
                 self.status.unlink(missing_ok=True)
                 result = self.run_writer(fault); self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_oom_exclusion_is_checked_before_device_open_and_large_allocation(self):
+        self.assertEqual(self.run_writer().returncode, 0)
+        self.assertEqual(self.oom.read_bytes(), b'-1000\n')
+        events = self.events()
+        self.assertEqual(events[:5], ['oom-open', 'oom-write', 'oom-read', 'oom-read', 'oom-close'])
+        self.assertLess(events.index('oom-close'), events.index('open-device'))
+        self.assertLess(events.index('oom-close'), events.index('memory-lock'))
+        self.assertNotIn('UNSAFE-OOM-OPEN', events)
+        self.assertNotIn('UNSAFE-OOM-WRITE', events)
+
+    def test_oom_open_metadata_io_and_confirmation_failures_are_safe_before_allocation(self):
+        for fault in ('oom-open', 'oom-fstat', 'oom-owner', 'oom-statfs', 'oom-not-proc',
+                      'oom-write', 'oom-write-zero', 'oom-write-over', 'oom-seek',
+                      'oom-read', 'oom-read-over', 'oom-read-eof', 'oom-read-extra',
+                      'oom-mismatch', 'oom-close'):
+            with self.subTest(fault=fault):
+                self.status.unlink(missing_ok=True); self.log.unlink(missing_ok=True)
+                self.oom.write_bytes(b'0\n')
+                self.assert_prewrite(self.run_writer(fault))
+                self.assertNotIn('open-device', self.events())
+                self.assertNotIn('memory-lock', self.events())
+                self.assertIn('memory-free', self.events())
+                self.assertNotIn('memory-unlock', self.events())
+                if fault != 'oom-open': self.assertIn('oom-close', self.events())
+
+    def test_oom_write_short_is_not_retried_with_a_different_numeric_suffix(self):
+        self.assert_prewrite(self.run_writer('oom-write-short'))
+        self.assertEqual(self.events().count('oom-write'), 1)
+        self.assertEqual(self.oom.read_bytes(), b'-100')
+        self.assertNotIn('oom-read', self.events())
+        self.assertNotIn('open-device', self.events())
+
+    def test_oom_negative_eintr_and_valid_short_reads_preserve_full_confirmation(self):
+        for fault in ('oom-write-eintr', 'oom-read-eintr', 'oom-read-short'):
+            with self.subTest(fault=fault):
+                self.status.unlink(missing_ok=True); self.log.unlink(missing_ok=True)
+                self.oom.write_bytes(b'0\n')
+                self.assertEqual(self.run_writer(fault).returncode, 0)
+                self.assertEqual(self.oom.read_bytes(), b'-1000\n')
+                self.assertEqual(self.record()['state'], 'VERIFIED')
+                self.assertEqual(self.events().count('oom-write'), 2 if fault == 'oom-write-eintr' else 1)
+                self.assertEqual(self.events().count('oom-read'), {'oom-write-eintr': 2, 'oom-read-eintr': 3, 'oom-read-short': 4}[fault])
+
+    def test_oom_path_alias_nonregular_hardlink_and_unsafe_mode_are_refused(self):
+        alternate = self.base / 'oom-alternate'
+        for kind in ('symlink', 'hardlink', 'fifo', 'mode'):
+            with self.subTest(kind=kind):
+                self.status.unlink(missing_ok=True); self.log.unlink(missing_ok=True)
+                self.oom.unlink(missing_ok=True); alternate.unlink(missing_ok=True)
+                if kind == 'fifo': os.mkfifo(self.oom, 0o644)
+                else:
+                    self.oom.write_bytes(b'0\n'); self.oom.chmod(0o644)
+                    if kind == 'symlink':
+                        self.oom.rename(alternate); self.oom.symlink_to(alternate)
+                    elif kind == 'hardlink': os.link(self.oom, alternate)
+                    elif kind == 'mode': self.oom.chmod(0o666)
+                self.assert_prewrite(self.run_writer())
+                self.assertNotIn('oom-write', self.events())
+                self.assertNotIn('open-device', self.events())
+
+    def test_missing_oom_guard_negative_control_would_write_without_exclusion(self):
+        header = (SOURCE / 'upgrade_write.h').read_text()
+        check = 'fwup_protect_oom() != 0'
+        self.assertEqual(header.count(check), 1)
+        binary = self.compile_variant('unchecked-oom', header.replace(check, '0'))
+        self.assertEqual(self.run_writer('oom-write', binary=binary).returncode, 0)
+        self.assertEqual(self.record()['state'], 'VERIFIED')
+        self.assertIn('erase', self.events())
+        self.assertNotIn('oom-open', self.events())
+        self.assertEqual(self.oom.read_bytes(), b'0\n')
 
     def test_open_and_geometry_failures_are_strict_prewrite(self):
         for fault in ('open', 'nand', 'geometry', 'partition', 'readonly', 'pre-read', 'pre-sync', 'memory'):
@@ -426,18 +573,7 @@ int main(int argc,char**argv){if(argc!=4)return 99;_exit(firmware_upgrade_write(
         original = (SOURCE / 'upgrade_write.h').read_text()
         check = 'FWUP_MLOCK(snapshot, padded) != 0 || FWUP_MLOCK(readback, sizeof(readback)) != 0'
         self.assertEqual(original.count(check), 1)
-        variant = self.code / 'unchecked-ranges'
-        variant.mkdir(exist_ok=True)
-        (variant / 'upgrade_write.h').write_text(original.replace(check, '0'))
-        binary = variant / 'writer'
-        command = [shutil.which('clang') or shutil.which('cc'), '-Wall', '-Wextra', '-Werror',
-                   '-Wno-unused-function', '-DFWUP_TEST_UID=geteuid()',
-                   '-DFWUP_OPERATION_DIR="' + str(self.operation) + '"',
-                   '-I' + str(variant), '-I' + str(SOURCE),
-                   '-I' + str(ROOT / 'trunk/user/shared/include'),
-                   str(self.code / 'writer.c'), str(SOURCE / 'crc32.c'), '-o', str(binary)]
-        built = subprocess.run(command, capture_output=True, text=True, timeout=20)
-        self.assertEqual(built.returncode, 0, built.stderr)
+        binary = self.compile_variant('unchecked-ranges', original.replace(check, '0'))
         result = self.run_writer('snapshot-lock', binary=binary)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.record()['state'], 'VERIFIED')

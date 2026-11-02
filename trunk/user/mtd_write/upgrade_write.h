@@ -4,6 +4,11 @@
 #define K2P_UPGRADE_WRITE_H
 #include <sys/file.h>
 #include <sys/mman.h>
+#ifdef __linux__
+#include <sys/vfs.h>
+#else
+#include <sys/mount.h>
+#endif
 #include <strings.h>
 #include "crc32.h"
 
@@ -76,6 +81,30 @@
 #ifndef FWUP_MUNLOCKALL
 #define FWUP_MUNLOCKALL munlockall
 #endif
+#ifndef FWUP_OOM_PATH
+#define FWUP_OOM_PATH "/proc/self/oom_score_adj"
+#endif
+#ifndef FWUP_OOM_OPEN
+#define FWUP_OOM_OPEN open
+#endif
+#ifndef FWUP_OOM_FSTAT
+#define FWUP_OOM_FSTAT fstat
+#endif
+#ifndef FWUP_OOM_STATFS
+#define FWUP_OOM_STATFS fstatfs
+#endif
+#ifndef FWUP_OOM_WRITE
+#define FWUP_OOM_WRITE write
+#endif
+#ifndef FWUP_OOM_READ
+#define FWUP_OOM_READ read
+#endif
+#ifndef FWUP_OOM_SEEK
+#define FWUP_OOM_SEEK lseek
+#endif
+#ifndef FWUP_OOM_CLOSE
+#define FWUP_OOM_CLOSE close
+#endif
 
 struct fwup_status {
 	int parent;
@@ -90,6 +119,44 @@ static int fwup_error(const char *message, int result)
 	/* Diagnostics must not gate SAFE recovery or an unknown write outcome.
 	 * The private status record and exit protocol are authoritative. */
 	(void)message;
+	return result;
+}
+
+/* PID1's OOM exemption is not inherited by this separate process. mlock
+ * does not exclude a task from the kernel OOM victim selection. Protect only
+ * this admitted worker, before its large allocation and any destructive IO.
+ * This cannot prevent allocation stalls, kernel panic or an explicit SIGKILL. */
+static int fwup_protect_oom(void)
+{
+	static const char value[] = "-1000\n";
+	char record[sizeof(value)];
+	struct stat st;
+	struct statfs fs;
+	size_t have = 0;
+	ssize_t n;
+	int fd, result = -1;
+	fd = FWUP_OOM_OPEN(FWUP_OOM_PATH, O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+	if (fd < 0) return -1;
+	if (FWUP_OOM_FSTAT(fd, &st) || !S_ISREG(st.st_mode) || st.st_uid != FWUP_OWNER ||
+	    st.st_nlink != 1 || (st.st_mode & 07777) != 0644 ||
+	    FWUP_OOM_STATFS(fd, &fs) || (unsigned long)fs.f_type != 0x9fa0UL)
+		goto out;
+	/* proc interprets each write as a complete new integer. Never continue
+	 * a positive short write with its suffix, which could remove protection. */
+	do n = FWUP_OOM_WRITE(fd, value, sizeof(value) - 1); while (n < 0 && errno == EINTR);
+	if (n != (ssize_t)sizeof(value) - 1 || FWUP_OOM_SEEK(fd, 0, SEEK_SET) != 0)
+		goto out;
+	while (have < sizeof(record)) {
+		n = FWUP_OOM_READ(fd, record + have, sizeof(record) - have);
+		if (n < 0 && errno == EINTR) continue;
+		if (n < 0 || (size_t)n > sizeof(record) - have) goto out;
+		if (!n) break;
+		have += (size_t)n;
+	}
+	if (have == sizeof(value) - 1 && !memcmp(record, value, have))
+		result = 0;
+out:
+	if (FWUP_OOM_CLOSE(fd) != 0) result = -1;
 	return result;
 }
 
@@ -309,6 +376,7 @@ static int firmware_upgrade_write(const char *image, const char *target, const c
 	 * global lock is UNKNOWN, not permission to restart the watchdog. */
 	lock = fwup_lock(); if (lock < 0) { message = "another firmware operation is active or its lock is unsafe"; goto out; }
 	result = FWUP_SAFE;
+	if (fwup_protect_oom() != 0) { message = "cannot establish checked worker OOM exclusion"; goto out; }
 	if (fwup_split(image, parent, leaf, sizeof(leaf))) { message = "invalid image path"; goto out; }
 	imagefd = fwup_directory(parent);
 	if (imagefd < 0) { message = "unsafe image parent"; goto out; }
