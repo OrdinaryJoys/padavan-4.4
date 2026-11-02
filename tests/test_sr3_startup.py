@@ -72,6 +72,14 @@ class SR3StartupTests(unittest.TestCase):
     def test_preexisting_busy_is_settled_before_wren(self):
         self.check(('initial-busy','pre-ready-error','pre-ready-timeout'))
 
+    def test_ready_reloads_sr3_and_rechecks_drv_before_writing(self):
+        self.check(('busy-prior-sr3-other-bits','busy-prior-sr3-no-change','fresh-sr3-read-error'))
+        changed=self.run_case('busy-prior-sr3-other-bits')
+        self.assertEqual(changed['write_value'] & ~0x60, 0xe0 & ~0x60)
+        self.assertEqual(changed['sr3_after'], 0xc0)
+        self.assertEqual(self.run_case('busy-prior-sr3-no-change')['write_calls'],0)
+        self.assertEqual(self.run_case('fresh-sr3-read-error')['write_calls'],0)
+
     def test_write_attempt_requires_ready_even_after_transport_error(self):
         self.check(('post-ready-error','post-ready-timeout',
                     'write-error-accepted-ready-error','write-error-accepted-ready-timeout',
@@ -138,6 +146,16 @@ class SR3StartupTests(unittest.TestCase):
         row=self.run_case('initial-busy',binary=bad)
         self.assertEqual((row['wren_busy'],row['write_busy']),(1,1))
         self.assertNotEqual(row,self.expected['initial-busy'])
+
+    def test_missing_fresh_sample_negative_control_loses_new_sr3_control_bits(self):
+        old='ret = nor->read_reg(nor, 0x15, &code, 1);\n\t\tif (ret < 0 || (code & 0x60) != 0x60)\n\t\t\treturn 0;'
+        bad=self.variant('missing-fresh-sr3',old,'/* Deliberate stale-sample negative control. */')
+        row=self.run_case('busy-prior-sr3-other-bits',binary=bad)
+        self.assertEqual((row['write_value'],row['sr3_after']),(0x40,0x40))
+        self.assertNotEqual(row,self.expected['busy-prior-sr3-other-bits'])
+        row=self.run_case('busy-prior-sr3-no-change',binary=bad)
+        self.assertEqual(row['write_calls'],1)
+        self.assertNotEqual(row,self.expected['busy-prior-sr3-no-change'])
 
     def test_ignored_scan_error_negative_control_exposes_busy_mtd(self):
         texts=dict(self.texts)

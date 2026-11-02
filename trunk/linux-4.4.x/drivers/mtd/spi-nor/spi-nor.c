@@ -1299,6 +1299,13 @@ static int spi_set_wb_drive_strength(struct spi_nor *nor)
 		if (ret)
 			return ret;
 
+		/* SR3 can be read while an earlier write is busy. Re-sample after
+		 * it completes, preserving its latest non-DRV bits and avoiding an
+		 * unnecessary write if the adjustment has already been made. */
+		ret = nor->read_reg(nor, 0x15, &code, 1);
+		if (ret < 0 || (code & 0x60) != 0x60)
+			return 0;
+
 		code &= ~0x60;
 		code |= 0x40;
 		ret = write_enable(nor);

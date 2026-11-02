@@ -572,7 +572,7 @@ struct mtd_part_parser_data {struct device_node*of_node;};
 static const char*label;static void*allocated_flash;
 static int warnings,errors,registered,registration_busy,array_reads,array_busy,array_result;
 static int sr3=0x60,initial_sr3=0x60,busy,wel,write_value=-1;
-static int status_reads,fsr_reads,wren_calls,write_calls,wren_busy,write_busy;
+static int status_reads,fsr_reads,sr3_reads,wren_calls,write_calls,wren_busy,write_busy;
 static int post_write,sr3_pending,pre_poll,post_poll,fsr_extra,sr_last_wip;
 static unsigned long jiffies;
 static char sequence[128];
@@ -591,7 +591,8 @@ static int spi_write_then_read(struct spi_device*spi,const void*tx,unsigned int 
  if(tlen!=1||rlen!=1)abort();
  code=*(const u8*)tx;
  if(code==0x15){
-  trace('R');
+  trace('R');sr3_reads++;
+  if(is("fresh-sr3-read-error")&&sr3_reads==2)return -EIO;
   if(is("sr3-unsupported"))return -EOPNOTSUPP;
   if(is("sr3-read-error"))return -EIO;
   *(u8*)rx=(u8)sr3;return 0;
@@ -678,6 +679,8 @@ int main(int argc,char**argv){
  if(is("preserve-all-other-bits"))sr3=0xff;
  initial_sr3=sr3;
  if(is("initial-busy")||is("pre-ready-timeout"))busy=2;
+ if(is("busy-prior-sr3-other-bits")){busy=2;sr3_pending=0xe0;}
+ if(is("busy-prior-sr3-no-change")){busy=2;sr3_pending=0x40;}
  if(is("fsr-normal")||is("fsr-error")||is("fsr-delayed")){
   model_info.flags|=USE_FSR;if(is("fsr-delayed"))fsr_extra=1;
  }
@@ -698,7 +701,7 @@ int main(int argc,char**argv){
 def expected(name, *, result=0, registered=1, registration_busy=0, busy=0,
              before=0x60, after=0x40, value=0x40, wel=0, wren=1, writes=1,
              status=4, fsr=0, wren_busy=0, write_busy=0, warnings=0, errors=0,
-             jiffies=2000, sequence='RSEWSSSGA'):
+             jiffies=2000, sequence='RSREWSSSGA'):
     return {'case':name,'result':result,'registered':registered,
             'registration_busy':registration_busy,'array_reads':registered,
             'array_busy':registration_busy,'array_result':(-11 if registration_busy else 0) if registered else None,
@@ -719,22 +722,25 @@ CASES = (
     ('non-winbond',expected('non-winbond',after=0x60,value=-1,wren=0,writes=0,status=0,jiffies=0,sequence='GA')),
     ('sr3-unsupported',expected('sr3-unsupported',after=0x60,value=-1,wren=0,writes=0,status=0,errors=1,jiffies=0,sequence='RGA')),
     ('sr3-read-error',expected('sr3-read-error',after=0x60,value=-1,wren=0,writes=0,status=0,errors=1,jiffies=0,sequence='RGA')),
-    ('wren-error',expected('wren-error',after=0x60,value=-1,writes=0,status=1,warnings=1,jiffies=0,sequence='RSEGA')),
-    ('wren-error-accepted',expected('wren-error-accepted',after=0x60,value=-1,wel=1,writes=0,status=1,warnings=1,jiffies=0,sequence='RSEGA')),
-    ('write-error-rejected',expected('write-error-rejected',after=0x60,wel=1,status=2,warnings=1,jiffies=0,sequence='RSEWSGA')),
+    ('wren-error',expected('wren-error',after=0x60,value=-1,writes=0,status=1,warnings=1,jiffies=0,sequence='RSREGA')),
+    ('wren-error-accepted',expected('wren-error-accepted',after=0x60,value=-1,wel=1,writes=0,status=1,warnings=1,jiffies=0,sequence='RSREGA')),
+    ('write-error-rejected',expected('write-error-rejected',after=0x60,wel=1,status=2,warnings=1,jiffies=0,sequence='RSREWSGA')),
     ('write-error-accepted',expected('write-error-accepted',warnings=1)),
-    ('initial-busy',expected('initial-busy',status=6,jiffies=4000,sequence='RSSSEWSSSGA')),
+    ('initial-busy',expected('initial-busy',status=6,jiffies=4000,sequence='RSSSREWSSSGA')),
     ('pre-ready-error',expected('pre-ready-error',result=-5,registered=0,after=0x60,value=-1,wren=0,writes=0,status=1,errors=2,jiffies=0,sequence='RS')),
     ('pre-ready-timeout',expected('pre-ready-timeout',result=-110,registered=0,busy=1,after=0x60,value=-1,wren=0,writes=0,status=5,errors=1,jiffies=5000,sequence='RSSSSS')),
-    ('post-ready-error',expected('post-ready-error',result=-5,registered=0,busy=1,after=0x60,status=2,errors=2,jiffies=0,sequence='RSEWS')),
-    ('post-ready-timeout',expected('post-ready-timeout',result=-110,registered=0,busy=1,after=0x60,status=6,errors=1,jiffies=5000,sequence='RSEWSSSSS')),
-    ('write-error-accepted-ready-error',expected('write-error-accepted-ready-error',result=-5,registered=0,busy=1,after=0x60,status=2,errors=2,jiffies=0,sequence='RSEWS')),
-    ('write-error-accepted-ready-timeout',expected('write-error-accepted-ready-timeout',result=-110,registered=0,busy=1,after=0x60,status=6,errors=1,jiffies=5000,sequence='RSEWSSSSS')),
-    ('write-error-rejected-ready-error',expected('write-error-rejected-ready-error',result=-5,registered=0,after=0x60,wel=1,status=2,errors=2,jiffies=0,sequence='RSEWS')),
-    ('deadline-wrap-timeout',expected('deadline-wrap-timeout',result=-110,registered=0,busy=1,after=0x60,status=6,errors=1,jiffies=2999,sequence='RSEWSSSSS')),
-    ('fsr-normal',expected('fsr-normal',status=4,fsr=4,sequence='RSFEWSFSFSFGA')),
-    ('fsr-error',expected('fsr-error',result=-5,registered=0,busy=1,after=0x60,status=2,fsr=2,errors=2,jiffies=0,sequence='RSFEWSF')),
-    ('fsr-delayed',expected('fsr-delayed',status=5,fsr=5,jiffies=3000,sequence='RSFEWSFSFSFSFGA')),
+    ('post-ready-error',expected('post-ready-error',result=-5,registered=0,busy=1,after=0x60,status=2,errors=2,jiffies=0,sequence='RSREWS')),
+    ('post-ready-timeout',expected('post-ready-timeout',result=-110,registered=0,busy=1,after=0x60,status=6,errors=1,jiffies=5000,sequence='RSREWSSSSS')),
+    ('write-error-accepted-ready-error',expected('write-error-accepted-ready-error',result=-5,registered=0,busy=1,after=0x60,status=2,errors=2,jiffies=0,sequence='RSREWS')),
+    ('write-error-accepted-ready-timeout',expected('write-error-accepted-ready-timeout',result=-110,registered=0,busy=1,after=0x60,status=6,errors=1,jiffies=5000,sequence='RSREWSSSSS')),
+    ('write-error-rejected-ready-error',expected('write-error-rejected-ready-error',result=-5,registered=0,after=0x60,wel=1,status=2,errors=2,jiffies=0,sequence='RSREWS')),
+    ('deadline-wrap-timeout',expected('deadline-wrap-timeout',result=-110,registered=0,busy=1,after=0x60,status=6,errors=1,jiffies=2999,sequence='RSREWSSSSS')),
+    ('fsr-normal',expected('fsr-normal',status=4,fsr=4,sequence='RSFREWSFSFSFGA')),
+    ('fsr-error',expected('fsr-error',result=-5,registered=0,busy=1,after=0x60,status=2,fsr=2,errors=2,jiffies=0,sequence='RSFREWSF')),
+    ('fsr-delayed',expected('fsr-delayed',status=5,fsr=5,jiffies=3000,sequence='RSFREWSFSFSFSFGA')),
+    ('busy-prior-sr3-other-bits',expected('busy-prior-sr3-other-bits',after=0xc0,value=0xc0,status=6,jiffies=4000,sequence='RSSSREWSSSGA')),
+    ('busy-prior-sr3-no-change',expected('busy-prior-sr3-no-change',after=0x40,value=-1,wren=0,writes=0,status=3,jiffies=2000,sequence='RSSSRGA')),
+    ('fresh-sr3-read-error',expected('fresh-sr3-read-error',after=0x60,value=-1,wren=0,writes=0,status=1,errors=1,jiffies=0,sequence='RSRGA')),
 )
 BASELINE_CASES = (
     ('normal',expected('normal',registration_busy=1,busy=1,after=0x60,status=0,jiffies=0,sequence='REWGA')),
