@@ -116,7 +116,7 @@ class LegacyFirmwareGateTests(unittest.TestCase):
         for name in ('readonly-firmware-dump', 'readonly-bad-table'):
             row = self.run_case(name)
             self.assertEqual(row['returncode'], 0)
-            self.assertEqual(row['trace'], 'sync,dump,sync')
+            self.assertEqual(row['trace'], 'dump')
 
     def test_other_board_disabled_control_exposes_original_silent_corruption(self):
         row = self.run_case('disabled-guard-silent-corruption', enabled=False)

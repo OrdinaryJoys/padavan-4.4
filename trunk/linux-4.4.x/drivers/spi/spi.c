@@ -1124,6 +1124,14 @@ static void __spi_pump_messages(struct spi_master *master, bool in_kthread)
 		if (ret < 0) {
 			dev_err(&master->dev, "Failed to power device: %d\n",
 				ret);
+			/* get_sync increments the usage count even on failure. */
+			pm_runtime_put_noidle(master->dev.parent);
+			spin_lock_irqsave(&master->queue_lock, flags);
+			master->busy = false;
+			master->cur_msg_mapped = false;
+			spin_unlock_irqrestore(&master->queue_lock, flags);
+			master->cur_msg->status = ret;
+			spi_finalize_current_message(master);
 			return;
 		}
 	}
@@ -1139,6 +1147,14 @@ static void __spi_pump_messages(struct spi_master *master, bool in_kthread)
 
 			if (master->auto_runtime_pm)
 				pm_runtime_put(master->dev.parent);
+			/* The next message must retry hardware preparation. */
+			spin_lock_irqsave(&master->queue_lock, flags);
+			master->busy = false;
+			master->cur_msg_mapped = false;
+			spin_unlock_irqrestore(&master->queue_lock, flags);
+			trace_spi_master_idle(master);
+			master->cur_msg->status = ret;
+			spi_finalize_current_message(master);
 			return;
 		}
 	}

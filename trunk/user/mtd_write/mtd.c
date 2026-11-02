@@ -92,13 +92,12 @@ int writesize = 0;
 int jffs2_skip_bytes=0;
 int mtdtype = 0;
 
-int mtd_open(const char *mtd, bool block)
+static int mtd_open_flags(const char *mtd, bool block, int flags)
 {
 	FILE *fp;
 	char dev[PATH_MAX];
 	int i;
 	int ret;
-	int flags = O_RDWR | O_SYNC;
 	char name[PATH_MAX];
 
 	snprintf(name, sizeof(name), "\"%s\"", mtd);
@@ -120,12 +119,17 @@ int mtd_open(const char *mtd, bool block)
 	return open(mtd, flags);
 }
 
-int mtd_check_open(const char *mtd)
+int mtd_open(const char *mtd, bool block)
+{
+	return mtd_open_flags(mtd, block, O_RDWR | O_SYNC);
+}
+
+static int mtd_check_open_flags(const char *mtd, int flags)
 {
 	struct mtd_info_user mtdInfo;
 	int fd;
 
-	fd = mtd_open(mtd, false);
+	fd = mtd_open_flags(mtd, false, flags);
 	if(fd < 0) {
 		fprintf(stderr, "Could not open mtd device: %s\n", mtd);
 		return -1;
@@ -142,6 +146,11 @@ int mtd_check_open(const char *mtd)
 	writesize = mtdInfo.writesize;
 
 	return fd;
+}
+
+int mtd_check_open(const char *mtd)
+{
+	return mtd_check_open_flags(mtd, O_RDWR | O_SYNC);
 }
 
 int mtd_block_is_bad(int fd, int offset)
@@ -343,54 +352,70 @@ mtd_erase(const char *mtd)
 }
 
 static int
-mtd_dump(const char *mtd, int part_offset, int size)
+mtd_dump(const char *mtd, size_t part_offset, size_t size)
 {
-	int ret = 0, offset = 0;
+	int ret = -1;
 	int fd;
-	char *buf;
+	char *buffer = NULL;
+	size_t offset, chunk, done;
 
 	if (quiet < 2)
 		fprintf(stderr, "Dumping %s ...\n", mtd);
 
-	fd = mtd_check_open(mtd);
+	fd = mtd_check_open_flags(mtd, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
 	if(fd < 0) {
 		fprintf(stderr, "Could not open mtd device: %s\n", mtd);
 		return -1;
 	}
 
+	/* A dump is an exact physical range, never a best-effort compacted
+	 * stream. Check before allocation, seeking or sending any output. */
+	if (mtdsize <= 0 || erasesize <= 0 || part_offset >= (size_t)mtdsize)
+		goto out;
 	if (!size)
-		size = mtdsize;
-
-	if (part_offset)
-		lseek(fd, part_offset, SEEK_SET);
-
-	buf = malloc(erasesize);
-	if (!buf)
-		return -1;
-
-	do {
-		int len = (size > erasesize) ? (erasesize) : (size);
-		int rlen = read(fd, buf, len);
-
-		if (rlen < 0) {
-			if (errno == EINTR)
-				continue;
-			ret = -1;
+		size = (size_t)mtdsize - part_offset;
+	if (size > (size_t)mtdsize - part_offset)
+		goto out;
+	if (part_offset && lseek(fd, (off_t)part_offset, SEEK_SET) != (off_t)part_offset)
+		goto out;
+	chunk = size < (size_t)erasesize ? size : (size_t)erasesize;
+	buffer = malloc(chunk);
+	if (!buffer)
+		goto out;
+	offset = part_offset;
+	while (size) {
+		size_t length = (size_t)erasesize - offset % (size_t)erasesize;
+		if (length > size)
+			length = size;
+		if (mtd_block_is_bad(fd, (int)(offset - offset % (size_t)erasesize))) {
+			fprintf(stderr, "Cannot dump an exact range containing bad block at 0x%08x\n", (unsigned)offset);
 			goto out;
 		}
-		if (!rlen || rlen != len)
-			break;
-		if (mtd_block_is_bad(fd, offset)) {
-			fprintf(stderr, "skipping bad block at 0x%08x\n", offset);
-		} else {
-			size -= rlen;
-			write(1, buf, rlen);
+		for (done = 0; done < length;) {
+			ssize_t count = read(fd, buffer + done, length - done);
+			if (count < 0 && errno == EINTR)
+				continue;
+			if (count <= 0 || (size_t)count > length - done)
+				goto out;
+			done += (size_t)count;
 		}
-		offset += rlen;
-	} while (size > 0);
+		for (done = 0; done < length;) {
+			ssize_t count = write(STDOUT_FILENO, buffer + done, length - done);
+			if (count < 0 && errno == EINTR)
+				continue;
+			if (count <= 0 || (size_t)count > length - done)
+				goto out;
+			done += (size_t)count;
+		}
+		offset += length;
+		size -= length;
+	}
+	ret = 0;
 
 out:
-	close(fd);
+	free(buffer);
+	if (close(fd) != 0)
+		ret = -1;
 	return ret;
 }
 
@@ -733,7 +758,8 @@ static void usage(void)
 	"        unlock                  unlock the device\n"
 	"        refresh                 refresh mtd partition\n"
 	"        erase                   erase all data on device\n"
-	"        verify <imagefile>|-    verify <imagefile> (use - for stdin) to device\n"
+	"        verify                  unsupported; use independent exact readback comparison\n"
+	"        dump                    dump an exact range; I/O or bad-block errors fail\n"
 	"        write <imagefile>|-     write <imagefile> (use - for stdin) to device\n"
 	"        jffs2write <file>       append <file> to the jffs2 partition on the device\n");
 	if (mtd_resetbc) {
@@ -801,9 +827,10 @@ static void do_reboot(void)
 
 int main (int argc, char **argv)
 {
-	int ch, i, boot, imagefd = 0, force, unlocked;
+	int ch, i, boot, imagefd = 0, force, unlocked, dump_incompatible = 0;
 	char *erase[MAX_ARGS], *device = NULL;
 	char *fis_layout = NULL;
+	char *numeric_end;
 	size_t offset = 0, data_size = 0, part_offset = 0, dump_len = 0;
 	enum {
 		CMD_ERASE,
@@ -838,18 +865,22 @@ int main (int argc, char **argv)
 			"frnqe:d:s:j:p:o:c:l:")) != -1)
 		switch (ch) {
 			case 'f':
+				dump_incompatible = 1;
 				force = 1;
 				break;
 			case 'r':
 				boot = 1;
 				break;
 			case 'n':
+				dump_incompatible = 1;
 				no_erase = 1;
 				break;
 			case 'j':
+				dump_incompatible = 1;
 				jffs2file = optarg;
 				break;
 			case 's':
+				dump_incompatible = 1;
 				errno = 0;
 				jffs2_skip_bytes = strtoul(optarg, 0, 0);
 				if (errno) {
@@ -861,6 +892,7 @@ int main (int argc, char **argv)
 				quiet++;
 				break;
 			case 'e':
+				dump_incompatible = 1;
 				i = 0;
 				while ((erase[i] != NULL) && ((i + 1) < MAX_ARGS))
 					i++;
@@ -873,9 +905,11 @@ int main (int argc, char **argv)
 				erase[i] = NULL;
 				break;
 			case 'd':
+				dump_incompatible = 1;
 				jffs2dir = optarg;
 				break;
 			case 'p':
+				dump_incompatible = 1;
 				errno = 0;
 				part_offset = strtoul(optarg, 0, 0);
 				if (errno) {
@@ -885,21 +919,22 @@ int main (int argc, char **argv)
 				break;
 			case 'l':
 				errno = 0;
-				dump_len = strtoul(optarg, 0, 0);
-				if (errno) {
+				dump_len = strtoul(optarg, &numeric_end, 0);
+				if (errno || optarg[0] < '0' || optarg[0] > '9' || *numeric_end) {
 					fprintf(stderr, "-l: illegal numeric string\n");
-					usage();
+					return 1;
 				}
 				break;
 			case 'o':
 				errno = 0;
-				offset = strtoul(optarg, 0, 0);
-				if (errno) {
+				offset = strtoul(optarg, &numeric_end, 0);
+				if (errno || optarg[0] < '0' || optarg[0] > '9' || *numeric_end) {
 					fprintf(stderr, "-o: illegal numeric string\n");
-					usage();
+					return 1;
 				}
 				break;
 			case 'c':
+				dump_incompatible = 1;
 				errno = 0;
 				data_size = strtoul(optarg, 0, 0);
 				if (errno) {
@@ -909,6 +944,7 @@ int main (int argc, char **argv)
 				break;
 #ifdef FIS_SUPPORT
 			case 'F':
+				dump_incompatible = 1;
 				fis_layout = optarg;
 				break;
 #endif
@@ -950,10 +986,17 @@ int main (int argc, char **argv)
 		cmd = CMD_FIXWRGG;
 		device = argv[1];
 	} else if ((strcmp(argv[0], "verify") == 0) && (argc == 3)) {
-		cmd = CMD_VERIFY;
-		imagefile = argv[1];
-		device = argv[2];
+		/* The implementation below is disabled. Never claim verification or
+		 * reach sync/pre-erase for an operation which cannot verify bytes. */
+		fputs("mtd_write: verify is not implemented; use independent exact readback comparison\n", stderr);
+		return 1;
 	} else if ((strcmp(argv[0], "dump") == 0) && (argc == 2)) {
+		/* A backup command must not erase first or silently accept writer
+		 * options. Only quiet, offset and length describe a dump. */
+		if (dump_incompatible) {
+			fputs("mtd_write: dump accepts only -q, -o and -l\n", stderr);
+			return 1;
+		}
 		cmd = CMD_DUMP;
 		device = argv[1];
 	} else if ((strcmp(argv[0], "write") == 0) && (argc == 3)) {
@@ -993,6 +1036,11 @@ int main (int argc, char **argv)
 		usage();
 	}
 
+	/* Read-only backup never waits for unrelated global writeback or enters
+	 * the mutating command/reboot pipeline. The legacy guard ran above. */
+	if (cmd == CMD_DUMP)
+		return mtd_dump(device, offset, dump_len) != 0;
+
 	sync();
 
 	i = 0;
@@ -1011,10 +1059,10 @@ int main (int argc, char **argv)
 				mtd_unlock(device);
 			break;
 		case CMD_VERIFY:
-		//	mtd_verify(device, imagefile);
-			break;
+			return 1;
 		case CMD_DUMP:
-			mtd_dump(device, offset, dump_len);
+			if (mtd_dump(device, offset, dump_len) != 0)
+				return 1;
 			break;
 		case CMD_ERASE:
 			if (!unlocked)
