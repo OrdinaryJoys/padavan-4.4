@@ -81,12 +81,12 @@ class SpiQueueTests(unittest.TestCase):
                 self.assertEqual(entry['source_key'], next(
                     key for key, names in harness.FUNCTIONS.items() if name in names))
                 self.assertIn(entry['body'], generated)
-                if name != '__spi_pump_messages':
+                if name not in ('__spi_pump_messages', 'spi_stop_queue'):
                     self.assertEqual(entry['body'], harness.BASELINE_FUNCTIONS[name])
         self.assertEqual(hashlib.sha256(harness.production_fragments(
             self.texts).encode()).hexdigest(), harness.PRODUCTION_FRAGMENT_SHA256)
         self.assertIn('atomic_add_unless', actual['pm_runtime_put_noidle']['body'])
-        self.assertEqual(len(harness.CASES), 33)
+        self.assertEqual(len(harness.CASES), 39)
         self.assertEqual(len(harness.BASELINE_CASES), 8)
         for name, row in harness.CASES + harness.BASELINE_CASES:
             self.assertEqual(name, row['case'])
@@ -163,6 +163,62 @@ class SpiQueueTests(unittest.TestCase):
         self.check(('empty-idle', 'idle-defer', 'current-message-defer',
                     'idling-defer', 'stopped-sync', 'validate-error',
                     'destroy-idle', 'destroy-busy-boundary'))
+
+    def test_current_message_ownership_is_required_for_stop_and_destroy(self):
+        self.check(('stop-current-message-boundary', 'destroy-current-message-boundary',
+                    'stop-current-completes', 'destroy-current-completes',
+                    'pm-fail-destroy-interleave', 'prepare-fail-destroy-interleave'))
+        for name in ('pm-fail-destroy-interleave', 'prepare-fail-destroy-interleave'):
+            row = self.run_case(name)
+            self.assertEqual((row['result'], row['result2'], row['completed']),
+                             (-5, -16, 1))
+            self.assertEqual((row['running'], row['flush'], row['stop']), (1, 0, 0))
+
+    def test_old_stop_body_can_destroy_worker_while_synchronous_error_pump_owns_message(self):
+        texts = copy.copy(self.texts)
+        current = harness.extract(texts['core'], 'spi_stop_queue')
+        texts['core'] = texts['core'].replace(
+            current, harness.BASELINE_FUNCTIONS['spi_stop_queue'], 1)
+        binary = self.compile(texts, 'old-stop-with-new-error-cleanup')
+        for name in ('stop-current-message-boundary', 'destroy-current-message-boundary'):
+            with self.subTest(case=name):
+                row = self.run_case(name, binary)
+                self.assertEqual((row['result'], row['cur_msg'], row['running'],
+                                  row['sleeps']), (0, 1, 0, 0))
+        for name in ('pm-fail-destroy-interleave', 'prepare-fail-destroy-interleave'):
+            with self.subTest(case=name):
+                row = self.run_case(name, binary)
+                self.assertEqual((row['result'], row['result2'], row['running'],
+                                  row['flush'], row['stop']), (-5, 0, 0, 1, 1))
+
+    def test_stop_wait_and_final_idle_decision_both_require_current_message_check(self):
+        original = harness.extract(self.texts['core'], 'spi_stop_queue')
+        loop = ('while ((!list_empty(&master->queue) || master->busy ||\n'
+                '\t\tmaster->cur_msg) && limit--)')
+        final = 'if (!list_empty(&master->queue) || master->busy || master->cur_msg)'
+        self.assertEqual(original.count(loop), 1)
+        self.assertEqual(original.count(final), 1)
+        mutations = {
+            'no-current-wait': original.replace(
+                loop, 'while ((!list_empty(&master->queue) || master->busy) && limit--)'),
+            'no-current-final-check': original.replace(
+                final, 'if (!list_empty(&master->queue) || master->busy)'),
+        }
+        for label, body in mutations.items():
+            with self.subTest(mutation=label):
+                texts = copy.copy(self.texts)
+                texts['core'] = texts['core'].replace(original, body, 1)
+                binary = self.compile(texts, label)
+                name = ('stop-current-completes' if label == 'no-current-wait'
+                        else 'destroy-current-message-boundary')
+                row = self.run_case(name, binary)
+                self.assertNotEqual(row, self.expected[name])
+                if label == 'no-current-wait':
+                    self.assertEqual((row['result'], row['completed'], row['sleeps']),
+                                     (-16, 0, 0))
+                else:
+                    self.assertEqual((row['result'], row['cur_msg'], row['flush'],
+                                      row['stop'], row['sleeps']), (0, 1, 1, 1, 500))
 
     def test_driver_without_finalize_remains_an_explicit_unfixed_contract_boundary(self):
         self.check(('driver-contract-boundary',))
@@ -277,11 +333,8 @@ class SpiQueueTests(unittest.TestCase):
         # An eager competing pump runs immediately after busy is cleared under
         # queue_lock. The still-owned cur_msg must make that pump return.
         raw = harness.generate_source(self.texts)
-        needle = ('static void model_unlock(struct model_lock*l)'
-                  '{if(l->depth!=1)locks_bad++;l->depth--;}')
-        replacement = ('static int eager_pump_once;\n'
-                       'static void model_unlock(struct model_lock*l)'
-                       '{if(l->depth!=1)locks_bad++;l->depth--;'
+        needle = harness.extract(harness.PREFIX, 'model_unlock')
+        replacement = ('static int eager_pump_once;\n' + needle[:-1] +
                        'if(l==&master.queue_lock&&!master.busy&&master.cur_msg&&!eager_pump_once)'
                        '{eager_pump_once=1;__spi_pump_messages(&master,true);}}')
         self.assertEqual(raw.count(needle), 1)

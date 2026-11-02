@@ -55,6 +55,8 @@ MT7621 SPI 控制器的失败路径也必须先释放已持有资源：不可用
 
 通用队列在 runtime PM 获取或 `prepare_transfer_hardware()` 失败后，原来直接返回，遗留 `cur_msg`、busy 状态和未完成的同步调用。候选在两处失败分支保存原错误、清 busy 及本次未使用的 DMA 映射标志，再完成当前消息；PM 获取失败还以 `pm_runtime_put_noidle()` 平衡失败调用已经增加的引用。下一条消息重新获取电源并准备硬件，不对失败的准备调用 unprepare。清映射标志仅限这两个尚未映射的失败分支，避免上一条 DMA 消息的标志让本次错误完成误触发解映射；未改全局 DMA 生命周期。
 
+错误完成前即使 busy 已清除，只要 `cur_msg` 仍存在，队列停止也不能成功。候选同时在停止轮询与最终判断中检查当前消息，避免同步 pump 尚在处理时销毁 worker；超时仍返回 EBUSY，不取消消息、不让同步调用提前返回。此保护并未修复 unregister 忽略 EBUSY 的完整框架生命周期。
+
 该问题的硬件准备分支与 [Linux 上游修复](https://github.com/torvalds/linux/commit/f3440d9a0da292dc4998d9393162fcfb996fd671) 相符，但本地4.4还需处理 busy、PM引用和映射状态；不能只照搬较新内核的一行完成调用。PM引用依据本仓库 `pm_runtime.h` / `runtime.c` 实现及 [内核 runtime PM 文档](https://docs.kernel.org/power/runtime_pm.html)。当前 MT7621 驱动没有启用 auto_runtime_pm、prepare_transfer_hardware 或 can_dma，所以这是条件性通用缺陷修复，不能据此认定上次K2P失联根因。
 
 回归嵌入实际 pump、同步调用、完成、队列停止/销毁、PM入口及两层解映射函数；硬件、调度和低层DMA使用隔离替身。旧版同步等待由观察点截获，不将其伪装成内核有超时返回。驱动回调若违反契约、从不完成消息，仍可无限等待；队列停止失败后的注销生命周期、部分DMA映射失败的完整清理也没有在本次修复中宣称解决。不要为这些路径增加会让栈上消息失效的强制超时。

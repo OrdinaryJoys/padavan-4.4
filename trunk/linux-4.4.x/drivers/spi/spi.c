@@ -1333,13 +1333,15 @@ static int spi_stop_queue(struct spi_master *master)
 	 * execution path (pump_messages) would be required to call wake_up or
 	 * friends on every SPI message. Do this instead.
 	 */
-	while ((!list_empty(&master->queue) || master->busy) && limit--) {
+	/* A synchronous pump may be rolling back with busy already cleared. */
+	while ((!list_empty(&master->queue) || master->busy ||
+		master->cur_msg) && limit--) {
 		spin_unlock_irqrestore(&master->queue_lock, flags);
 		usleep_range(10000, 11000);
 		spin_lock_irqsave(&master->queue_lock, flags);
 	}
 
-	if (!list_empty(&master->queue) || master->busy)
+	if (!list_empty(&master->queue) || master->busy || master->cur_msg)
 		ret = -EBUSY;
 	else
 		master->running = false;
