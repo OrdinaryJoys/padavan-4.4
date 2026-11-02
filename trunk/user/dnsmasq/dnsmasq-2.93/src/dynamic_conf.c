@@ -55,40 +55,97 @@ static int child_done(pid_t pid, int *success)
   return 1;
 }
 
-static void stop_group(pid_t pid, int exited, int *raw_status)
+/* All directed signals precede the sole reap. Afterwards only signal-0
+ * probes are used: PGID reuse can conservatively reject, never target a new
+ * process. A zombie-only group is also rejected until it disappears. */
+static int stop_group(pid_t pid, int group, int exited, int *raw_status)
 {
   long long end, now;
-  int status;
-  kill(-pid, SIGTERM);
+  int status, success = 0, clean = 1, reaped = 0;
+  unsigned int attempt;
+  pid_t result;
+
+  if (child_done(pid, &success) < 0)
+    return 0;
+  if (kill(group ? -pid : pid, SIGTERM) != 0 && errno != ESRCH && !group)
+    clean = 0;
   end = monotonic_ms();
-  if (!exited && end >= 0)
+  if (end < 0)
+    clean = 0;
+  else if (!exited)
     {
       end += 200;
-      do {
-        poll(NULL, 0, 10);
-        now = monotonic_ms();
-      } while (now >= 0 && now < end);
+      for (attempt = 0; attempt < 64; attempt++)
+        {
+          int done = child_done(pid, &success);
+          if (done < 0)
+            return 0;
+          if (done)
+            break;
+          now = monotonic_ms();
+          if (now < 0 || now >= end)
+            { if (now < 0) clean = 0; break; }
+          if (poll(NULL, 0, 10) < 0 && errno != EINTR)
+            { clean = 0; break; }
+        }
     }
-  kill(-pid, SIGKILL);
-  /* Also cover a failed setpgid in the pre-exec child. */
-  kill(pid, SIGKILL);
+  /* Even an earlier cleanup error cannot justify a signal after ECHILD. */
+  if (child_done(pid, &success) < 0)
+    return 0;
+  /* A group-directed signal may fail for an already zombie-only group.
+   * Only the later independent absence probe can establish cleanup then. */
+  if (group)
+    kill(-pid, SIGKILL);
+  /* Cover a pre-exec group failure or a leader which changed its group. */
+  if (kill(pid, SIGKILL) != 0 && errno != ESRCH)
+    clean = 0;
   end = monotonic_ms();
-  if (end >= 0)
+  if (end < 0)
+    clean = 0;
+  else
     end += 300;
-  do {
-    pid_t result = waitpid(pid, &status, WNOHANG);
-    if (result == pid)
-      {
-        if (raw_status) *raw_status = status;
-        return;
-      }
-    if (result == -1 && errno != EINTR)
-      return;
-    poll(NULL, 0, 10);
-    now = monotonic_ms();
-  } while (end >= 0 && now >= 0 && now < end);
-  /* A task stuck in kernel uninterruptible I/O cannot be synchronously reaped
-   * within a wall-clock bound; its eventual exit is reparented on fatal error. */
+  for (attempt = 0; attempt < 64; attempt++)
+    {
+      if (!reaped)
+        {
+          result = waitpid(pid, &status, WNOHANG);
+          if (result == pid)
+            {
+              reaped = 1;
+              if (raw_status) *raw_status = status;
+            }
+          else if (result < 0 && errno != EINTR)
+            return 0;
+        }
+      if (reaped)
+        {
+          if (!group)
+            return clean;
+          if (kill(-pid, 0) != 0)
+            return errno == ESRCH && clean;
+        }
+      now = monotonic_ms();
+      if (end < 0 || now < 0 || now >= end)
+        return 0;
+      if (poll(NULL, 0, 10) < 0 && errno != EINTR)
+        return 0;
+    }
+  /* No synchronous reap guarantee for a task stuck in kernel I/O. Neither a
+   * sent SIGKILL nor reaping only the leader permits output publication. */
+  return 0;
+}
+
+static int restore_collector_signals(const struct sigaction previous[2],
+                                     int installed, const sigset_t *mask, int masked)
+{
+  int i, restored = 1;
+  const int signals[] = {SIGTERM, SIGINT};
+  for (i = 0; i < installed; i++)
+    if (sigaction(signals[i], &previous[i], NULL) != 0)
+      restored = 0;
+  if (masked && sigprocmask(SIG_SETMASK, mask, NULL) != 0)
+    restored = 0;
+  return restored;
 }
 
 static int prepare_fd(int fd, int nonblock)
@@ -140,6 +197,10 @@ static int close_inherited(long max_fd)
   return 1;
 }
 
+/* SIGCHLD stays blocked while the leader pins its PID. Cleanup must reap the
+ * owned leader and observe the original group absent before output is used.
+ * Zombie-only groups and PGID reuse conservatively reject; trusted scripts
+ * which deliberately change session/group are not contained by this runner. */
 FILE *conf_script_open_status(const char *command, struct conf_script_budget *budget,
                               const char **error, int *raw_status)
 {
@@ -151,14 +212,23 @@ FILE *conf_script_open_status(const char *command, struct conf_script_budget *bu
   size_t bytes = 0, capacity = 0, stderr_bytes = 0, line = 0;
   long long now, deadline;
   long max_fd;
-  int i, done = 0, success = 0;
+  int i, done = 0, success = 0, group = 0, masked = 0;
   const int cancel_signals[] = {SIGTERM, SIGINT};
-  struct sigaction action, previous[2];
+  struct sigaction action, previous[2], child_action;
+  sigset_t blocked, previous_mask;
   int installed_handlers = 0;
 
   if (raw_status) *raw_status = -1;
   *error = "conf-script resource setup failed";
   cancelled = 0;
+  sigemptyset(&blocked);
+  sigaddset(&blocked, SIGCHLD);
+  if (sigprocmask(SIG_BLOCK, &blocked, &previous_mask) != 0)
+    goto fail;
+  masked = 1;
+  if (sigaction(SIGCHLD, NULL, &child_action) != 0 ||
+      child_action.sa_handler == SIG_IGN || (child_action.sa_flags & SA_NOCLDWAIT))
+    { *error = "conf-script child ownership unavailable"; goto fail; }
   memset(&action, 0, sizeof(action));
   action.sa_handler = cancel_script;
   sigemptyset(&action.sa_mask);
@@ -222,9 +292,38 @@ FILE *conf_script_open_status(const char *command, struct conf_script_budget *bu
       execl("/bin/sh", "sh", "-c", command, (char *)NULL);
       _exit(127);
     }
-  /* Both parent and child establish the group; EACCES means exec won. */
-  if (setpgid(pid, pid) == -1 && errno != EACCES && errno != ESRCH)
-    goto fail;
+  if (setpgid(pid, pid) == 0)
+    group = 1;
+  else
+    {
+      int group_error = errno;
+      pid_t observed;
+      if (group_error != EACCES && group_error != ESRCH)
+        goto fail;
+      errno = 0;
+      observed = getpgid(pid);
+      if (observed == pid)
+        group = 1;
+      else if (observed < 0 && errno == ESRCH)
+        {
+          int observed_done = child_done(pid, &success);
+          if (observed_done < 0 && errno == ECHILD)
+            {
+              pid = -1;
+              *error = "conf-script child ownership unavailable";
+              goto fail;
+            }
+          /* The pre-exec child exits 126 if setpgid fails. An owned exit0
+           * proves it established this group before exec, even when the
+           * exited child's getpgid is no longer observable on this host. */
+          if (observed_done == 1 && success)
+            group = 1;
+          else
+            goto fail;
+        }
+      else
+        goto fail;
+    }
   for (i = 0; i != 2; i++)
     {
       close(pipes[i][1]); pipes[i][1] = -1;
@@ -244,7 +343,14 @@ FILE *conf_script_open_status(const char *command, struct conf_script_budget *bu
         {
           done = child_done(pid, &success);
           if (done < 0)
-            goto fail;
+            {
+              *error = errno == ECHILD ? "conf-script child ownership unavailable" :
+                                        "conf-script child wait failed";
+              /* ECHILD permanently revokes this identity. A later waitid
+               * must not authorize signals to a recycled child PID. */
+              if (errno == ECHILD) pid = -1;
+              goto fail;
+            }
           if (done)
             break;
         }
@@ -304,7 +410,9 @@ FILE *conf_script_open_status(const char *command, struct conf_script_budget *bu
             budget->bytes += (size_t)count;
           }
     }
-  stop_group(pid, done, raw_status); pid = -1;
+  if (!stop_group(pid, group, done, raw_status))
+    { pid = -1; *error = "conf-script process cleanup failed"; goto fail; }
+  pid = -1;
   if (cancelled)
     { *error = "conf-script execution cancelled"; goto fail; }
   if (!success)
@@ -321,15 +429,17 @@ FILE *conf_script_open_status(const char *command, struct conf_script_budget *bu
   output = fmemopen(collected, bytes, "r");
   if (!output)
     { *error = "conf-script output stream failed"; goto fail; }
+  if (!restore_collector_signals(previous, installed_handlers, &previous_mask, masked))
+    { *error = "conf-script signal restore failed"; goto fail; }
+  if (cancelled)
+    { *error = "conf-script execution cancelled"; goto fail; }
   budget->buffers[budget->depth] = collected;
   budget->depth++;
-  for (i = 0; i < installed_handlers; i++)
-    sigaction(cancel_signals[i], &previous[i], NULL);
   return output;
 
 fail:
   if (pid > 0)
-    stop_group(pid, done, raw_status);
+    stop_group(pid, group, done, raw_status);
   for (i = 0; i != 2; i++)
     {
       if (pipes[i][0] != -1) close(pipes[i][0]);
@@ -338,8 +448,7 @@ fail:
   if (output)
     fclose(output);
   free(collected);
-  for (i = 0; i < installed_handlers; i++)
-    sigaction(cancel_signals[i], &previous[i], NULL);
+  restore_collector_signals(previous, installed_handlers, &previous_mask, masked);
   return NULL;
 }
 

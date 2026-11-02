@@ -53,6 +53,30 @@ class ControllerTests(unittest.TestCase):
     def test_map_clock_get_and_enable_failures_do_not_claim_resources(self):
         self.check(('probe-map-error','probe-clock-get-error','probe-clock-enable-error'))
 
+    def test_clock_get_error_log_matches_returned_errno_and_old_zero_diagnostic_is_visible(self):
+        # Keep the 42-row controller contract intact. This actual-body probe
+        # checks the logger argument independently through an inert logger.
+        logger = """static int diagnostic_error, diagnostic_calls;
+static const char *diagnostic_format;
+static void capture_diagnostic(const char *format,int error)
+{diagnostic_calls++;diagnostic_error=error;diagnostic_format=format;}
+#define dev_info(device,format,error) capture_diagnostic((format),(error))"""
+        prefix=harness.PREFIX.replace('#define dev_info(...) ((void)0)',logger)
+        prefix+='\n'+harness.production_fragments(self.texts)+'\n'+harness.SEAMS+'\n'
+        main=r'''int main(void){struct platform_device p;int result;
+memset(&p,0,sizeof(p));clk_error=-517;result=mt7621_spi_probe(&p);
+printf("{\"result\":%d,\"logged_error\":%d,\"calls\":%d,\"format_matches\":%d}\n",result,diagnostic_error,diagnostic_calls,
+ diagnostic_format&&strcmp(diagnostic_format,"unable to get hclk, err = %d\n")==0);return 0;}'''
+        bodies={'current':harness.extract(self.texts['controller'],'mt7621_spi_probe'),
+                'baseline':harness.BASELINE_FUNCTIONS['mt7621_spi_probe']}
+        for label,expected_log in (('current',-517),('baseline',0)):
+            with self.subTest(profile=label):
+                binary=self.compile(self.texts,'clock-diagnostic-'+label,raw=prefix+bodies[label]+'\n'+main,
+                                    extra=('-Wno-unused-variable',))
+                result=subprocess.run([str(binary)],capture_output=True,text=True)
+                self.assertEqual(result.returncode,0,result.stderr);self.assertEqual(result.stderr,'')
+                self.assertEqual(json.loads(result.stdout),{'result':-517,'logged_error':expected_log,'calls':1,'format_matches':1})
+
     def test_clock_zero_and_one_reject_before_allocation_and_cleanup_clock(self):
         self.check(('probe-clock-zero','probe-clock-one'))
 

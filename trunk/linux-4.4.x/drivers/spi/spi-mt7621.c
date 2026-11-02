@@ -301,7 +301,7 @@ static int mt7621_spi_probe(struct platform_device *pdev)
 
 	hclk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(hclk)) {
-		dev_info(&pdev->dev, "unable to get hclk, err = %d\n", status);
+		dev_info(&pdev->dev, "unable to get hclk, err = %d\n", (int)PTR_ERR(hclk));
 		return PTR_ERR(hclk);
 	}
 
