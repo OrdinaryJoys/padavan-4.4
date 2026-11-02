@@ -1280,25 +1280,43 @@ void spi_nor_restore(struct spi_nor *nor)
 EXPORT_SYMBOL_GPL(spi_nor_restore);
 
 
-static void spi_set_wb_drive_strength(struct spi_nor *nor)
+static int spi_set_wb_drive_strength(struct spi_nor *nor)
 {
-	int ret;
+	int ret, ready;
 	u8 code = 0;
 
 	ret = nor->read_reg(nor, 0x15, &code, 1);
 	if (ret < 0)
-		return;
+		return 0;
 
 	pr_debug("winbond spi-nor SR3: %d\n", code);
 
-	/* set Winbond DVP[1:0] as 10 (driving strength 50%) */
+	/* set Winbond DRV[1:0] as 10 (driving strength 50%) */
 	if ((code & 0x60) == 0x60) {
+		/* This optional adjustment must not send WREN while the flash is
+		 * busy. Keep the existing ready deadline rather than a delay guess. */
+		ret = spi_nor_wait_till_ready(nor);
+		if (ret)
+			return ret;
+
 		code &= ~0x60;
 		code |= 0x40;
-		write_enable(nor);
+		ret = write_enable(nor);
+		if (ret) {
+			dev_warn(nor->dev, "skipping optional SR3 adjustment: WREN failed (%d)\n", ret);
+			return 0;
+		}
 		nor->cmd_buf[0] = code;
-		nor->write_reg(nor, 0x11, nor->cmd_buf, 1);
+		ret = nor->write_reg(nor, 0x11, nor->cmd_buf, 1);
+		/* A transport error can follow an accepted command. In either case
+		 * settle the internal status-register write before MTD is exposed. */
+		ready = spi_nor_wait_till_ready(nor);
+		if (ready)
+			return ready;
+		if (ret)
+			dev_warn(nor->dev, "optional SR3 adjustment failed (%d), flash ready\n", ret);
 	}
+	return 0;
 }
 
 int spi_nor_scan(struct spi_nor *nor, const char *name, enum read_mode mode)
@@ -1462,8 +1480,11 @@ int spi_nor_scan(struct spi_nor *nor, const char *name, enum read_mode mode)
 
 	nor->program_opcode = SPINOR_OP_PP;
 
-	if (JEDEC_MFR(info) == SNOR_MFR_WINBOND)
-		spi_set_wb_drive_strength(nor);
+	if (JEDEC_MFR(info) == SNOR_MFR_WINBOND) {
+		ret = spi_set_wb_drive_strength(nor);
+		if (ret)
+			return ret;
+	}
 
 	if (info->addr_width)
 		nor->addr_width = info->addr_width;

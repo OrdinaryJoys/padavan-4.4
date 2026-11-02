@@ -18,6 +18,10 @@
 
 worker 不继承 PID1 的特殊 OOM 豁免。它在大快照分配之前通过已检查的 procfs 文件写入并读回自身 `oom_score_adj=-1000`；设置、元数据或读回失败都在擦写前拒绝。proc 的每次 write 都是完整整数，因此正短写直接失败，不续写后缀。该设置排除普通 OOM victim 选择，却可能使 SSH/Web/DNS 等其它进程被选中；分配等待、ENOMEM、内核 panic、已存在的终止状态和显式 SIGKILL 仍不能排除。它不提供整机 OOM 存活或远程管理保证。
 
+候选内核还检查 Winbond 可选 SR3 调整的写使能及写入结果。初始 SR3 读取失败或无需调整时，保留原来的跳过行为；需要调整时先确认 ready，WREN 失败就不发出 SR3 写命令。任何已尝试的 SR3 写命令，包括返回传输错误的命令，都必须经过 ready 检查；无法确认 ready 时，错误沿 scan/probe 返回并阻止 MTD 注册。已经确认 ready 的可选调整失败只警告并跳过，不声称驱动强度设置成功。
+
+该修复保留原来的 DRV 位掩码、目标强度、06h/11h 非易失性写路径和时钟，不切换为 50h 易失性写。依据为 [Winbond W25Q128FV 数据手册](https://www.winbond.com/resource-files/w25q128fv_revhh1_100913_website1.pdf) 的 7.1.12、8.2.5 节；这不是对本机芯片型号的重新确认。现有 ready 轮询有 jiffies 截止，但底层 SPI 锁/队列完成等待不构成端到端启动时限；跳过的路径也不证明所有历史 Flash 状态均已清理。新内核仍不能追溯修补当前 efd2 的首次升级。
+
 若确定未创建任何 writer 子进程，且父进程信号状态可靠，可按写前失败恢复原来运行的服务。只要已经创建过子进程，就不能仅靠缺少状态记录、超时、信号或异常返回推断没有写入。正常 SAFE20 加认证 PREWRITE 才能走另一条恢复路径。
 
 进入可能写入状态后，父进程保留禁止状态，不再执行旧 rootfs 的日志、状态解析或二次复位。worker 完整读回相等后请求一次 raw reboot；该系统调用仍经过内核 reboot notifier、usermode helper、device shutdown、syscore 和 MT7621 machine restart，并非独立硬复位。内核设备 shutdown 可能停止看门狗；超时定时器、SSH 计划任务或普通 reboot 都不能冒充独立回滚。
