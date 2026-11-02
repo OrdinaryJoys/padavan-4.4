@@ -20,6 +20,7 @@
 #include <linux/clk.h>
 #include <linux/err.h>
 #include <linux/reset.h>
+#include <linux/of.h>
 
 #define DRIVER_NAME			"spi-mt7621"
 
@@ -175,7 +176,7 @@ static int mt7621_spi_read(struct mt7621_spi *ms, u8 *buf, size_t len)
 		len -= rx_len;
 	}
 
-	return ret;
+	return 0;
 }
 
 static int mt7621_spi_write(struct mt7621_spi *ms, const u8 *buf, size_t len)
@@ -200,7 +201,7 @@ static int mt7621_spi_write(struct mt7621_spi *ms, const u8 *buf, size_t len)
 
 		val = 0;
 		for (i = 0; i < dido_len; i++) {
-			val |= (*buf++) << ((i % 4) * 8);
+			val |= ((u32)*buf++) << ((i % 4) * 8);
 
 			if ((i % 4 == 3) || (i == dido_len - 1)) {
 				writel(val, ms->base + SPI_DIDO_REG(i / 4));
@@ -309,10 +310,16 @@ static int mt7621_spi_probe(struct platform_device *pdev)
 		return status;
 
 	hclk_freq = clk_get_rate(hclk);
+	if (hclk_freq < 2) {
+		status = -EINVAL;
+		goto err_disable_clk;
+	}
 
 	master = spi_alloc_master(&pdev->dev, sizeof(*ms));
-	if (master == NULL)
-		return -ENOMEM;
+	if (master == NULL) {
+		status = -ENOMEM;
+		goto err_disable_clk;
+	}
 
 	master->mode_bits = SPI_CPOL | SPI_CPHA | SPI_LSB_FIRST | SPI_CS_HIGH;
 	master->flags = SPI_MASTER_HALF_DUPLEX;
@@ -333,21 +340,36 @@ static int mt7621_spi_probe(struct platform_device *pdev)
 	ms->master = master;
 	ms->hclk_freq = hclk_freq;
 
-	device_reset(&pdev->dev);
+	status = device_reset(&pdev->dev);
+	if (status && IS_ENABLED(CONFIG_RESET_CONTROLLER) &&
+	    of_find_property(pdev->dev.of_node, "resets", NULL))
+		goto err_put_master;
 
-	return spi_register_master(master);
+	status = spi_register_master(master);
+	if (!status)
+		return 0;
+
+err_put_master:
+	dev_set_drvdata(&pdev->dev, NULL);
+	spi_master_put(master);
+err_disable_clk:
+	clk_disable_unprepare(hclk);
+	return status;
 }
 
 static int mt7621_spi_remove(struct platform_device *pdev)
 {
 	struct spi_master *master;
 	struct mt7621_spi *ms;
+	struct clk *hclk;
 
 	master = dev_get_drvdata(&pdev->dev);
 	ms = spi_master_get_devdata(master);
 
-	clk_disable(ms->hclk);
+	hclk = ms->hclk;
 	spi_unregister_master(master);
+	dev_set_drvdata(&pdev->dev, NULL);
+	clk_disable_unprepare(hclk);
 
 	return 0;
 }
