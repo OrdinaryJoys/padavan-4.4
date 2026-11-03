@@ -44,6 +44,15 @@ static BOOLEAN valid_ch(UCHAR Ch)
 
 static INT32 resp_to_meta(INT32 ioctl_cmd, struct _META_CMD_HDR *rsp, RTMP_IOCTL_INPUT_STRUCT *wrq, INT32 len, INT32 status)
 {
+	UINT32 header_len = sizeof(*rsp) - sizeof(rsp->data);
+
+	if (!rsp || !wrq || !wrq->u.data.pointer || len < 0 ||
+	    (UINT32)len > sizeof(rsp->data) ||
+	    wrq->u.data.length < header_len ||
+	    (UINT32)len > wrq->u.data.length - header_len ||
+	    (ioctl_cmd != MTPRIV_IOCTL_META_SET &&
+	     ioctl_cmd != MTPRIV_IOCTL_META_QUERY))
+		return NDIS_STATUS_INVALID_DATA;
 	if (ioctl_cmd == MTPRIV_IOCTL_META_SET)
 		rsp->len_in = len;
 	else if (ioctl_cmd == MTPRIV_IOCTL_META_QUERY)
@@ -59,7 +68,7 @@ static INT32 resp_to_meta(INT32 ioctl_cmd, struct _META_CMD_HDR *rsp, RTMP_IOCTL
 
 #ifdef _DUMP_HEX_
 	{
-		UCHAR *pSrcBufVA = wrq->u.data.pointer;
+		UCHAR *pSrcBufVA = (UCHAR *)rsp;
 		UINT32 SrcBufLen = wrq->u.data.length;
 		unsigned char *pt;
 		INT32 x;
@@ -1977,32 +1986,52 @@ static INT32 oid_eeprom_type(INT32 ioctl_cmd, PRTMP_ADAPTER pAd, RTMP_IOCTL_INPU
 
 static INT32 oid_nvram_rw(INT32 ioctl_cmd, PRTMP_ADAPTER pAd, RTMP_IOCTL_INPUT_STRUCT *WRQ, struct _META_CMD_HDR *cmd_hdr)
 {
-	PARAM_CUSTOM_NVRAM_RW *cmd = (PARAM_CUSTOM_NVRAM_RW *)cmd_hdr->data;
+	struct _PARAM_CUSTOM_EEPROM_RW *cmd;
 	INT32 status = NDIS_STATUS_SUCCESS;
+	INT32 reply;
 	UINT16 value = 0;
-	UINT8 idx = cmd->idx << 1;
+	UINT32 idx, size;
+	UINT32 header_len = sizeof(*cmd_hdr) - sizeof(cmd_hdr->data);
 
-	if (ioctl_cmd == MTPRIV_IOCTL_META_SET) {
-		memcpy((PUCHAR)&value, &cmd->data, 4);
-		pAd->EEPROMImage[idx] = (0xff00 & value) >> 8;
-		pAd->EEPROMImage[idx + 1] = (0x00ff & value);
-		rtmp_ee_write_to_bin(pAd);
-		MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s-SET, method:0x%x ,offset:0x%x, valu:0x%x, EEPROMImage:0x%x\n", __func__, cmd->method, idx, value, pAd->EEPROMImage[idx]));
-	} else if (ioctl_cmd == MTPRIV_IOCTL_META_QUERY) {
-		if (cmd->method == PARAM_EEPROM_READ_METHOD_READ) {
-			value |= pAd->EEPROMImage[idx];
-			value <<= 8;
-			value |= pAd->EEPROMImage[idx + 1];
-		} else if (cmd->method == PARAM_EEPROM_READ_METHOD_GETSIZE)
-			value = EEPROM_SIZE;
+	if (!pAd || !WRQ || !cmd_hdr ||
+	    WRQ->u.data.length < header_len + sizeof(*cmd) ||
+	    WRQ->u.data.length > sizeof(*cmd_hdr))
+		return NDIS_STATUS_INVALID_DATA;
+	cmd = (struct _PARAM_CUSTOM_EEPROM_RW *)cmd_hdr->data;
+	if ((ioctl_cmd != MTPRIV_IOCTL_META_SET &&
+	     ioctl_cmd != MTPRIV_IOCTL_META_QUERY) ||
+	    (ioctl_cmd == MTPRIV_IOCTL_META_SET &&
+	     (cmd_hdr->len_in < sizeof(*cmd) ||
+	      cmd_hdr->len_in > WRQ->u.data.length - header_len ||
+	      cmd->method != PARAM_EEPROM_READ_METHOD_READ)) ||
+	    (ioctl_cmd == MTPRIV_IOCTL_META_QUERY &&
+	     (cmd_hdr->len_out < sizeof(*cmd) ||
+	      cmd_hdr->len_out > WRQ->u.data.length - header_len ||
+	      (cmd->method != PARAM_EEPROM_READ_METHOD_READ &&
+	       cmd->method != PARAM_EEPROM_READ_METHOD_GETSIZE))))
+		return NDIS_STATUS_INVALID_DATA;
 
-		MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_TRACE,  ("%s-QUREY, method:0x%x ,offset:0x%x, valu:0x%x\n", __func__, cmd->method, idx, value));
+	idx = (UINT32)cmd->idx * 2;
+	if (cmd->method == PARAM_EEPROM_READ_METHOD_GETSIZE) {
+		value = EEPROM_SIZE;
 	} else {
+		size = get_dev_eeprom_size(pAd);
+		if (!pAd->EEPROMImage || idx >= size || size - idx < sizeof(value))
+			return NDIS_STATUS_INVALID_DATA;
+		if (ioctl_cmd == MTPRIV_IOCTL_META_SET) {
+			memcpy(&value, &cmd->data, sizeof(value));
+			pAd->EEPROMImage[idx] = (value >> 8) & 0xff;
+			pAd->EEPROMImage[idx + 1] = value & 0xff;
+			if (!rtmp_ee_write_to_bin(pAd))
+				status = NDIS_STATUS_FAILURE;
+		} else {
+			value = ((UINT16)pAd->EEPROMImage[idx] << 8) |
+				pAd->EEPROMImage[idx + 1];
+		}
 	}
-
-	memcpy(&cmd->data, &value, 4);
-	status =  resp_to_meta(ioctl_cmd, cmd_hdr, WRQ, sizeof(*cmd), status);
-	return status;
+	memcpy(&cmd->data, &value, sizeof(value));
+	reply = resp_to_meta(ioctl_cmd, cmd_hdr, WRQ, sizeof(*cmd), status);
+	return reply ? reply : status;
 }
 
 /*
@@ -2024,9 +2053,19 @@ static META_CMD_HANDLER OID_HANDLE[] = {
 INT32 do_meta_cmd(INT32 ioctl_cmd, PRTMP_ADAPTER	pAd, RTMP_IOCTL_INPUT_STRUCT *WRQ, RTMP_STRING *wrq_name)
 {
 	INT32 Status = NDIS_STATUS_SUCCESS;
-	struct _META_CMD_HDR *cmd_hdr;
+	struct _META_CMD_HDR *cmd_hdr = NULL;
 	UINT32 oid = 0;
 	INT32 ret = 0;
+	UINT32 header_len = sizeof(*cmd_hdr) - sizeof(cmd_hdr->data);
+	UINT32 capacity;
+
+	if (!pAd || !WRQ || !WRQ->u.data.pointer ||
+	    (ioctl_cmd != MTPRIV_IOCTL_META_SET &&
+	     ioctl_cmd != MTPRIV_IOCTL_META_QUERY))
+		return NDIS_STATUS_INVALID_DATA;
+	capacity = WRQ->u.data.length;
+	if (capacity < header_len || capacity > sizeof(*cmd_hdr))
+		return NDIS_STATUS_INVALID_DATA;
 
 	os_alloc_mem_suspend(pAd, (UCHAR **)&cmd_hdr, sizeof(*cmd_hdr));
 
@@ -2036,17 +2075,21 @@ INT32 do_meta_cmd(INT32 ioctl_cmd, PRTMP_ADAPTER	pAd, RTMP_IOCTL_INPUT_STRUCT *W
 		goto ERROR0;
 	}
 
-	if (!WRQ) {
-		MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_TRACE,   ("%s. wrq is null\n", __func__));
-		goto ERROR0;
-	}
-
 	os_zero_mem(cmd_hdr, sizeof(*cmd_hdr));
-	Status = copy_from_user((PUCHAR)cmd_hdr, WRQ->u.data.pointer, WRQ->u.data.length);
+	Status = copy_from_user((PUCHAR)cmd_hdr, WRQ->u.data.pointer, capacity);
+	if (Status) {
+		Status = -EFAULT;
+		goto ERROR1;
+	}
+	if (cmd_hdr->len_in > capacity - header_len ||
+	    cmd_hdr->len_out > capacity - header_len) {
+		Status = NDIS_STATUS_INVALID_DATA;
+		goto ERROR1;
+	}
 #ifdef _DUMP_HEX_
 	{
-		UCHAR *pSrcBufVA = WRQ->u.data.pointer;
-		UINT32 SrcBufLen = WRQ->u.data.length;
+		UCHAR *pSrcBufVA = (UCHAR *)cmd_hdr;
+		UINT32 SrcBufLen = capacity;
 		unsigned char *pt;
 		INT32 x;
 
@@ -2067,12 +2110,6 @@ INT32 do_meta_cmd(INT32 ioctl_cmd, PRTMP_ADAPTER	pAd, RTMP_IOCTL_INPUT_STRUCT *W
 		MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("\n"));
 	}
 #endif
-
-	if (Status) {
-		Status = -EFAULT;
-		MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s, copy_from_user error\n", __func__));
-		goto ERROR1;
-	}
 
 	oid = cmd_hdr->oid;
 	MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s() ==>,OID:0x%x, len:0x%x\n", __func__, oid, WRQ->u.data.length));
@@ -2124,6 +2161,7 @@ INT32 do_meta_cmd(INT32 ioctl_cmd, PRTMP_ADAPTER	pAd, RTMP_IOCTL_INPUT_STRUCT *W
 		goto ERROR1;
 	}
 
+	Status = ret;
 ERROR1:
 	os_free_mem(cmd_hdr);
 ERROR0:

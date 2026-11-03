@@ -2256,8 +2256,15 @@ static INT ExtEventPreCalStoreProc(RTMP_ADAPTER *pAd, UINT32 EventId, UINT8 *Dat
 				RtmpFlashWrite(pAd->hdev_ctrl, pAd->PreCalStoreBuffer,
 					get_dev_eeprom_offset(pAd) + PRECALPART_OFFSET, TotalSize);
 #endif/* RTMP_FLASH_SUPPORT */
-			if (pAd->E2pAccessMode == E2P_BIN_MODE)
-				rtmp_cal_write_to_bin(pAd, pAd->PreCalStoreBuffer, PRECALPART_OFFSET, TotalSize);
+			if (pAd->E2pAccessMode == E2P_BIN_MODE &&
+			    rtmp_cal_write_to_bin(pAd, pAd->PreCalStoreBuffer,
+				PRECALPART_OFFSET, TotalSize) != NDIS_STATUS_SUCCESS) {
+				pAd->PreCalWriteOffSet = 0;
+				rf_count = 0;
+				MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+					("Pre-calibration BIN write failed; completion flag not raised\n"));
+				return FALSE;
+			}
 
 			/* Raise DoPreCal bits */
 			if (pAd->E2pAccessMode == E2P_FLASH_MODE || pAd->E2pAccessMode == E2P_BIN_MODE) {
@@ -2275,6 +2282,7 @@ static INT ExtEventPreCalStoreProc(RTMP_ADAPTER *pAd, UINT32 EventId, UINT8 *Dat
 	} else {
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				 ("\x1b[41m %s: PreCalStoreBuffer is NULL !! \x1b[m\n", __FUNCTION__));
+		return FALSE;
 	}
 
 	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
@@ -2284,32 +2292,32 @@ static INT ExtEventPreCalStoreProc(RTMP_ADAPTER *pAd, UINT32 EventId, UINT8 *Dat
 
 NTSTATUS PreCalTxLPFStoreProcHandler(PRTMP_ADAPTER pAd, PCmdQElmt CMDQelmt)
 {
-	ExtEventPreCalStoreProc(pAd, PRECAL_TXLPF, CMDQelmt->buffer);
-	return 0;
+	return ExtEventPreCalStoreProc(pAd, PRECAL_TXLPF, CMDQelmt->buffer) ?
+		NDIS_STATUS_SUCCESS : NDIS_STATUS_FAILURE;
 }
 
 NTSTATUS PreCalTxIQStoreProcHandler(PRTMP_ADAPTER pAd, PCmdQElmt CMDQelmt)
 {
-	ExtEventPreCalStoreProc(pAd, PRECAL_TXIQ, CMDQelmt->buffer);
-	return 0;
+	return ExtEventPreCalStoreProc(pAd, PRECAL_TXIQ, CMDQelmt->buffer) ?
+		NDIS_STATUS_SUCCESS : NDIS_STATUS_FAILURE;
 }
 
 NTSTATUS PreCalTxDCStoreProcHandler(PRTMP_ADAPTER pAd, PCmdQElmt CMDQelmt)
 {
-	ExtEventPreCalStoreProc(pAd, PRECAL_TXDC, CMDQelmt->buffer);
-	return 0;
+	return ExtEventPreCalStoreProc(pAd, PRECAL_TXDC, CMDQelmt->buffer) ?
+		NDIS_STATUS_SUCCESS : NDIS_STATUS_FAILURE;
 }
 
 NTSTATUS PreCalRxFIStoreProcHandler(PRTMP_ADAPTER pAd, PCmdQElmt CMDQelmt)
 {
-	ExtEventPreCalStoreProc(pAd, PRECAL_RXFI, CMDQelmt->buffer);
-	return 0;
+	return ExtEventPreCalStoreProc(pAd, PRECAL_RXFI, CMDQelmt->buffer) ?
+		NDIS_STATUS_SUCCESS : NDIS_STATUS_FAILURE;
 }
 
 NTSTATUS PreCalRxFDStoreProcHandler(PRTMP_ADAPTER pAd, PCmdQElmt CMDQelmt)
 {
-	ExtEventPreCalStoreProc(pAd, PRECAL_RXFD, CMDQelmt->buffer);
-	return 0;
+	return ExtEventPreCalStoreProc(pAd, PRECAL_RXFD, CMDQelmt->buffer) ?
+		NDIS_STATUS_SUCCESS : NDIS_STATUS_FAILURE;
 }
 static VOID ExtEventTxLPFCalInfoHandler(
 	RTMP_ADAPTER *pAd, UINT8 *Data, UINT32 Length)

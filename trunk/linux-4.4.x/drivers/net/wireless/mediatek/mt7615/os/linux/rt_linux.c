@@ -802,6 +802,11 @@ int RtmpOSFileClose(RTMP_OS_FD osfd)
 	return 0;
 }
 
+int RtmpOSFileCloseChecked(RTMP_OS_FD osfd)
+{
+	return filp_close(osfd, NULL);
+}
+
 
 void RtmpOSFileSeek(RTMP_OS_FD osfd, int offset)
 {

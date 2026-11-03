@@ -119,6 +119,7 @@ PREFIX=r'''
 #define FALSE 0
 #define E2P_NONE 0
 #define E2P_FLASH_MODE 2
+#define E2P_BIN_MODE 4
 #define E2P_SRC_FROM_FLASH 2
 #define E2P_SRC_FROM_BIN 8
 #define EEPROM_SIZE 64
@@ -129,6 +130,9 @@ PREFIX=r'''
 #define DCOC_OFFSET 16
 #define DPDPART1_OFFSET 24
 #define DPDPART2_OFFSET 32
+#define DCOC_IMAGE_SIZE 8
+#define TXDPD_IMAGE1_SIZE 8
+#define TXDPD_IMAGE2_SIZE 8
 #define MTWF_LOG(a,b,c,args) do{if(0)printf args;}while(0)
 #define NdisZeroMemory(p,n) memset(p,0,n)
 #define NdisMoveMemory(p,s,n) memcpy(p,s,n)
@@ -153,7 +157,7 @@ typedef struct {int previous;} RTMP_OS_FS_INFO;
 typedef int RTMP_OS_FD;
 typedef struct _RTMP_ADAPTER {
  UCHAR*EEPROMImage,*CalDCOCImage,*CalDPDAPart1Image,*CalDPDAPart2Image;
- int bDPDReloaded;unsigned int ChipID;void*hdev_ctrl;EEPROM_CONTROL E2pCtrl;
+ int bDCOCReloaded,bDPDReloaded,E2pAccessMode;unsigned int ChipID;void*hdev_ctrl;EEPROM_CONTROL E2pCtrl;
  int infType,RfIcType;struct {int dbdc_mode;} CommonCfg;
 } RTMP_ADAPTER,*PRTMP_ADAPTER;
 struct _RTMP_CHIP_OP {NDIS_STATUS(*eeinit)(RTMP_ADAPTER*);};
@@ -199,6 +203,7 @@ static INT RtmpOSFileRead(RTMP_OS_FD fd,UCHAR*buf,INT len){
  return contains("oversized-read-error")?len+1:n;
 }
 static INT RtmpOSFileClose(RTMP_OS_FD fd){(void)fd;filecloses++;event("file-close");return contains("close-error")?-5:0;}
+#define RtmpOSFileCloseChecked RtmpOSFileClose
 static UCHAR RandomByte(RTMP_ADAPTER*p){(void)p;return 0x20;}
 static void checkAntCapSanity(RTMP_ADAPTER*p){(void)p;event("antenna-check");}
 static int RtmpChipOpsEepromHook(RTMP_ADAPTER*p,int type,int mode){(void)p;(void)type;(void)mode;event("hook");return 0;}

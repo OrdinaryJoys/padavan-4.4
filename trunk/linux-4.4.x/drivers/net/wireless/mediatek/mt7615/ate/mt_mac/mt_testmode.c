@@ -7434,6 +7434,9 @@ INT MtATE_DPD_Cal_Store_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 				 ("%s: Currently not in FLASH or BIN MODE,return.\n", __func__));
 		return FALSE;
 	}
+	if ((kABand && !pAd->CalDPDAPart1Image) ||
+	    (kGBand && !pAd->CalDPDAPart2Image))
+		return FALSE;
 	/* Stop TX RX MAC */
 	SetATE(pAd, "TXSTOP");
 	SetATE(pAd, "RXSTOP");
@@ -7477,8 +7480,12 @@ INT MtATE_DPD_Cal_Store_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 				get_dev_eeprom_offset(pAd) + DPDPART1_OFFSET, TXDPD_PART1_LIMIT * TXDPD_SIZE);
 
 #endif
-		if (pAd->E2pAccessMode == E2P_BIN_MODE)
-			rtmp_cal_write_to_bin(pAd, pAd->CalDPDAPart1Image, DPDPART1_OFFSET, TXDPD_PART1_LIMIT * TXDPD_SIZE);
+		if (pAd->E2pAccessMode == E2P_BIN_MODE) {
+			if (rtmp_cal_write_to_bin(pAd, pAd->CalDPDAPart1Image, DPDPART1_OFFSET, TXDPD_PART1_LIMIT * TXDPD_SIZE) != NDIS_STATUS_SUCCESS) {
+				DPDPassOrFail = FALSE;
+				goto exit;
+			}
+		}
 
 		RtmpusecDelay(20000);
 	}
@@ -7521,8 +7528,12 @@ INT MtATE_DPD_Cal_Store_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 
 #endif
 
-		if (pAd->E2pAccessMode == E2P_BIN_MODE)
-			rtmp_cal_write_to_bin(pAd, pAd->CalDPDAPart2Image, DPDPART2_OFFSET, (DPD_G20_SIZE * TXDPD_SIZE));
+		if (pAd->E2pAccessMode == E2P_BIN_MODE) {
+			if (rtmp_cal_write_to_bin(pAd, pAd->CalDPDAPart2Image, DPDPART2_OFFSET, (DPD_G20_SIZE * TXDPD_SIZE)) != NDIS_STATUS_SUCCESS) {
+				DPDPassOrFail = FALSE;
+				goto exit;
+			}
+		}
 	}
 
 	/* raise DoCalibrate bits */
@@ -7541,7 +7552,10 @@ INT MtATE_DPD_Cal_Store_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 
 	if (pAd->E2pAccessMode == E2P_BIN_MODE) {
 		rtmp_ee_bin_write16(pAd, 0x52, doCal1);
-		rtmp_ee_write_to_bin(pAd);		/* writeback to eeprom file */
+		if (!rtmp_ee_write_to_bin(pAd)) {
+			DPDPassOrFail = FALSE;
+			goto exit;
+		}		/* writeback to eeprom file */
 	}
 
 #ifdef RTMP_FLASH_SUPPORT
@@ -7570,8 +7584,14 @@ INT MtATE_DPD_Cal_Store_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 #endif
 
 		if (pAd->E2pAccessMode == E2P_BIN_MODE) {
-			rtmp_cal_load_from_bin(pAd, pAd->CalDPDAPart1Image, DPDPART1_OFFSET, TXDPD_IMAGE1_SIZE);
-			rtmp_cal_load_from_bin(pAd, pAd->CalDPDAPart2Image, DPDPART2_OFFSET, TXDPD_IMAGE2_SIZE);
+			if (rtmp_cal_load_from_bin(pAd, pAd->CalDPDAPart1Image, DPDPART1_OFFSET, TXDPD_IMAGE1_SIZE) != NDIS_STATUS_SUCCESS) {
+				DPDPassOrFail = FALSE;
+				goto exit;
+			}
+			if (rtmp_cal_load_from_bin(pAd, pAd->CalDPDAPart2Image, DPDPART2_OFFSET, TXDPD_IMAGE2_SIZE) != NDIS_STATUS_SUCCESS) {
+				DPDPassOrFail = FALSE;
+				goto exit;
+			}
 		}
 
 		/* Find flash offset base on CentralFreq */
@@ -7602,7 +7622,7 @@ exit:
 			  (DPDPassOrFail == TRUE) ? "PASS" : "FAIL"));
 	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF,
 			 ("====================\n"));
-	return TRUE;
+	return DPDPassOrFail;
 }
 
 
@@ -7629,6 +7649,8 @@ INT MtATE_DCOC_Cal_Store_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 		return FALSE;
 	}
 
+	if (!pAd->CalDCOCImage)
+		return FALSE;
 	RTMPZeroMemory(pAd->CalDCOCImage, DCOC_IMAGE_SIZE);
 
 	if (x == 0) { /* 2G */
@@ -7777,8 +7799,12 @@ INT MtATE_DCOC_Cal_Store_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 
 #endif
 
-	if (pAd->E2pAccessMode == E2P_BIN_MODE)
-		rtmp_cal_write_to_bin(pAd, pAd->CalDCOCImage, DCOC_OFFSET, (K_ALL_SIZE * RXDCOC_SIZE));
+	if (pAd->E2pAccessMode == E2P_BIN_MODE) {
+		if (rtmp_cal_write_to_bin(pAd, pAd->CalDCOCImage, DCOC_OFFSET, (K_ALL_SIZE * RXDCOC_SIZE)) != NDIS_STATUS_SUCCESS) {
+			DCOCPassOrFail = FALSE;
+			goto exit;
+		}
+	}
 
 	/* raise DoCalibrate bits */
 #ifdef RTMP_FLASH_SUPPORT
@@ -7801,8 +7827,10 @@ INT MtATE_DCOC_Cal_Store_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 
 	if (pAd->E2pAccessMode == E2P_BIN_MODE) {
 		rtmp_ee_bin_write16(pAd, 0x52, doCal1);
-		rtmp_ee_write_to_bin(
-			pAd);		/* XXX: remember to writeback modified eeprom to file */
+		if (!rtmp_ee_write_to_bin(pAd)) {
+			DCOCPassOrFail = FALSE;
+			goto exit;
+		}		/* XXX: remember to writeback modified eeprom to file */
 	}
 
 	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF,
@@ -7822,7 +7850,10 @@ INT MtATE_DCOC_Cal_Store_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 #endif
 
 		if (pAd->E2pAccessMode == E2P_BIN_MODE)
-			rtmp_cal_load_from_bin(pAd, pAd->CalDCOCImage, DCOC_OFFSET, (K_ALL_SIZE * RXDCOC_SIZE));
+			if (rtmp_cal_load_from_bin(pAd, pAd->CalDCOCImage, DCOC_OFFSET, (K_ALL_SIZE * RXDCOC_SIZE)) != NDIS_STATUS_SUCCESS) {
+				DCOCPassOrFail = FALSE;
+				goto exit;
+			}
 
 		/* Find offset base on CentralFreq */
 		for (i = 0; i < K_ALL_SIZE; i++) {
@@ -7849,7 +7880,7 @@ exit:
 			  (DCOCPassOrFail == TRUE) ? "PASS" : "FAIL"));
 	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF,
 			 ("====================\n"));
-	return TRUE;
+	return DCOCPassOrFail;
 }
 #endif /* PRE_CAL_TRX_SET1_SUPPORT */
 

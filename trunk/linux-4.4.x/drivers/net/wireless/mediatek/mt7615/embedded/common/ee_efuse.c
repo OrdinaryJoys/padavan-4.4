@@ -1160,10 +1160,12 @@ INT eFuse_init(RTMP_ADAPTER *pAd)
 				 ("NVM is efuse and the information is too less to bring up the interface\n"));
 		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_OFF,
 				 ("Load EEPROM buffer from BIN, and force to use BIN buffer mode\n"));
+		if (rtmp_ee_load_from_bin(pAd) != TRUE)
+			return NDIS_STATUS_FAILURE;
 		pAd->bUseEfuse = FALSE;
-		rtmp_ee_load_from_bin(pAd);
 		/* Forse to use BIN eeprom buffer mode */
-		RtmpChipOpsEepromHook(pAd, pAd->infType, E2P_BIN_MODE);
+		if (RtmpChipOpsEepromHook(pAd, pAd->infType, E2P_BIN_MODE) != 0)
+			return NDIS_STATUS_FAILURE;
 #ifdef CAL_FREE_IC_SUPPORT
 		RTMP_CAL_FREE_IC_CHECK(pAd, bCalFree);
 

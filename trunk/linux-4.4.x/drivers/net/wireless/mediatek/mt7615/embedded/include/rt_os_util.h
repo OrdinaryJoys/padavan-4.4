@@ -253,6 +253,7 @@ UINT32 RtmpOsHtonl(UINT32 Value);
 /* OS File */
 RTMP_OS_FD RtmpOSFileOpen(char *pPath,  int flag, int mode);
 int RtmpOSFileClose(RTMP_OS_FD osfd);
+int RtmpOSFileCloseChecked(RTMP_OS_FD osfd);
 void RtmpOSFileSeek(RTMP_OS_FD osfd, int offset);
 int RtmpOSFileRead(RTMP_OS_FD osfd, char *pDataPtr, int readLen);
 int RtmpOSFileWrite(RTMP_OS_FD osfd, char *pDataPtr, int writeLen);

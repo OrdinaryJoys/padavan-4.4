@@ -3124,22 +3124,27 @@ static INT32 HQA_WriteBufferDone(
 		/* update status of Effuse write back */
 		pAd->fgQAEffuseWriteBack = TRUE;
 #endif /* RF_LOCKDOWN */
-		Set_EepromBufferWriteBack_Proc(pAd, "1");
+		if (!Set_EepromBufferWriteBack_Proc(pAd, "1"))
+			Ret = NDIS_STATUS_FAILURE;
 		break;
 
 	case E2P_FLASH_MODE:
-		Set_EepromBufferWriteBack_Proc(pAd, "2");
+		if (!Set_EepromBufferWriteBack_Proc(pAd, "2"))
+			Ret = NDIS_STATUS_FAILURE;
 		break;
 
 	case E2P_EEPROM_MODE:
-		Set_EepromBufferWriteBack_Proc(pAd, "3");
+		if (!Set_EepromBufferWriteBack_Proc(pAd, "3"))
+			Ret = NDIS_STATUS_FAILURE;
 		break;
 
 	case E2P_BIN_MODE:
-		Set_EepromBufferWriteBack_Proc(pAd, "4");
+		if (!Set_EepromBufferWriteBack_Proc(pAd, "4"))
+			Ret = NDIS_STATUS_FAILURE;
 		break;
 
 	default:
+		Ret = NDIS_STATUS_FAILURE;
 		MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 				 ("%s: Unknow write back mode(%d)\n", __func__, Value));
 	}

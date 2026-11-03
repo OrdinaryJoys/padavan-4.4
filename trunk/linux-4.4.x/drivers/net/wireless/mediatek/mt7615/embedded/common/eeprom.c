@@ -259,6 +259,66 @@ static INT32 checkAntCapSanity(RTMP_ADAPTER *ad)
 
 	========================================================================
 */
+#ifdef PRE_CAL_TRX_SET2_SUPPORT
+static BOOLEAN rtmp_eeprom_restore_precal(
+	IN PRTMP_ADAPTER pAd,
+	IN UINT16 size,
+	IN UINT16 do_precal)
+{
+	UCHAR *staged = NULL;
+	INT status;
+#ifdef CONFIG_WIFI_MTD
+	extern int mt_mtd_read_nm_wifi(char *name, loff_t from, size_t len, u_char *buf);
+#endif
+
+	if (pAd->E2pAccessMode != E2P_FLASH_MODE &&
+	    pAd->E2pAccessMode != E2P_BIN_MODE) {
+		do_precal &= ~(1 << 2);
+		RT28xx_EEPROM_WRITE16(pAd, 0x52, do_precal);
+		return TRUE;
+	}
+	if (rlmCalCacheDone(pAd->rlmCalCache) || !(do_precal & (1 << 2)))
+		return TRUE;
+	if (!size || os_alloc_mem(pAd, &staged, size) != NDIS_STATUS_SUCCESS ||
+	    !staged)
+		return FALSE;
+	NdisZeroMemory(staged, size);
+	if (pAd->E2pAccessMode == E2P_BIN_MODE) {
+		status = rtmp_cal_load_from_bin(pAd, staged, PRECALPART_OFFSET, size);
+		if (status != NDIS_STATUS_SUCCESS) {
+			/* A missing BIN pre-cal file keeps the existing online fallback. */
+			do_precal &= ~(1 << 2);
+			RT28xx_EEPROM_WRITE16(pAd, 0x52, do_precal);
+			os_free_mem(staged);
+			return TRUE;
+		}
+	} else {
+#ifdef RTMP_FLASH_SUPPORT
+#ifdef CONFIG_WIFI_MTD
+		status = mt_mtd_read_nm_wifi("Factory",
+			(loff_t)get_dev_eeprom_offset(pAd) + PRECALPART_OFFSET,
+			size, staged);
+		if (status) {
+			os_free_mem(staged);
+			return FALSE;
+		}
+#else
+		RtmpFlashRead(pAd->hdev_ctrl, staged,
+			get_dev_eeprom_offset(pAd) + PRECALPART_OFFSET, size);
+#endif
+#else
+		os_free_mem(staged);
+		return FALSE;
+#endif
+	}
+	/* The command copies this buffer; keep the owned image until teardown. */
+	if (pAd->PreCalReStoreBuffer)
+		os_free_mem(pAd->PreCalReStoreBuffer);
+	pAd->PreCalReStoreBuffer = staged;
+	status = MtCmdPreCalReStoreProc(pAd, (INT32 *)staged);
+	return status == NDIS_STATUS_SUCCESS;
+}
+#endif
 INT NICReadEEPROMParameters(RTMP_ADAPTER *pAd, RTMP_STRING *mac_addr)
 {
 	USHORT i, value;
@@ -339,47 +399,8 @@ INT NICReadEEPROMParameters(RTMP_ADAPTER *pAd, RTMP_STRING *mac_addr)
 	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF,
 			 ("\x1b[34m%s: EEPROM 0x52 %x\x1b[m\n", __FUNCTION__, DoPreCal));
 
-	/* Pre Cal only supports Bin or Flash Mode */
-	if (pAd->E2pAccessMode == E2P_FLASH_MODE || pAd->E2pAccessMode == E2P_BIN_MODE) {
-	/* Restore when RLM cache is empty */
-		if (!rlmCalCacheDone(pAd->rlmCalCache) && (DoPreCal & (1 << 2))) {
-			INT32 ret = 0;
-			INT32 ret_cal_data = NDIS_STATUS_SUCCESS;
-			ret = os_alloc_mem(pAd, &pAd->PreCalReStoreBuffer, PreCalSize);/* Allocate 16K buffer*/
-
-			if (ret != NDIS_STATUS_SUCCESS) {
-				MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-						 ("\x1b[42m %s : Not enough memory for pre-cal restored buffer!!\x1b[m\n", __FUNCTION__));
-			} else {
-				/* Read pre-cal data from flash and store to pre-cal buffer*/
-#ifdef RTMP_FLASH_SUPPORT
-				if (pAd->E2pAccessMode == E2P_FLASH_MODE)
-					RtmpFlashRead(pAd->hdev_ctrl, pAd->PreCalReStoreBuffer,
-							get_dev_eeprom_offset(pAd) + PRECALPART_OFFSET, PreCalSize);
-#endif /* RTMP_FLASH_SUPPORT */
-				if (pAd->E2pAccessMode == E2P_BIN_MODE) {
-					ret_cal_data = rtmp_cal_load_from_bin(pAd, pAd->PreCalReStoreBuffer, PRECALPART_OFFSET,
-										 PreCalSize);
-
-					if (ret_cal_data != NDIS_STATUS_SUCCESS) {
-						/* Erase DoPreCal bit */
-						DoPreCal &= ~(1 << 2);
-						RT28xx_EEPROM_WRITE16(pAd, 0x52, DoPreCal);
-
-						MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-						("Reset EEPROM 0x52[2] bit, Let FW do On-line Calibration\n"));
-					}
-				}
-
-				if (ret_cal_data == NDIS_STATUS_SUCCESS)
-					ret = MtCmdPreCalReStoreProc(pAd, (INT32 *)pAd->PreCalReStoreBuffer);
-			}
-		}
-	} else {
-		/* Force Erase DoPreCal bit for any mode other than Bin & Flash*/
-		DoPreCal &= ~(1 << 2);
-		RT28xx_EEPROM_WRITE16(pAd, 0x52, DoPreCal);
-	}
+	if (!rtmp_eeprom_restore_precal(pAd, PreCalSize, DoPreCal))
+		return FALSE;
 #endif /* PRE_CAL_TRX_SET2_SUPPORT */
 
 #if defined(CAL_BIN_FILE_SUPPORT) && defined(MT7615)
@@ -677,34 +698,83 @@ UCHAR RtmpEepromGetDefault(RTMP_ADAPTER *pAd)
 }
 
 
+static UINT rtmp_ee_bin_capacity(PRTMP_ADAPTER pAd)
+{
+	/* EEPROMImage is allocated either by the hook (MAX_EEPROM_BUFFER_SIZE)
+	 * or flash initialization (the profile size). Use their common lower
+	 * bound rather than claiming that the profile is an allocation size. */
+	UINT size;
+
+	if (!pAd->EEPROMImage)
+		return 0;
+	size = get_dev_eeprom_size(pAd);
+	return size < MAX_EEPROM_BUFFER_SIZE ? size : MAX_EEPROM_BUFFER_SIZE;
+}
+
 static NDIS_STATUS rtmp_ee_bin_init(PRTMP_ADAPTER pAd)
 {
 #ifdef CAL_FREE_IC_SUPPORT
 	BOOLEAN bCalFree = 0;
 #endif /* CAL_FREE_IC_SUPPORT */
-	rtmp_ee_load_from_bin(pAd);
 #ifdef PRE_CAL_TRX_SET1_SUPPORT
 	{
-		os_alloc_mem(pAd, &pAd->CalDCOCImage, DCOC_IMAGE_SIZE);
-		os_alloc_mem(pAd, &pAd->CalDPDAPart1Image, TXDPD_IMAGE1_SIZE);
-		os_alloc_mem(pAd, &pAd->CalDPDAPart2Image, TXDPD_IMAGE2_SIZE);
+		BOOLEAN owned = pAd->E2pAccessMode == E2P_BIN_MODE;
+		UCHAR *dcoc = owned ? pAd->CalDCOCImage : NULL;
+		UCHAR *dpd1 = owned ? pAd->CalDPDAPart1Image : NULL;
+		UCHAR *dpd2 = owned ? pAd->CalDPDAPart2Image : NULL;
+		UINT16 do_cal;
+
+		/* Only BIN mode proves ownership of complete separate buffers.
+		 * FLASH aliases may be smaller than the complete calibration span. */
+		if ((!dcoc && (os_alloc_mem(pAd, &dcoc, DCOC_IMAGE_SIZE) != NDIS_STATUS_SUCCESS || !dcoc)) ||
+			(!dpd1 && (os_alloc_mem(pAd, &dpd1, TXDPD_IMAGE1_SIZE) != NDIS_STATUS_SUCCESS || !dpd1)) ||
+			(!dpd2 && (os_alloc_mem(pAd, &dpd2, TXDPD_IMAGE2_SIZE) != NDIS_STATUS_SUCCESS || !dpd2)) ||
+			rtmp_ee_load_from_bin(pAd) != TRUE) {
+			if (dcoc && (!owned || dcoc != pAd->CalDCOCImage))
+				os_free_mem(dcoc);
+			if (dpd1 && (!owned || dpd1 != pAd->CalDPDAPart1Image))
+				os_free_mem(dpd1);
+			if (dpd2 && (!owned || dpd2 != pAd->CalDPDAPart2Image))
+				os_free_mem(dpd2);
+			return NDIS_STATUS_FAILURE;
+		}
+		pAd->CalDCOCImage = dcoc;
+		pAd->CalDPDAPart1Image = dpd1;
+		pAd->CalDPDAPart2Image = dpd2;
+		pAd->E2pAccessMode = E2P_BIN_MODE;
+		pAd->bDCOCReloaded = FALSE;
+		pAd->bDPDReloaded = FALSE;
 		NdisZeroMemory(pAd->CalDCOCImage, DCOC_IMAGE_SIZE);
 		NdisZeroMemory(pAd->CalDPDAPart1Image, TXDPD_IMAGE1_SIZE);
 		NdisZeroMemory(pAd->CalDPDAPart2Image, TXDPD_IMAGE2_SIZE);
 
 		if (NDIS_STATUS_SUCCESS == rtmp_cal_load_from_bin(pAd, pAd->CalDCOCImage, 0, DCOC_IMAGE_SIZE))
 			pAd->bDCOCReloaded = TRUE;
-		else
+		else {
 			printk("%s(): bDCOCReloaded = false.\n", __func__);
+			/* Firmware calibration application consults these RAM bits. */
+			rtmp_ee_bin_read16(pAd, 0x52, &do_cal);
+			do_cal &= ~(1 << 1);
+			if (rtmp_ee_bin_write16(pAd, 0x52, do_cal))
+				return NDIS_STATUS_FAILURE;
+		}
 
 		if ((NDIS_STATUS_SUCCESS ==
 				rtmp_cal_load_from_bin(pAd, pAd->CalDPDAPart1Image, DPDPART1_OFFSET, TXDPD_IMAGE1_SIZE)) &&
 			(NDIS_STATUS_SUCCESS ==
 				rtmp_cal_load_from_bin(pAd, pAd->CalDPDAPart2Image, DPDPART2_OFFSET, TXDPD_IMAGE2_SIZE)))
 			pAd->bDPDReloaded = TRUE;
-		else
+		else {
 			printk("%s(): bDPDReloaded = false.\n", __func__);
+			rtmp_ee_bin_read16(pAd, 0x52, &do_cal);
+			do_cal &= ~(1 << 0);
+			if (rtmp_ee_bin_write16(pAd, 0x52, do_cal))
+				return NDIS_STATUS_FAILURE;
+		}
 	}
+#else
+	if (rtmp_ee_load_from_bin(pAd) != TRUE)
+		return NDIS_STATUS_FAILURE;
 #endif /* PRE_CAL_TRX_SET1_SUPPORT */
 #ifdef CAL_FREE_IC_SUPPORT
 	RTMP_CAL_FREE_IC_CHECK(pAd, bCalFree);
@@ -895,6 +965,14 @@ BOOLEAN rtmp_get_default_bin_file_by_chip(
 BOOLEAN rtmp_ee_bin_read16(RTMP_ADAPTER *pAd, UINT16 Offset, UINT16 *pValue)
 {
 	BOOLEAN IsEmpty = 0;
+	UINT capacity = rtmp_ee_bin_capacity(pAd);
+
+	if (!pValue)
+		return TRUE;
+	if (Offset > capacity || 2 > capacity - Offset) {
+		*pValue = 0xffff;
+		return TRUE;
+	}
 	MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_INFO, ("%s::Read from EEPROM buffer\n", __func__));
 	NdisMoveMemory(pValue, &(pAd->EEPROMImage[Offset]), 2);
 	*pValue = le2cpu16(*pValue);
@@ -911,6 +989,10 @@ INT rtmp_ee_bin_write16(
 	IN USHORT			Offset,
 	IN USHORT			data)
 {
+	UINT capacity = rtmp_ee_bin_capacity(pAd);
+
+	if (Offset > capacity || 2 > capacity - Offset)
+		return NDIS_STATUS_FAILURE;
 	MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_INFO, ("%s::Write to EEPROM buffer\n", __func__));
 	data = le2cpu16(data);
 	NdisMoveMemory(&(pAd->EEPROMImage[Offset]), &data, 2);
@@ -923,6 +1005,12 @@ BOOLEAN rtmp_ee_bin_read_with_range(PRTMP_ADAPTER pAd, UINT16 start, UINT16 Leng
 	BOOLEAN IsEmpty = 0;
 	UINT16  u2Loop;
 	UCHAR   ucValue = 0;
+	UINT capacity = rtmp_ee_bin_capacity(pAd);
+
+	if (start > capacity || Length > capacity - start || (!pbuf && Length))
+		return TRUE;
+	if (!Length)
+		return TRUE;
 
 	memcpy(pbuf, pAd->EEPROMImage + start, Length);
 
@@ -937,6 +1025,12 @@ BOOLEAN rtmp_ee_bin_read_with_range(PRTMP_ADAPTER pAd, UINT16 start, UINT16 Leng
 
 INT rtmp_ee_bin_write_with_range(PRTMP_ADAPTER pAd, USHORT start, USHORT Length, UCHAR *pbuf)
 {
+	UINT capacity = rtmp_ee_bin_capacity(pAd);
+
+	if (start > capacity || Length > capacity - start || (!pbuf && Length))
+		return NDIS_STATUS_FAILURE;
+	if (!Length)
+		return NDIS_STATUS_SUCCESS;
 	MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_INFO, ("%s::Write data range to EEPROM buffer\n", __func__));
 	NdisMoveMemory(&(pAd->EEPROMImage[start]), pbuf, Length);
 
@@ -948,26 +1042,43 @@ INT rtmp_ee_load_from_bin(
 	IN PRTMP_ADAPTER	pAd)
 {
 	RTMP_STRING *src = NULL;
-	INT ret_val;
+	RTMP_STRING *diagnostic = NULL;
+	INT ret_val, status = FALSE;
 	RTMP_OS_FD srcf;
 	RTMP_OS_FS_INFO osFSInfo;
 	EEPROM_CONTROL *pE2pCtrl = &pAd->E2pCtrl;
 	struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
-
-	pE2pCtrl->e2pCurMode = E2P_BIN_MODE;
+	UCHAR *staged = NULL;
+	UINT capacity = rtmp_ee_bin_capacity(pAd);
+	BOOLEAN fs_changed = FALSE;
 #ifdef RT_SOC_SUPPORT
 #ifdef MULTIPLE_CARD_SUPPORT
 	RTMP_STRING bin_file_path[128];
 	RTMP_STRING *bin_file_name = NULL;
 	UINT32 chip_ver = (pAd->MACVersion >> 16);
+	INT path_len;
+	BOOLEAN local_path = FALSE;
+#endif
+#endif
+	if (capacity < MAX_EEPROM_BIN_FILE_SIZE)
+		return FALSE;
+	if (os_alloc_mem(pAd, &staged, MAX_EEPROM_BIN_FILE_SIZE) != NDIS_STATUS_SUCCESS || !staged) {
+		if (staged)
+			os_free_mem(staged);
+		return FALSE;
+	}
+#ifdef RT_SOC_SUPPORT
+#ifdef MULTIPLE_CARD_SUPPORT
 
 	if (rtmp_get_default_bin_file_by_chip(pAd, chip_ver, &bin_file_name) == TRUE) {
-		if (pAd->MC_RowID > 0)
-			sprintf(bin_file_path, "%s%s", EEPROM_2ND_FILE_DIR, bin_file_name);
-		else
-			sprintf(bin_file_path, "%s%s", EEPROM_1ST_FILE_DIR, bin_file_name);
-
+		if (!bin_file_name || !*bin_file_name)
+			goto out;
+		path_len = snprintf(bin_file_path, sizeof(bin_file_path), "%s%s",
+			pAd->MC_RowID > 0 ? EEPROM_2ND_FILE_DIR : EEPROM_1ST_FILE_DIR, bin_file_name);
+		if (path_len < 0 || path_len >= sizeof(bin_file_path))
+			goto out;
 		src = bin_file_path;
+		local_path = TRUE;
 	} else
 #endif /* MULTIPLE_CARD_SUPPORT */
 #endif /* RT_SOC_SUPPORT */
@@ -983,173 +1094,138 @@ INT rtmp_ee_load_from_bin(
 	}
 
 	RtmpOSFSInfoChange(&osFSInfo, TRUE);
+	fs_changed = TRUE;
 
 	if (src && *src) {
 		srcf = RtmpOSFileOpen(src, O_RDONLY, 0);
-
-		if (IS_FILE_OPEN_ERR(srcf)) {
-			MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
-					 ("%s::Error opening %s\n", __func__, src));
-			goto error;
-		} else {
-			NdisZeroMemory(pAd->EEPROMImage, MAX_EEPROM_BIN_FILE_SIZE);
-			ret_val = RtmpOSFileRead(srcf, (RTMP_STRING *)pAd->EEPROMImage, MAX_EEPROM_BIN_FILE_SIZE);
-
-			if (ret_val > 0) {
-				MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-						 ("Load EEPROM Buffer from %s\n", src));
-				ret_val = NDIS_STATUS_SUCCESS;
-			} else {
-				MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-						 ("%s::Read file \"%s\" failed(errCode=%d)!\n", __func__, src, ret_val));
+		if (!IS_FILE_OPEN_ERR(srcf)) {
+			ret_val = RtmpOSFileRead(srcf, (RTMP_STRING *)staged, MAX_EEPROM_BIN_FILE_SIZE);
+			status = ret_val == MAX_EEPROM_BIN_FILE_SIZE;
+			/* The checked close consumes the descriptor even on failure. */
+			if (RtmpOSFileCloseChecked(srcf))
+				status = FALSE;
+			if (status) {
+#if defined(RT_SOC_SUPPORT) && defined(MULTIPLE_CARD_SUPPORT)
+				diagnostic = local_path ? "Multicard default bin" : src;
+#else
+				diagnostic = src;
+#endif
 			}
+			goto out;
 		}
-	} else {
-		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-				 ("%s::Error src or srcf is null\n", __func__));
-		goto error;
 	}
 
-	ret_val = RtmpOSFileClose(srcf);
-
-	if (ret_val)
-		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-				 ("%s::Error %d closing %s\n", __func__, -ret_val, src));
-
-	pE2pCtrl->e2pSource = E2P_SRC_FROM_BIN;
-	pE2pCtrl->BinSource = src;
-	RtmpOSFSInfoChange(&osFSInfo, FALSE);
-	return TRUE;
-error:
-
-	if (cap->EEPROM_DEFAULT_BIN != NULL) {
-		NdisMoveMemory(pAd->EEPROMImage, cap->EEPROM_DEFAULT_BIN,
-					   cap->EEPROM_DEFAULT_BIN_SIZE > MAX_EEPROM_BUFFER_SIZE ? MAX_EEPROM_BUFFER_SIZE :
-					   cap->EEPROM_DEFAULT_BIN_SIZE);
-		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("Load EEPROM Buffer from default BIN.\n"));
+	/* Missing files retain the existing complete built-in-default policy. */
+	if (cap->EEPROM_DEFAULT_BIN && cap->EEPROM_DEFAULT_BIN_SIZE >= MAX_EEPROM_BIN_FILE_SIZE) {
+		NdisMoveMemory(staged, cap->EEPROM_DEFAULT_BIN, MAX_EEPROM_BIN_FILE_SIZE);
+		diagnostic = "Default bin";
+		status = TRUE;
+	}
+out:
+	if (fs_changed)
+		RtmpOSFSInfoChange(&osFSInfo, FALSE);
+	if (status) {
+		NdisMoveMemory(pAd->EEPROMImage, staged, MAX_EEPROM_BIN_FILE_SIZE);
+		pE2pCtrl->e2pCurMode = E2P_BIN_MODE;
 		pE2pCtrl->e2pSource = E2P_SRC_FROM_BIN;
-		pE2pCtrl->BinSource = "Default bin";
+		pE2pCtrl->BinSource = diagnostic;
 	}
-
-	return FALSE;
+	os_free_mem(staged);
+	return status;
 }
+
+#if defined(PRE_CAL_TRX_SET1_SUPPORT) || defined(PRE_CAL_TRX_SET2_SUPPORT) || defined(RLM_CAL_CACHE_SUPPORT) || (defined(CAL_BIN_FILE_SUPPORT) && defined(MT7615))
+static NDIS_STATUS rtmp_cal_bin_io(
+	IN PRTMP_ADAPTER pAd,
+	IN RTMP_STRING *src,
+	IN UCHAR *buf,
+	IN ULONG offset,
+	IN ULONG len,
+	IN BOOLEAN write)
+{
+	RTMP_OS_FS_INFO osFSInfo;
+	RTMP_OS_FD srcf;
+	NDIS_STATUS status = NDIS_STATUS_FAILURE;
+	UCHAR *staged = NULL;
+	INT count;
+
+	/* The OS seek and IO interfaces accept signed int arguments. */
+	if (!src || !*src || (!buf && len) || offset > 0x7fffffffUL ||
+	    len > 0x7fffffffUL)
+		return NDIS_STATUS_FAILURE;
+	if (!len)
+		return NDIS_STATUS_SUCCESS;
+	if (!write) {
+		if (os_alloc_mem(pAd, &staged, len) != NDIS_STATUS_SUCCESS ||
+		    !staged)
+			return NDIS_STATUS_FAILURE;
+	}
+	RtmpOSFSInfoChange(&osFSInfo, TRUE);
+	srcf = RtmpOSFileOpen(src, write ? O_WRONLY | O_CREAT : O_RDONLY, 0);
+	if (IS_FILE_OPEN_ERR(srcf))
+		goto out_restore;
+	RtmpOSFileSeek(srcf, (INT)offset);
+	if (write)
+		count = RtmpOSFileWrite(srcf, (RTMP_STRING *)buf, (INT)len);
+	else
+		count = RtmpOSFileRead(srcf, (RTMP_STRING *)staged, (INT)len);
+	if (count == (INT)len)
+		status = NDIS_STATUS_SUCCESS;
+	/* filp_close consumes the handle even when it reports an error. */
+	if (RtmpOSFileCloseChecked(srcf))
+		status = NDIS_STATUS_FAILURE;
+out_restore:
+	RtmpOSFSInfoChange(&osFSInfo, FALSE);
+	if (!write && status == NDIS_STATUS_SUCCESS)
+		NdisMoveMemory(buf, staged, len);
+	if (staged)
+		os_free_mem(staged);
+	return status;
+}
+#endif
 
 #if defined(PRE_CAL_TRX_SET1_SUPPORT) || defined(PRE_CAL_TRX_SET2_SUPPORT) || defined(RLM_CAL_CACHE_SUPPORT)
 NDIS_STATUS rtmp_cal_load_from_bin(
-	IN PRTMP_ADAPTER	pAd,
+	IN PRTMP_ADAPTER pAd,
 	IN UCHAR *buf,
 	IN ULONG offset,
 	IN ULONG len)
 {
-	RTMP_STRING *src = NULL;
-	INT ret_val;
-	RTMP_OS_FD srcf;
-	RTMP_OS_FS_INFO osFSInfo;
+	RTMP_STRING *src;
 #ifdef CONFIG_RT_FIRST_CARD
-
 	if (pAd->dev_idx == 0)
 		src = FIRST_CAL_FILE_PATH;
 	else
-#endif /* CONFIG_RT_FIRST_CARD */
+#endif
 #ifdef CONFIG_RT_SECOND_CARD
-		if (pAd->dev_idx == 1)
-			src = SECOND_CAL_FILE_PATH;
-		else
-#endif /* CONFIG_RT_SECOND_CARD */
-			src = CAL_FILE_PATH;
-
-	/* MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s::FileName=%s\n", __func__, src)); */
-	MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s::FileName=%s\n", __func__, src));		/* Anjan - debug */
-	RtmpOSFSInfoChange(&osFSInfo, TRUE);
-
-	if (src && *src) {
-		srcf = RtmpOSFileOpen(src, O_RDONLY, 0);
-
-		if (IS_FILE_OPEN_ERR(srcf)) {
-			MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
-				 ("%s::Error opening %s\n", __func__, src));
-			MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_OFF,
-				 ("\e[0;31m Run RXDCOC/TXDPD/PRECAL cmds to generate caldata files\e[m\n"));
-			return NDIS_STATUS_FAILURE;
-		} else {
-			RtmpOSFileSeek(srcf, offset);
-			ret_val = RtmpOSFileRead(srcf, (RTMP_STRING *)buf, len);
-
-			if (ret_val > 0) {
-				MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-						 ("Load from %s (Read = %d)\n", src, ret_val));
-				ret_val = NDIS_STATUS_SUCCESS;
-			} else {
-				MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-						 ("%s::Read file \"%s\" failed(errCode=%d)!\n", __func__, src, ret_val));
-			}
-		}
-	} else {
-		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-				 ("%s::Error src or srcf is null\n", __func__));
-		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("FAIL!!! Load Cal Data from file.\n"));
-		return NDIS_STATUS_FAILURE;
-	}
-
-	ret_val = RtmpOSFileClose(srcf);
-
-	if (ret_val)
-		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-				 ("%s::Error %d closing %s\n", __func__, -ret_val, src));
-
-	RtmpOSFSInfoChange(&osFSInfo, FALSE);
-	return NDIS_STATUS_SUCCESS;
+	if (pAd->dev_idx == 1)
+		src = SECOND_CAL_FILE_PATH;
+	else
+#endif
+		src = CAL_FILE_PATH;
+	return rtmp_cal_bin_io(pAd, src, buf, offset, len, FALSE);
 }
 
 
 NDIS_STATUS rtmp_cal_write_to_bin(
-	IN PRTMP_ADAPTER	pAd,
+	IN PRTMP_ADAPTER pAd,
 	IN UCHAR *buf,
 	IN ULONG offset,
 	IN ULONG len)
 {
-	RTMP_STRING *src = NULL;
-	INT ret_val;
-	RTMP_OS_FD srcf;
-	RTMP_OS_FS_INFO osFSInfo;
+	RTMP_STRING *src;
 #ifdef CONFIG_RT_FIRST_CARD
-
 	if (pAd->dev_idx == 0)
 		src = FIRST_CAL_FILE_PATH;
 	else
-#endif /* CONFIG_RT_FIRST_CARD */
+#endif
 #ifdef CONFIG_RT_SECOND_CARD
-		if (pAd->dev_idx == 1)
-			src = SECOND_CAL_FILE_PATH;
-		else
-#endif /* CONFIG_RT_SECOND_CARD */
-			src = CAL_FILE_PATH;
-
-	MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s::FileName=%s\n", __func__, src));
-	RtmpOSFSInfoChange(&osFSInfo, TRUE);
-
-	if (src && *src) {
-		srcf = RtmpOSFileOpen(src, O_WRONLY | O_CREAT, 0);
-
-		if (IS_FILE_OPEN_ERR(srcf)) {
-			MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s::Error opening %s\n", __func__, src));
-			return NDIS_STATUS_FAILURE;
-		} else {
-			RtmpOSFileSeek(srcf, offset);
-			RtmpOSFileWrite(srcf, (RTMP_STRING *)buf, len);
-		}
-	} else {
-		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s::Error src or srcf is null\n", __func__));
-		return NDIS_STATUS_FAILURE;
-	}
-
-	ret_val = RtmpOSFileClose(srcf);
-
-	if (ret_val)
-		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s::Error %d closing %s\n", __func__, -ret_val, src));
-
-	RtmpOSFSInfoChange(&osFSInfo, FALSE);
-	return NDIS_STATUS_SUCCESS;
+	if (pAd->dev_idx == 1)
+		src = SECOND_CAL_FILE_PATH;
+	else
+#endif
+		src = CAL_FILE_PATH;
+	return rtmp_cal_bin_io(pAd, src, buf, offset, len, TRUE);
 }
 #endif	/* PRE_CAL_TRX_SET1_SUPPORT */
 
@@ -1160,172 +1236,46 @@ INT Cal_Data_Write_To_Bin(
 	IN UINT32 Offset,
 	IN UINT32 Len)
 {
-	INT32 retval, Status = NDIS_STATUS_FAILURE;
-	RTMP_STRING *pSrc = NULL;
-	RTMP_OS_FD pSrcf;
-	RTMP_OS_FS_INFO osFSInfo;
+	RTMP_STRING *src;
 
-	if (IS_MT7615(pAd)) {
+	if (!IS_MT7615(pAd))
+		return NDIS_STATUS_FAILURE;
 #ifdef CONFIG_RT_FIRST_CARD
-		if (pAd->dev_idx == 0) {
-			pSrc = FIRST_CAL_BIN_FILE_PATH;
-		} else
-#endif /* CONFIG_RT_FIRST_CARD */
+	if (pAd->dev_idx == 0)
+		src = FIRST_CAL_BIN_FILE_PATH;
+	else
+#endif
 #ifdef CONFIG_RT_SECOND_CARD
-		if (pAd->dev_idx == 1) {
-			pSrc = SECOND_CAL_BIN_FILE_PATH;
-		} else {
-#endif /* CONFIG_RT_SECOND_CARD */
-			pSrc = CAL_BIN_FILE_PATH;
-#ifdef CONFIG_RT_SECOND_CARD
-		}
-#endif /* CONFIG_RT_SECOND_CARD */
-
-		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
-				("\x1b[32m%s: FileName = %s\x1b[m\n", __func__, pSrc));
-
-		/* Change limits of authority in order to read/write file */
-		RtmpOSFSInfoChange(&osFSInfo, TRUE);
-
-		/* Create file descriptor */
-		pSrcf = RtmpOSFileOpen(pSrc, O_WRONLY|O_CREAT, 0);
-		if (IS_FILE_OPEN_ERR(pSrcf)) {
-			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-					("\x1b[41m%s: Error opening %s\x1b[m\n", __func__, pSrc));
-			goto error;
-		}
-
-		RtmpOSFileSeek(pSrcf, Offset);
-		retval = RtmpOSFileWrite(pSrcf, (RTMP_STRING *)Buf, Len);
-		if (retval < 0) {
-			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-					("\x1b[41m%s : Fail to write data to %s !!\x1b[m\n", __func__, pSrc));
-			goto error;
-		}
-
-		/* Close file descriptor */
-		if (!IS_FILE_OPEN_ERR(pSrcf)) {
-			retval = RtmpOSFileClose(pSrcf);
-			if (retval) {
-				MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-						("\x1b[41m%s: Error %d closing %s\x1b[m\n", __func__, -retval, pSrc));
-				goto error;
-			}
-		}
-
-		/* Change limits of authority in order to read/write file */
-		RtmpOSFSInfoChange(&osFSInfo, FALSE);
-
-		/* Update status */
-		Status = NDIS_STATUS_SUCCESS;
-
-		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF,
-				("\x1b[42m%s: Store data to %s done !!\x1b[m \n", __func__, pSrc));
-
-		return Status;
-
-	error:
-		/* Close file descriptor */
-		if (!IS_FILE_OPEN_ERR(pSrcf)) {
-			retval = RtmpOSFileClose(pSrcf);
-			if (retval) {
-				MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-						("\x1b[41m%s: Error %d closing %s\x1b[m\n", __func__, -retval, pSrc));
-			}
-		}
-
-		/* Change limits of authority in order to read/write file */
-		RtmpOSFSInfoChange(&osFSInfo, FALSE);
-	}
-	return Status;
-
+	if (pAd->dev_idx == 1)
+		src = SECOND_CAL_BIN_FILE_PATH;
+	else
+#endif
+		src = CAL_BIN_FILE_PATH;
+	return rtmp_cal_bin_io(pAd, src, Buf, Offset, Len, TRUE);
 }
 
 INT Cal_Data_Load_From_Bin(
-		IN PRTMP_ADAPTER pAd,
-		IN UINT8 *Buf,
-		IN UINT32 Offset,
-		IN UINT32 Len)
+	IN PRTMP_ADAPTER pAd,
+	IN UINT8 *Buf,
+	IN UINT32 Offset,
+	IN UINT32 Len)
 {
-	INT32 retval, Status = NDIS_STATUS_FAILURE;
-	RTMP_STRING *pSrc = NULL;
-	RTMP_OS_FD pSrcf;
-	RTMP_OS_FS_INFO osFSInfo;
+	RTMP_STRING *src;
 
-		if (IS_MT7615(pAd)) {
-
+	if (!IS_MT7615(pAd))
+		return NDIS_STATUS_FAILURE;
 #ifdef CONFIG_RT_FIRST_CARD
-		if (pAd->dev_idx == 0) {
-			pSrc = FIRST_CAL_BIN_FILE_PATH;
-		} else
-#endif /* CONFIG_RT_FIRST_CARD */
+	if (pAd->dev_idx == 0)
+		src = FIRST_CAL_BIN_FILE_PATH;
+	else
+#endif
 #ifdef CONFIG_RT_SECOND_CARD
-		if (pAd->dev_idx == 1) {
-			pSrc = SECOND_CAL_BIN_FILE_PATH;
-		} else {
-#endif /* CONFIG_RT_SECOND_CARD */
-			pSrc = CAL_BIN_FILE_PATH;
-#ifdef CONFIG_RT_SECOND_CARD
-		}
-#endif /* CONFIG_RT_SECOND_CARD */
-
-		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
-				("\x1b[32m%s: FileName = %s\x1b[m\n", __func__, pSrc));
-
-		/* Change limits of authority in order to read/write file */
-		RtmpOSFSInfoChange(&osFSInfo, TRUE);
-
-		/* Create file descriptor */
-		pSrcf = RtmpOSFileOpen(pSrc, O_RDONLY, 0);
-		if (IS_FILE_OPEN_ERR(pSrcf)) {
-			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-					("\x1b[41m%s: Error opening %s\x1b[m\n", __func__, pSrc));
-			goto error;
-		}
-
-		RtmpOSFileSeek(pSrcf, Offset);
-		retval = RtmpOSFileRead(pSrcf, (RTMP_STRING *)Buf, Len);
-		if (retval < 0) {
-			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-					("\x1b[41m%s : Fail to load data from %s !!\x1b[m\n", __func__, pSrc));
-			goto error;
-		}
-
-		/* Close file descriptor */
-		if (!IS_FILE_OPEN_ERR(pSrcf)) {
-			retval = RtmpOSFileClose(pSrcf);
-			if (retval) {
-				MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-						("\x1b[41m%s: Error %d closing %s\x1b[m\n", __func__, -retval, pSrc));
-				goto error;
-			}
-		}
-
-		/* Change limits of authority in order to read/write file */
-		RtmpOSFSInfoChange(&osFSInfo, FALSE);
-
-		/* Update status */
-		Status = NDIS_STATUS_SUCCESS;
-
-		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF,
-				("\x1b[42m%s : Load data from %s success!!\x1b[m\n", __func__, pSrc));
-
-		return Status;
-
-	error:
-		/* Close file descriptor */
-		if (!IS_FILE_OPEN_ERR(pSrcf)) {
-			retval = RtmpOSFileClose(pSrcf);
-			if (retval) {
-				MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-						("\x1b[41m%s: Error %d closing %s\x1b[m\n", __func__, -retval, pSrc));
-			}
-		}
-
-		/* Change limits of authority in order to read/write file */
-		RtmpOSFSInfoChange(&osFSInfo, FALSE);
-	}
-	return Status;
+	if (pAd->dev_idx == 1)
+		src = SECOND_CAL_BIN_FILE_PATH;
+	else
+#endif
+		src = CAL_BIN_FILE_PATH;
+	return rtmp_cal_bin_io(pAd, src, Buf, Offset, Len, FALSE);
 }
 #endif/* CAL_BIN_FILE_SUPPORT */
 
@@ -1333,7 +1283,7 @@ INT rtmp_ee_write_to_bin(
 	IN PRTMP_ADAPTER	pAd)
 {
 	RTMP_STRING *src = NULL;
-	INT ret_val;
+	INT ret_val, status = FALSE;
 	RTMP_OS_FD srcf;
 	RTMP_OS_FS_INFO osFSInfo;
 #ifdef RT_SOC_SUPPORT
@@ -1341,13 +1291,21 @@ INT rtmp_ee_write_to_bin(
 	RTMP_STRING bin_file_path[128];
 	RTMP_STRING *bin_file_name = NULL;
 	UINT32 chip_ver = (pAd->MACVersion >> 16);
+	INT path_len;
+#endif
+#endif
+	if (rtmp_ee_bin_capacity(pAd) < MAX_EEPROM_BIN_FILE_SIZE)
+		return FALSE;
+#ifdef RT_SOC_SUPPORT
+#ifdef MULTIPLE_CARD_SUPPORT
 
 	if (rtmp_get_default_bin_file_by_chip(pAd, chip_ver, &bin_file_name) == TRUE) {
-		if (pAd->MC_RowID > 0)
-			sprintf(bin_file_path, "%s%s", EEPROM_2ND_FILE_DIR, bin_file_name);
-		else
-			sprintf(bin_file_path, "%s%s", EEPROM_1ST_FILE_DIR, bin_file_name);
-
+		if (!bin_file_name || !*bin_file_name)
+			return FALSE;
+		path_len = snprintf(bin_file_path, sizeof(bin_file_path), "%s%s",
+			pAd->MC_RowID > 0 ? EEPROM_2ND_FILE_DIR : EEPROM_1ST_FILE_DIR, bin_file_name);
+		if (path_len < 0 || path_len >= sizeof(bin_file_path))
+			return FALSE;
 		src = bin_file_path;
 	} else
 #endif /* MULTIPLE_CARD_SUPPORT */
@@ -1373,21 +1331,25 @@ INT rtmp_ee_write_to_bin(
 
 		if (IS_FILE_OPEN_ERR(srcf)) {
 			MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s::Error opening %s\n", __func__, src));
-			return FALSE;
-		} else
-			RtmpOSFileWrite(srcf, (RTMP_STRING *)pAd->EEPROMImage, MAX_EEPROM_BIN_FILE_SIZE);
+			goto out;
+		} else {
+			ret_val = RtmpOSFileWrite(srcf, (RTMP_STRING *)pAd->EEPROMImage, MAX_EEPROM_BIN_FILE_SIZE);
+			status = ret_val == MAX_EEPROM_BIN_FILE_SIZE;
+		}
 	} else {
 		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s::Error src or srcf is null\n", __func__));
-		return FALSE;
+		goto out;
 	}
 
-	ret_val = RtmpOSFileClose(srcf);
+	ret_val = RtmpOSFileCloseChecked(srcf);
 
-	if (ret_val)
+	if (ret_val) {
+		status = FALSE;
 		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s::Error %d closing %s\n", __func__, -ret_val, src));
-
+	}
+out:
 	RtmpOSFSInfoChange(&osFSInfo, FALSE);
-	return TRUE;
+	return status;
 }
 
 
@@ -1402,19 +1364,12 @@ INT Set_LoadEepromBufferFromBin_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("Load EEPROM buffer from BIN, and change to BIN buffer mode\n"));
 		result = rtmp_ee_load_from_bin(pAd);
 
-		if (result == FALSE) {
-			struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
-
-			if (cap->EEPROM_DEFAULT_BIN != NULL) {
-				NdisMoveMemory(pAd->EEPROMImage, cap->EEPROM_DEFAULT_BIN,
-							   cap->EEPROM_DEFAULT_BIN_SIZE > MAX_EEPROM_BUFFER_SIZE ? MAX_EEPROM_BUFFER_SIZE :
-							   cap->EEPROM_DEFAULT_BIN_SIZE);
-				MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("Load EEPROM Buffer from default BIN.\n"));
-			}
-		}
+		if (result == FALSE)
+			return FALSE;
 
 		/* Change to BIN eeprom buffer mode */
-		RtmpChipOpsEepromHook(pAd, pAd->infType, E2P_BIN_MODE);
+		if (RtmpChipOpsEepromHook(pAd, pAd->infType, E2P_BIN_MODE) != 0)
+			return FALSE;
 		return TRUE;
 	}
 }
@@ -1450,8 +1405,7 @@ INT Set_EepromBufferWriteBack_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 
 	case E2P_BIN_MODE:
 		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("Write EEPROM buffer back to BIN\n"));
-		rtmp_ee_write_to_bin(pAd);
-		break;
+		return rtmp_ee_write_to_bin(pAd);
 
 	default:
 		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s::do not support this EEPROM access mode\n", __func__));

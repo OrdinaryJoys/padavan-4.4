@@ -179,14 +179,18 @@ static NDIS_STATUS rtmp_ee_flash_reset(RTMP_ADAPTER *pAd, UCHAR *start)
 	RTMP_STRING BinFilePath[128];
 	RTMP_STRING *pBinFileName = NULL;
 	UINT32	ChipVerion = (pAd->MACVersion >> 16);
+	INT path_len;
+	BOOLEAN local_path = FALSE;
 
 	if (rtmp_get_default_bin_file_by_chip(pAd, ChipVerion, &pBinFileName) == TRUE) {
-		if (pAd->MC_RowID > 0)
-			sprintf(BinFilePath, "%s%s", EEPROM_2ND_FILE_DIR, pBinFileName);
-		else
-			sprintf(BinFilePath, "%s%s", EEPROM_1ST_FILE_DIR, pBinFileName);
-
+		if (!pBinFileName || !*pBinFileName)
+			return NDIS_STATUS_FAILURE;
+		path_len = snprintf(BinFilePath, sizeof(BinFilePath), "%s%s",
+			pAd->MC_RowID > 0 ? EEPROM_2ND_FILE_DIR : EEPROM_1ST_FILE_DIR, pBinFileName);
+		if (path_len < 0 || path_len >= sizeof(BinFilePath))
+			return NDIS_STATUS_FAILURE;
 		src = BinFilePath;
+		local_path = TRUE;
 		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s(): src = %s\n", __func__, src));
 	} else
 #endif /* MULTIPLE_CARD_SUPPORT */
@@ -237,11 +241,15 @@ static NDIS_STATUS rtmp_ee_flash_reset(RTMP_ADAPTER *pAd, UCHAR *start)
 			} else {
 				MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 						 ("--> rtmp_ee_flash_reset copy %s to eeprom buffer\n", src));
+#if defined(RT_SOC_SUPPORT) && defined(MULTIPLE_CARD_SUPPORT)
+				pE2pCtrl->BinSource = local_path ? "Multicard default bin" : (RTMP_STRING *)src;
+#else
 				pE2pCtrl->BinSource = src;
+#endif
 				status = NDIS_STATUS_SUCCESS;
 			}
 
-			retval = RtmpOSFileClose(srcf);
+			retval = RtmpOSFileCloseChecked(srcf);
 
 			if (retval) {
 				status = NDIS_STATUS_FAILURE;
@@ -413,6 +421,7 @@ static NDIS_STATUS rtmp_ee_flash_init(PRTMP_ADAPTER pAd, PUCHAR start)
 NDIS_STATUS rtmp_nv_init(RTMP_ADAPTER *pAd)
 {
 	NDIS_STATUS init_status;
+	UINT image_size = get_dev_eeprom_size(pAd);
 #ifdef CONFIG_WIFI_MTD
 	INT read_status;
 #endif
@@ -431,9 +440,19 @@ NDIS_STATUS rtmp_nv_init(RTMP_ADAPTER *pAd)
 	pAd->CalTXDPDImage = NULL;
 #endif
 #ifdef PRE_CAL_TRX_SET1_SUPPORT
+	/* BIN calibration buffers are separate allocations; Flash uses views. */
+	if (pAd->E2pAccessMode == E2P_BIN_MODE) {
+		if (pAd->CalDCOCImage)
+			os_free_mem(pAd->CalDCOCImage);
+		if (pAd->CalDPDAPart1Image)
+			os_free_mem(pAd->CalDPDAPart1Image);
+		if (pAd->CalDPDAPart2Image)
+			os_free_mem(pAd->CalDPDAPart2Image);
+	}
 	pAd->CalDCOCImage = NULL;
 	pAd->CalDPDAPart1Image = NULL;
 	pAd->CalDPDAPart2Image = NULL;
+	pAd->bDCOCReloaded = FALSE;
 	pAd->bDPDReloaded = FALSE;
 #endif
 	MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("--> rtmp_nv_init\n"));
@@ -446,10 +465,13 @@ NDIS_STATUS rtmp_nv_init(RTMP_ADAPTER *pAd)
 	if (pAd->EEPROMImage)
 		os_free_mem(pAd->EEPROMImage);
 	pAd->EEPROMImage = NULL;
+	/* Reject a profile too small for the base EEPROM before any read. */
+	if (image_size < EEPROM_SIZE)
+		return NDIS_STATUS_FAILURE;
 
-	os_alloc_mem(pAd, &pAd->EEPROMImage, get_dev_eeprom_size(pAd));
+	os_alloc_mem(pAd, &pAd->EEPROMImage, image_size);
 	if (pAd->EEPROMImage) {
-		NdisZeroMemory(pAd->EEPROMImage, get_dev_eeprom_size(pAd));
+		NdisZeroMemory(pAd->EEPROMImage, image_size);
 #ifdef CONFIG_WIFI_MTD
 		/* An IO failure is not an invalid EEPROM to replace with defaults. */
 		read_status = mt_mtd_read_nm_wifi("Factory", get_dev_eeprom_offset(pAd),
@@ -472,10 +494,14 @@ NDIS_STATUS rtmp_nv_init(RTMP_ADAPTER *pAd)
 #endif /*PRE_CAL_MT7622_SUPPORT*/
 #ifdef PRE_CAL_TRX_SET1_SUPPORT
 		if (IS_MT7615(pAd)) {
-			pAd->CalDCOCImage = pAd->EEPROMImage + DCOC_OFFSET;
-			pAd->CalDPDAPart1Image = pAd->EEPROMImage + DPDPART1_OFFSET;
-			pAd->CalDPDAPart2Image = pAd->EEPROMImage + DPDPART2_OFFSET;
-			pAd->bDPDReloaded = TRUE;
+			if (DCOC_OFFSET <= image_size && DCOC_IMAGE_SIZE <= image_size - DCOC_OFFSET)
+				pAd->CalDCOCImage = pAd->EEPROMImage + DCOC_OFFSET;
+			if (DPDPART1_OFFSET <= image_size && TXDPD_IMAGE1_SIZE <= image_size - DPDPART1_OFFSET)
+				pAd->CalDPDAPart1Image = pAd->EEPROMImage + DPDPART1_OFFSET;
+			if (DPDPART2_OFFSET <= image_size && TXDPD_IMAGE2_SIZE <= image_size - DPDPART2_OFFSET)
+				pAd->CalDPDAPart2Image = pAd->EEPROMImage + DPDPART2_OFFSET;
+			pAd->bDCOCReloaded = pAd->CalDCOCImage != NULL;
+			pAd->bDPDReloaded = pAd->CalDPDAPart1Image && pAd->CalDPDAPart2Image;
 		}
 #endif /* PRE_CAL_TRX_SET1_SUPPORT */
 		pE2pCtrl->e2pCurMode = E2P_FLASH_MODE;
@@ -483,6 +509,22 @@ NDIS_STATUS rtmp_nv_init(RTMP_ADAPTER *pAd)
 		init_status = rtmp_ee_flash_init(pAd, pAd->EEPROMImage);
 		if (init_status != NDIS_STATUS_SUCCESS)
 			goto fail;
+		pAd->E2pAccessMode = E2P_FLASH_MODE;
+#ifdef PRE_CAL_TRX_SET1_SUPPORT
+		if (IS_MT7615(pAd) && (!pAd->bDCOCReloaded || !pAd->bDPDReloaded)) {
+			UINT16 do_cal;
+
+			/* Consumers use the RAM request bits, not the reload flags. */
+			NdisMoveMemory(&do_cal, pAd->EEPROMImage + 0x52, sizeof(do_cal));
+			do_cal = le2cpu16(do_cal);
+			if (!pAd->bDCOCReloaded)
+				do_cal &= ~(1 << 1);
+			if (!pAd->bDPDReloaded)
+				do_cal &= ~(1 << 0);
+			do_cal = le2cpu16(do_cal);
+			NdisMoveMemory(pAd->EEPROMImage + 0x52, &do_cal, sizeof(do_cal));
+		}
+#endif
 		return init_status;
 	} else {
 		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
@@ -503,6 +545,7 @@ fail:
 	pAd->CalDCOCImage = NULL;
 	pAd->CalDPDAPart1Image = NULL;
 	pAd->CalDPDAPart2Image = NULL;
+	pAd->bDCOCReloaded = FALSE;
 	pAd->bDPDReloaded = FALSE;
 #endif
 	os_free_mem(pAd->EEPROMImage);

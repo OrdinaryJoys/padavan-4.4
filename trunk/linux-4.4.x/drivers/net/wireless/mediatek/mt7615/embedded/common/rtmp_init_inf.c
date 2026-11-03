@@ -852,6 +852,12 @@ VOID RTMPDrvClose(VOID *pAdSrc, VOID *net_dev)
 		if (pAd->CalDPDAPart2Image != NULL)
 			os_free_mem(pAd->CalDPDAPart2Image);
 	}
+	/* Flash aliases die with EEPROMImage too; never reuse either kind. */
+	pAd->CalDCOCImage = NULL;
+	pAd->CalDPDAPart1Image = NULL;
+	pAd->CalDPDAPart2Image = NULL;
+	pAd->bDCOCReloaded = FALSE;
+	pAd->bDPDReloaded = FALSE;
 
 #endif /* PRE_CAL_TRX_SET1_SUPPORT */
 #ifdef PRE_CAL_TRX_SET2_SUPPORT
