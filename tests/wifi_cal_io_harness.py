@@ -84,6 +84,7 @@ PREFIX=r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 #define IN
 #define TRUE 1
 #define FALSE 0
@@ -121,7 +122,10 @@ typedef unsigned char u_char;
 typedef unsigned short UINT16;
 typedef unsigned int UINT32;
 typedef unsigned long ULONG;
+#if !defined(__linux__)
 typedef long long loff_t;
+#endif
+typedef char model_loff_t_is_64_bits[(sizeof(loff_t) == 8) ? 1 : -1];
 typedef int INT;
 typedef int INT32;
 typedef int BOOLEAN;

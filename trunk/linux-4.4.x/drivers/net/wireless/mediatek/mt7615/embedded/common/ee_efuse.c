@@ -1140,9 +1140,6 @@ VOID eFuseGetFreeBlockCount(IN PRTMP_ADAPTER pAd,
 INT eFuse_init(RTMP_ADAPTER *pAd)
 {
 	UINT EfuseFreeBlock = 0;
-#ifdef CAL_FREE_IC_SUPPORT
-	BOOLEAN bCalFree = 0;
-#endif
 	struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
 	/*RT3572 means 3062/3562/3572*/
 	/*3593 means 3593*/
@@ -1160,22 +1157,11 @@ INT eFuse_init(RTMP_ADAPTER *pAd)
 				 ("NVM is efuse and the information is too less to bring up the interface\n"));
 		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_OFF,
 				 ("Load EEPROM buffer from BIN, and force to use BIN buffer mode\n"));
-		if (rtmp_ee_load_from_bin(pAd) != TRUE)
+		/* Publish BIN callbacks only after its calibration buffers and RAM
+		 * request bits are initialized by the complete mode transition. */
+		if (Set_LoadEepromBufferFromBin_Proc(pAd, "1") != TRUE)
 			return NDIS_STATUS_FAILURE;
 		pAd->bUseEfuse = FALSE;
-		/* Forse to use BIN eeprom buffer mode */
-		if (RtmpChipOpsEepromHook(pAd, pAd->infType, E2P_BIN_MODE) != 0)
-			return NDIS_STATUS_FAILURE;
-#ifdef CAL_FREE_IC_SUPPORT
-		RTMP_CAL_FREE_IC_CHECK(pAd, bCalFree);
-
-		if (bCalFree) {
-			MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("Cal Free IC!!\n"));
-			RTMP_CAL_FREE_DATA_GET(pAd);
-		} else
-			MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("Non Cal Free IC!!\n"));
-
-#endif /* CAL_FREE_IC_SUPPORT */
 	} else
 		rtmp_ee_load_from_efuse(pAd);
 

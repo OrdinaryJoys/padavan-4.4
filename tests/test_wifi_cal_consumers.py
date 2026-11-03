@@ -52,6 +52,8 @@ PREFIX=r'''
 #define E2P_FLASH_MODE 2
 #define E2P_EFUSE_MODE 1
 #define E2P_EEPROM_MODE 3
+#define fRTMP_ADAPTER_NIC_NOT_EXIST 1
+#define RTMP_TEST_FLAG(p,f) ((void)(f),(p)->nic_gone)
 #define TXDPD_PART1_LIMIT 2
 #define TXDPD_SIZE 4
 #define DPD_G20_SIZE 2
@@ -69,7 +71,7 @@ typedef unsigned char UCHAR;
 typedef UCHAR*PUCHAR;
 typedef unsigned int UINT32;
 typedef int INT,INT32,NTSTATUS;
-typedef struct {int E2pAccessMode,PreCalWriteOffSet,fgQAEffuseWriteBack;UCHAR*CalDPDAPart1Image,*CalDPDAPart2Image,*CalDCOCImage,*PreCalStoreBuffer;} RTMP_ADAPTER,*PRTMP_ADAPTER;
+typedef struct {int E2pAccessMode,PreCalWriteOffSet,fgQAEffuseWriteBack,nic_gone;struct{int e2pCurMode;}E2pCtrl;UCHAR*CalDPDAPart1Image,*CalDPDAPart2Image,*CalDCOCImage,*PreCalStoreBuffer;} RTMP_ADAPTER,*PRTMP_ADAPTER;
 static int code,passed,cleanups,flags,rf_count=3,qa_status,qa_rf;
 static UCHAR storage[128];
 static INT rtmp_cal_write_to_bin(RTMP_ADAPTER*p,UCHAR*b,unsigned long o,unsigned long n){(void)p;(void)b;(void)o;(void)n;return code;}
@@ -178,6 +180,20 @@ int main(void){RTMP_ADAPTER a;RTMP_IOCTL_INPUT_STRUCT w;struct _HQA_CMD_FRAME q;
         for profile,block,wanted in [('current',dcoc[start:end],'0\n1\n'),('baseline','','1\n1\n')]:
             source=PREFIX+'\nstatic int invoke(int present){RTMP_ADAPTER a,*pAd=&a;memset(&a,0,sizeof(a));a.CalDCOCImage=present?storage:NULL;\n'+block+'\nreturn TRUE;}\nint main(void){printf("%d\\n",invoke(0));printf("%d\\n",invoke(1));return 0;}'
             self.assertEqual(self.compile_run(source,'dcoc-span-'+profile),wanted)
+
+    def test_ate_rejects_removed_or_mixed_modes_before_any_backend_continuation(self):
+        expected='1 1\n1 1\n0 0\n0 0\n0 0\n0 0\n'
+        for name in NAMES['ate']:
+            body=self.current[name]
+            start=body.index('\tif (RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_NIC_NOT_EXIST)')
+            opening=body.index('{',start);depth=0
+            for end in range(opening,len(body)):
+                depth+=(body[end]=='{')-(body[end]=='}')
+                if not depth:break
+            guard=body[start:end+1]
+            source=PREFIX+'\nstatic int invoke(int profile,int callbacks,int removed){RTMP_ADAPTER a,*pAd=&a;memset(&a,0,sizeof(a));a.E2pAccessMode=profile;a.E2pCtrl.e2pCurMode=callbacks;a.nic_gone=removed;\n'+guard+'\npassed++;return TRUE;}\n'
+            source+='int main(void){int i,r;int cases[6][3]={{2,2,0},{4,4,0},{2,4,0},{4,2,0},{2,2,1},{4,0,0}};for(i=0;i<6;i++){passed=0;r=invoke(cases[i][0],cases[i][1],cases[i][2]);printf("%d %d\\n",r,passed);}return 0;}\n'
+            self.assertEqual(self.compile_run(source,'mode-'+name),expected)
 
     def test_five_whole_status_wrappers_convert_event_boolean_to_ndis_status(self):
         prefix=PREFIX+r'''

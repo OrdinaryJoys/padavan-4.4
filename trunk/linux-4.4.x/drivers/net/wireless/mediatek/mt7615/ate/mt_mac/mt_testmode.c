@@ -7429,7 +7429,9 @@ INT MtATE_DPD_Cal_Store_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 		kGBand = TRUE;
 	}
 
-	if (pAd->E2pAccessMode != E2P_FLASH_MODE && pAd->E2pAccessMode != E2P_BIN_MODE) {
+	if (RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_NIC_NOT_EXIST) ||
+	    (pAd->E2pAccessMode != E2P_FLASH_MODE && pAd->E2pAccessMode != E2P_BIN_MODE) ||
+	    pAd->E2pCtrl.e2pCurMode != pAd->E2pAccessMode) {
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				 ("%s: Currently not in FLASH or BIN MODE,return.\n", __func__));
 		return FALSE;
@@ -7642,7 +7644,9 @@ INT MtATE_DCOC_Cal_Store_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 	BOOLEAN kABand = TRUE;
 	BOOLEAN kGBand = TRUE;
 
-	if (pAd->E2pAccessMode != E2P_FLASH_MODE && pAd->E2pAccessMode != E2P_BIN_MODE) {
+	if (RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_NIC_NOT_EXIST) ||
+	    (pAd->E2pAccessMode != E2P_FLASH_MODE && pAd->E2pAccessMode != E2P_BIN_MODE) ||
+	    pAd->E2pCtrl.e2pCurMode != pAd->E2pAccessMode) {
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				 ("%s: Currently not in FLASH or BIN MODE,return.\n",
 				  __func__));

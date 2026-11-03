@@ -43,6 +43,12 @@ CASE_NAMES=(
  'efuse-ok','efuse-read-error','efuse-open-no-cache','efuse-nonempty','efuse-hook-error',
  'reset-multicard-first','reset-multicard-second','reset-multicard-long-name',
  'init-cal-dcoc-error','init-cal-dpd1-error','init-cal-dpd2-error',
+ 'set-load-allocation-dcoc','set-load-allocation-dpd1','set-load-allocation-dpd2',
+ 'set-load-nic-missing','set-load-negative','set-load-repeat',
+ 'set-load-cal-dcoc-error','set-load-cal-dpd1-error','set-load-cal-dpd2-error',
+ 'efuse-allocation-dcoc','efuse-allocation-dpd1','efuse-allocation-dpd2',
+ 'efuse-nic-missing','efuse-repeat',
+ 'efuse-cal-dcoc-error','efuse-cal-dpd1-error','efuse-cal-dpd2-error',
 )
 BASELINE_CASES=(
  'load-ok','load-zero','load-short','load-read-error','load-close-error',
@@ -109,6 +115,7 @@ PREFIX=r'''
 #define E2P_BIN_MODE 4
 #define NUM_OF_E2P_MODE 5
 #define E2P_SRC_FROM_FLASH 2
+#define E2P_SRC_FROM_EFUSE 1
 #define E2P_SRC_FROM_BIN 8
 #define O_RDONLY 0
 #define O_WRONLY 1
@@ -137,7 +144,7 @@ typedef char*PUCHAR;
 typedef int RTMP_OS_FD;
 typedef struct {int previous;} RTMP_OS_FS_INFO;
 typedef struct {int e2pCurMode,e2pSource;char*BinSource;} EEPROM_CONTROL;
-struct _RTMP_CHIP_CAP {UCHAR*EEPROM_DEFAULT_BIN;UINT EEPROM_DEFAULT_BIN_SIZE;char*EEPROM_DEFAULT_BIN_FILE;UINT EFUSE_RESERVED_SIZE,EFUSE_USAGE_MAP_SIZE,EFUSE_USAGE_MAP_START,EFUSE_USAGE_MAP_END;};
+struct _RTMP_CHIP_CAP {UCHAR*EEPROM_DEFAULT_BIN;UINT EEPROM_DEFAULT_BIN_SIZE;char*EEPROM_DEFAULT_BIN_FILE;UINT EFUSE_RESERVED_SIZE,EFUSE_USAGE_MAP_SIZE,EFUSE_USAGE_MAP_START,EFUSE_USAGE_MAP_END;int ee_inited;};
 typedef struct _RTMP_ADAPTER {UCHAR*EEPROMImage,*CalDCOCImage,*CalDPDAPart1Image,*CalDPDAPart2Image;int bDCOCReloaded,bDPDReloaded,bUseEfuse,infType,E2pAccessMode,MC_RowID;UINT MACVersion;void*hdev_ctrl;EEPROM_CONTROL E2pCtrl;} RTMP_ADAPTER,*PRTMP_ADAPTER;
 static const char*case_name;
 static struct _RTMP_CHIP_CAP cap;
@@ -150,6 +157,9 @@ static void*owned[32];
 static char trace[1024];
 static int is(const char*n){return !strcmp(case_name,n);}
 static int has(const char*n){return strstr(case_name,n)!=NULL;}
+#define fRTMP_ADAPTER_NIC_NOT_EXIST 1
+#define RTMP_TEST_FLAG(p,f) (has("nic-missing"))
+static int callback_mode=E2P_FLASH_MODE;
 static void event(const char*s){if(strlen(trace)+strlen(s)+2>=sizeof(trace))abort();if(*trace)strcat(trace,",");strcat(trace,s);}
 static struct _RTMP_CHIP_CAP*hc_get_chip_cap(void*h){(void)h;return &cap;}
 static UINT get_dev_eeprom_size(void*p){(void)p;return profile_size;}
@@ -159,14 +169,15 @@ static int os_alloc_mem(RTMP_ADAPTER*a,UCHAR**out,size_t len){int i,fail=0;(void
  *out=fail?NULL:malloc(len);if(!*out)return 1;
  memset(*out,0xcc,len);for(i=0;i<32;i++)if(!owned[i]){owned[i]=*out;live_allocs++;return 0;}abort();}
 static void os_free_mem(void*p){int i;if(!p)return;for(i=0;i<32;i++)if(owned[i]==p){owned[i]=NULL;live_allocs--;frees_count++;event("free");free(p);return;}abort();}
+static int calibration_owned(void*p){int i;for(i=0;i<32;i++)if(p&&owned[i]==p)return 1;return 0;}
 static void RtmpOSFSInfoChange(RTMP_OS_FS_INFO*info,BOOLEAN enter){if(enter){info->previous=fsdepth;fsdepth++;event("fs-enter");}else{fsdepth=info->previous;event("fs-restore");}}
 static RTMP_OS_FD RtmpOSFileOpen(char*path,int flags,int mode){(void)path;(void)flags;(void)mode;opens++;event("open");if(has("open-")||is("write-open-error"))return -2;file_alive=1;return 1;}
-static INT RtmpOSFileRead(RTMP_OS_FD fd,void*data,INT len){UCHAR*buf=data;int i,n=len;(void)fd;reads++;event("read");if(has("read-error"))return -5;if(has("zero"))n=0;if(has("short"))n=len/2;for(i=0;i<n;i++)buf[i]=(UCHAR)(0xa0+i);if(has("init-cal-")&&n>0x53){buf[0x52]=3;buf[0x53]=0;}return n;}
+static INT RtmpOSFileRead(RTMP_OS_FD fd,void*data,INT len){UCHAR*buf=data;int i,n=len;(void)fd;reads++;event("read");if(has("read-error"))return -5;if(has("zero"))n=0;if(has("short"))n=len/2;for(i=0;i<n;i++)buf[i]=(UCHAR)(0xa0+i);if((has("init-cal-")||has("set-load-")||has("efuse-"))&&n>0x53){buf[0x52]=3;buf[0x53]=0;}return n;}
 static INT RtmpOSFileWrite(RTMP_OS_FD fd,char*buf,INT len){(void)fd;(void)buf;writes++;event("write");if(has("io-error"))return -5;if(has("zero"))return 0;if(has("short"))return len/2;return len;}
 static int filp_close(RTMP_OS_FD fd,void*unused){(void)fd;(void)unused;closes++;event("close");if(!file_alive)doubleclose++;file_alive=0;return has("close-error")?-5:0;}
 static BOOLEAN rtmp_get_default_bin_file_by_chip(RTMP_ADAPTER*p,UINT32 v,char**name){(void)p;(void)v;if(!has("multicard")||has("fallback"))return FALSE;*name=has("long-name")?long_name:has("null-name")?NULL:"chip.bin";return TRUE;}
 static LONG os_str_tol(const char*s,void*end,int base){(void)end;return strtol(s,NULL,base);}
-static int RtmpChipOpsEepromHook(RTMP_ADAPTER*p,int type,int mode){(void)p;(void)type;(void)mode;hook_calls++;event("hook");return has("hook-error")?-1:0;}
+static int RtmpChipOpsEepromHook(RTMP_ADAPTER*p,int type,int mode){(void)p;(void)type;hook_calls++;event("hook");if(has("hook-error"))return -1;callback_mode=mode;return 0;}
 static NDIS_STATUS rtmp_cal_load_from_bin(RTMP_ADAPTER*p,UCHAR*buf,unsigned long off,unsigned long len){(void)p;event("cal-read");if((has("cal-dcoc-error")&&off==0)||(has("cal-dpd1-error")&&off==DPDPART1_OFFSET)||(has("cal-dpd2-error")&&off==DPDPART2_OFFSET))return NDIS_STATUS_FAILURE;memset(buf,0xa5,len);return NDIS_STATUS_SUCCESS;}
 static void rtmp_ee_flash_write_all(RTMP_ADAPTER*p){(void)p;event("other-flash-write");}
 static void rtmp_ee_write_to_efuse(RTMP_ADAPTER*p){(void)p;event("other-efuse-write");}
@@ -177,7 +188,7 @@ static void rtmp_ee_load_from_efuse(RTMP_ADAPTER*p){(void)p;event("efuse-read");
 
 MAIN=r'''
 int main(int argc,char**argv){
- RTMP_ADAPTER a;UCHAR image[1024],output[1024];UINT16 word=0x1234;int status=0,known=0,i;UINT offset=2,len=4;UCHAR*buffer=output;
+ RTMP_ADAPTER a;UCHAR image[1024],output[1024],before_image[1024];UINT16 word=0x1234;int status=0,known=0,i,before_access,before_mode,before_source,before_flags,before_callbacks,before_capinit,before_efuse,unchanged,cal_owned,cal_views;UINT offset=2,len=4;UCHAR*buffer=output,*before_dcoc,*before_dpd1,*before_dpd2;
  if(argc!=2)return 90;
  case_name=argv[1];
  CASE_ADMISSION
@@ -186,7 +197,12 @@ int main(int argc,char**argv){
  for(i=0;i<1536;i++)cache[i]=(UCHAR)(0xa0+i);
  a.EEPROMImage=image;a.MACVersion=0x76150000;a.hdev_ctrl=&cap;a.bUseEfuse=1;a.E2pAccessMode=E2P_FLASH_MODE;
  a.E2pCtrl.e2pCurMode=E2P_FLASH_MODE;a.E2pCtrl.e2pSource=E2P_SRC_FROM_FLASH;a.E2pCtrl.BinSource="old-source";
- cap.EEPROM_DEFAULT_BIN=cache;cap.EEPROM_DEFAULT_BIN_SIZE=1024;cap.EEPROM_DEFAULT_BIN_FILE=default_path;cap.EFUSE_RESERVED_SIZE=1;
+ if(!strncmp(case_name,"efuse-",6)){a.E2pAccessMode=E2P_EFUSE_MODE;a.E2pCtrl.e2pCurMode=E2P_EFUSE_MODE;a.E2pCtrl.e2pSource=E2P_SRC_FROM_EFUSE;callback_mode=E2P_EFUSE_MODE;}
+#ifdef PRE_CAL_TRX_SET1_SUPPORT
+ if(!strncmp(case_name,"set-load-",9)){a.CalDCOCImage=image+8;a.CalDPDAPart1Image=image+16;a.CalDPDAPart2Image=image+24;a.bDCOCReloaded=a.bDPDReloaded=TRUE;}
+#endif
+ if(has("set-load-")||has("efuse-")){cache[0x52]=3;cache[0x53]=0;}
+ cap.EEPROM_DEFAULT_BIN=cache;cap.EEPROM_DEFAULT_BIN_SIZE=1024;cap.EEPROM_DEFAULT_BIN_FILE=default_path;cap.EFUSE_RESERVED_SIZE=1;cap.ee_inited=1;
  if(has("no-cache"))cap.EEPROM_DEFAULT_BIN=NULL;
  if(has("short-cache"))cap.EEPROM_DEFAULT_BIN_SIZE=2;
  if(has("null-image"))a.EEPROMImage=NULL;
@@ -198,18 +214,22 @@ int main(int argc,char**argv){
  if(has("null-buffer"))buffer=NULL;
  if(has("range-")&&has("zero")){len=0;buffer=NULL;}
  if(has("reuse")){a.CalDCOCImage=image+8;if(!has("partial-failure")){a.CalDPDAPart1Image=image+16;a.CalDPDAPart2Image=image+24;}}
+ memcpy(before_image,image,sizeof(image));before_access=a.E2pAccessMode;before_mode=a.E2pCtrl.e2pCurMode;before_source=a.E2pCtrl.e2pSource;before_flags=a.bDCOCReloaded+2*a.bDPDReloaded;before_callbacks=callback_mode;before_capinit=cap.ee_inited;before_efuse=a.bUseEfuse;before_dcoc=a.CalDCOCImage;before_dpd1=a.CalDPDAPart1Image;before_dpd2=a.CalDPDAPart2Image;
  if(!strncmp(case_name,"word-read-",10))status=rtmp_ee_bin_read16(&a,(UINT16)offset,is("word-read-null-value")?NULL:&word);
  else if(!strncmp(case_name,"word-write-",11))status=rtmp_ee_bin_write16(&a,(USHORT)offset,0xa1b2);
  else if(!strncmp(case_name,"range-read-",11))status=rtmp_ee_bin_read_with_range(&a,(UINT16)offset,(UINT16)len,buffer);
  else if(!strncmp(case_name,"range-write-",12))status=rtmp_ee_bin_write_with_range(&a,(USHORT)offset,(USHORT)len,buffer);
- else if(!strncmp(case_name,"set-load-",9))status=Set_LoadEepromBufferFromBin_Proc(&a,"1");
+ else if(!strncmp(case_name,"set-load-",9)){status=Set_LoadEepromBufferFromBin_Proc(&a,is("set-load-negative")?"-1":"1");if(is("set-load-repeat")&&status)status=Set_LoadEepromBufferFromBin_Proc(&a,"1");}
  else if(!strncmp(case_name,"set-write-",10))status=Set_EepromBufferWriteBack_Proc(&a,"4");
  else if(!strncmp(case_name,"write-",6))status=rtmp_ee_write_to_bin(&a);
  else if(!strncmp(case_name,"init-",5)){status=rtmp_ee_bin_init(&a);if(is("init-repeat")&&!status)status=rtmp_ee_bin_init(&a);}
- else if(!strncmp(case_name,"efuse-",6))status=eFuse_init(&a);
+ else if(!strncmp(case_name,"efuse-",6)){status=eFuse_init(&a);if(is("efuse-repeat")&&!status)status=eFuse_init(&a);}
  else if(!strncmp(case_name,"reset-",6))status=rtmp_ee_flash_reset(&a,image);
  else status=rtmp_ee_load_from_bin(&a);
- printf("{\"case\":\"%s\",\"status\":%d,\"fsdepth\":%d,\"opens\":%d,\"reads\":%d,\"writes\":%d,\"closes\":%d,\"doubleclose\":%d,\"allocs\":%d,\"frees\":%d,\"live_allocs\":%d,\"hooks\":%d,\"mode\":%d,\"source\":%d,\"diagnostic\":\"%s\",\"image0\":%u,\"image_last\":%u,\"cal_allocs\":%d,\"cal_flags\":%d,\"cal_control\":%u,\"efuse\":%d,\"word\":%u,\"output0\":%u,\"trace\":\"%s\"}\n",case_name,status,fsdepth,opens,reads,writes,closes,doubleclose,allocs,frees_count,live_allocs,hook_calls,a.E2pCtrl.e2pCurMode,a.E2pCtrl.e2pSource,a.E2pCtrl.BinSource?a.E2pCtrl.BinSource:"",image[0],image[1023],cal_allocs,a.bDCOCReloaded+2*a.bDPDReloaded,(unsigned)image[0x52]|((unsigned)image[0x53]<<8),a.bUseEfuse,word,output[0],trace);
+ unchanged=!memcmp(before_image,image,sizeof(image))&&before_access==a.E2pAccessMode&&before_mode==a.E2pCtrl.e2pCurMode&&before_source==a.E2pCtrl.e2pSource&&before_flags==a.bDCOCReloaded+2*a.bDPDReloaded&&before_callbacks==callback_mode&&before_capinit==cap.ee_inited&&before_efuse==a.bUseEfuse&&before_dcoc==a.CalDCOCImage&&before_dpd1==a.CalDPDAPart1Image&&before_dpd2==a.CalDPDAPart2Image;
+ cal_owned=calibration_owned(a.CalDCOCImage)+2*calibration_owned(a.CalDPDAPart1Image)+4*calibration_owned(a.CalDPDAPart2Image);
+ cal_views=(a.CalDCOCImage==image+8)+2*(a.CalDPDAPart1Image==image+16)+4*(a.CalDPDAPart2Image==image+24);
+ printf("{\"case\":\"%s\",\"status\":%d,\"fsdepth\":%d,\"opens\":%d,\"reads\":%d,\"writes\":%d,\"closes\":%d,\"doubleclose\":%d,\"allocs\":%d,\"frees\":%d,\"live_allocs\":%d,\"hooks\":%d,\"mode\":%d,\"source\":%d,\"diagnostic\":\"%s\",\"image0\":%u,\"image_last\":%u,\"cal_allocs\":%d,\"cal_flags\":%d,\"cal_control\":%u,\"efuse\":%d,\"word\":%u,\"output0\":%u,\"profile\":%d,\"callbacks\":%d,\"cal_owned\":%d,\"cal_views\":%d,\"unchanged\":%d,\"capinit\":%d,\"trace\":\"%s\"}\n",case_name,status,fsdepth,opens,reads,writes,closes,doubleclose,allocs,frees_count,live_allocs,hook_calls,a.E2pCtrl.e2pCurMode,a.E2pCtrl.e2pSource,a.E2pCtrl.BinSource?a.E2pCtrl.BinSource:"",image[0],image[1023],cal_allocs,a.bDCOCReloaded+2*a.bDPDReloaded,(unsigned)image[0x52]|((unsigned)image[0x53]<<8),a.bUseEfuse,word,output[0],a.E2pAccessMode,callback_mode,cal_owned,cal_views,unchanged,cap.ee_inited,trace);
  for(i=0;i<32;i++)if(owned[i])free(owned[i]);
  return 0;
 }

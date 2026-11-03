@@ -52,7 +52,7 @@ class WifiBinIOTests(unittest.TestCase):
                     self.assertTrue(all(type(v)is(str if k in ('case','diagnostic','trace')else int)for k,v in row.items()))
                     self.assertEqual(row['doubleclose'],0)
                     if profile=='current':self.assertEqual(row['fsdepth'],0)
-        self.assertEqual((len(h.CASE_NAMES),len(h.BASELINE_CASES),len(h.DISABLED_CASES)),(67,39,2))
+        self.assertEqual((len(h.CASE_NAMES),len(h.BASELINE_CASES),len(h.DISABLED_CASES)),(84,39,2))
 
     def test_failed_file_reload_preserves_old_ram_and_metadata(self):
         for case in ('load-zero','load-short','load-read-error','load-close-error','load-open-no-cache',
@@ -164,12 +164,81 @@ class WifiBinIOTests(unittest.TestCase):
             with self.subTest(case=case):
                 new=self.row(case);old=self.row(case,'baseline')
                 self.assertEqual(new['hooks'],0);self.assertEqual(old['hooks'],1)
-                self.assertEqual((new['mode'],new['source']),(2,2))
+                self.assertEqual((new['mode'],new['source']),((1,1)if case.startswith('efuse-')else(2,2)))
+                self.assertEqual((new['unchanged'],new['cal_owned'],new['live_allocs']),(1,0,0))
+                self.assertEqual(new['cal_views'],0 if case.startswith('efuse-')else 7)
         self.assertEqual(self.row('set-write-io-error')['status'],0)
         self.assertEqual(self.row('set-write-io-error','baseline')['status'],1)
         self.assertEqual(self.row('efuse-read-error')['efuse'],1)
         for case,status in [('set-load-hook-error',0),('efuse-hook-error',1)]:
             self.assertEqual(self.row(case)['status'],status)
+
+    def test_setter_and_empty_efuse_publish_complete_bin_ownership(self):
+        for case,status,hooks in [('set-load-ok',1,1),('set-load-open-cache',1,1),
+                                  ('set-load-repeat',1,2),('efuse-ok',0,1),('efuse-repeat',0,2)]:
+            with self.subTest(case=case):
+                row=self.row(case)
+                self.assertEqual([row[k]for k in('status','profile','mode','source','callbacks','hooks')],
+                                 [status,4,4,8,4,hooks])
+                self.assertEqual([row[k]for k in('cal_owned','cal_views','cal_allocs','live_allocs','cal_flags')],
+                                 [7,0,3,3,3])
+                self.assertEqual(row['cal_control'],3)
+                if case.startswith('efuse-'):self.assertEqual(row['efuse'],0)
+        old=self.row('set-load-ok','baseline')
+        self.assertEqual([old[k]for k in('profile','mode','callbacks','cal_owned','cal_views')],[2,4,4,0,7])
+        old=self.row('efuse-ok','baseline')
+        self.assertEqual([old[k]for k in('profile','mode','callbacks','cal_owned')],[1,4,4,0])
+
+    def test_transition_allocation_failures_preserve_ram_views_profile_and_callbacks(self):
+        for prefix,status,profile,views in [('set-load-',0,2,7),('efuse-',1,1,0)]:
+            for part in ('dcoc','dpd1','dpd2'):
+                with self.subTest(prefix=prefix,part=part):
+                    row=self.row(prefix+'allocation-'+part)
+                    self.assertEqual([row[k]for k in('status','unchanged','profile','mode','callbacks','cal_views','cal_owned','live_allocs')],
+                                     [status,1,profile,profile,profile,views,0,0])
+                    self.assertEqual([row[k]for k in('hooks','opens','reads')],[0,0,0])
+                    self.assertEqual(row['efuse'],1)
+
+    def test_missing_nic_and_disabled_setter_decline_without_side_effects(self):
+        for case,status,profile in [('set-load-nic-missing',0,2),('set-load-negative',0,2),
+                                    ('efuse-nic-missing',1,1)]:
+            with self.subTest(case=case):
+                row=self.row(case)
+                self.assertEqual([row[k]for k in('status','profile','callbacks','unchanged')],[status,profile,profile,1])
+                self.assertEqual([row[k]for k in('allocs','opens','reads','hooks')],[0,0,0,0])
+
+    def test_transition_calibration_failures_select_online_fallback(self):
+        for prefix,status in [('set-load-',1),('efuse-',0)]:
+            for part,bits,flags in [('dcoc',1,2),('dpd1',2,1),('dpd2',2,1)]:
+                with self.subTest(prefix=prefix,part=part):
+                    row=self.row(prefix+'cal-'+part+'-error')
+                    self.assertEqual([row[k]for k in('status','profile','callbacks','cal_owned','cal_views','cal_control','cal_flags')],
+                                     [status,4,4,7,0,bits,flags])
+
+    def test_hook_failure_keeps_owned_buffers_identifiable_for_cleanup(self):
+        for case,status,callbacks in [('set-load-hook-error',0,2),('efuse-hook-error',1,1)]:
+            with self.subTest(case=case):
+                row=self.row(case)
+                self.assertEqual([row[k]for k in('status','profile','mode','source','callbacks','cal_owned','cal_views','live_allocs')],
+                                 [status,4,0,0,callbacks,7,0,3])
+                self.assertEqual(row['capinit'],0)
+                self.assertEqual(row['efuse'],1)
+
+    def test_source_variant_without_set1_calibration_still_publishes_bin_profile(self):
+        before='#define PRE_CAL_TRX_SET1_SUPPORT 1\n'
+        self.assertEqual(self.codes['current'].count(before),1)
+        binary=self.compile(self.codes['current'].replace(before,''),'without-set1-calibration')
+        for case,status in [('set-load-ok',1),('efuse-ok',0)]:
+            with self.subTest(case=case):
+                row=self.row(case,binary)
+                self.assertEqual([row[k]for k in('status','profile','mode','source','callbacks','cal_allocs','cal_owned','cal_views')],
+                                 [status,4,4,8,4,0,0,0])
+        for case,status,profile in [('set-load-read-error',0,2),('efuse-read-error',1,1),
+                                    ('set-load-nic-missing',0,2),('efuse-nic-missing',1,1)]:
+            with self.subTest(case=case):
+                row=self.row(case,binary)
+                self.assertEqual([row[k]for k in('status','profile','callbacks','unchanged','live_allocs')],
+                                 [status,profile,profile,1,0])
 
     def test_removed_exact_io_and_error_propagation_changes_are_detected(self):
         code=self.codes['current']
@@ -177,7 +246,8 @@ class WifiBinIOTests(unittest.TestCase):
             ('short-load','status = ret_val == MAX_EEPROM_BIN_FILE_SIZE;','status = ret_val >= 0;','load-short',1),
             ('ignored-close','if (RtmpOSFileCloseChecked(srcf))','if ((RtmpOSFileCloseChecked(srcf), 0))','load-close-error',1),
             ('short-cache','cap->EEPROM_DEFAULT_BIN_SIZE >= MAX_EEPROM_BIN_FILE_SIZE','cap->EEPROM_DEFAULT_BIN_SIZE > 0','load-open-short-cache',1),
-            ('ignored-setload','if (result == FALSE)\n\t\t\treturn FALSE;','if (result == FALSE && 0)\n\t\t\treturn FALSE;','set-load-read-error',1),
+            ('ignored-setload','if (result != NDIS_STATUS_SUCCESS)\n\t\t\treturn FALSE;',
+             'if (result != NDIS_STATUS_SUCCESS && 0)\n\t\t\treturn FALSE;','set-load-read-error',1),
         )
         for name,before,after,case,occurrence in controls:
             with self.subTest(control=name):

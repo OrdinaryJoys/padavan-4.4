@@ -135,6 +135,25 @@ class WifiCalIOTests(unittest.TestCase):
             for case in cases:
                 with self.subTest(profile=mode,case=case):self.assertEqual(self.row(case,b),self.row(case,mode))
 
+    def test_platform_loff_alias_uses_linux_declaration_or_64bit_fallback(self):
+        start=h.PREFIX.index('#if !defined(__linux__)\n')
+        end=h.PREFIX.index('\n',h.PREFIX.index('typedef char model_loff_t_is_64_bits',start))
+        declaration=h.PREFIX[start:end]
+        self.assertIn('#include <sys/types.h>',h.PREFIX)
+        main='\nint main(void){return sizeof(loff_t)==8?0:1;}\n'
+        for gcc in(False,True):
+            for profile,prefix in [('linux','\n#define __linux__ 1\ntypedef long loff_t;\n'),
+                                   ('fallback','\n#undef __linux__\n')]:
+                binary=self.compile(prefix+declaration+main,'loff-'+profile+str(gcc),gcc=gcc)
+                result=subprocess.run([str(binary)],capture_output=True,text=True,timeout=5)
+                self.assertEqual((result.returncode,result.stderr),(0,''),result.stderr)
+            old=self.base/('old-loff'+str(gcc)+'.c')
+            old.write_text('typedef long loff_t;\ntypedef long long loff_t;\n'+main)
+            compiler=(shutil.which('gcc-16')or shutil.which('gcc'))if gcc else shutil.which('clang')
+            result=subprocess.run([compiler,*FLAGS,'-c',str(old),'-o',str(old.with_suffix('.o'))],
+                                  capture_output=True,text=True,timeout=30)
+            self.assertNotEqual(result.returncode,0);self.assertIn('loff_t',result.stderr)
+
     def test_full_body_hashes_and_observed_nic_section_are_explicit(self):
         functions=h.actual_functions(self.texts);self.assertEqual((len(functions),len(h.BASELINE_FUNCTIONS)),(9,6))
         self.assertEqual(sum(x['execution']=='whole-function' for x in functions.values()),8)

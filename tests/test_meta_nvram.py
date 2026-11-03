@@ -27,12 +27,16 @@ class MetaNvramTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):cls.temp.cleanup()
     @classmethod
-    def compile(cls,name,baseline=False,disabled=False,source=None,compiler=None,sanitize=True):
+    def build(cls,name,baseline=False,disabled=False,source=None,compiler=None,sanitize=True):
         code=h.generate_source(cls.texts,baseline=baseline,disabled_oracle=disabled)if source is None else source
         path=cls.directory/(name+'.c');path.write_text(code);binary=cls.directory/name
         flags=list(FLAGS)
         if sanitize:flags+=['-g','-fsanitize=address,undefined','-fno-omit-frame-pointer']
         run=subprocess.run([compiler or cls.compiler,*flags,str(path),'-o',str(binary)],capture_output=True,text=True,timeout=90)
+        return binary,run
+    @classmethod
+    def compile(cls,*args,**kwargs):
+        binary,run=cls.build(*args,**kwargs)
         if run.returncode:raise AssertionError(run.stderr)
         return binary
     def run_case(self,case,profile='current',binary=None,success=True):
@@ -128,11 +132,30 @@ class MetaNvramTests(unittest.TestCase):
         row=self.run_case('response-too-small-cap',binary=self.compile('response-no-cap',source=response))
         self.assertNotEqual((row['status'],row['copies_out']),(2,0))
 
-    def test_gnu_strict_actual_flags_all_safe_profiles_match_clang(self):
+    def test_gnu_strict_current_and_disabled_profiles_match_clang(self):
         compiler=shutil.which('gcc-16')or shutil.which('gcc')
         if not compiler:raise AssertionError('GNU-compatible compiler required')
-        for profile,names in(('current',h.CASE_NAMES),('baseline',h.BASELINE_CASES),('disabled',h.DISABLED_CASES)):
-            binary=self.compile('gcc-'+profile,baseline=profile=='baseline',disabled=profile=='disabled',compiler=compiler,sanitize=False)
+        for profile,names in(('current',h.CASE_NAMES),('disabled',h.DISABLED_CASES)):
+            binary=self.compile('gcc-'+profile,disabled=profile=='disabled',compiler=compiler,sanitize=False)
             for name in names:self.assertEqual(self.run_case(name,profile,binary=binary),self.run_case(name,profile))
+
+    def test_gnu_historical_profile_runs_safe_cases_or_rejects_known_width_error(self):
+        compiler=shutil.which('gcc-16')or shutil.which('gcc')
+        if not compiler:raise AssertionError('GNU-compatible compiler required')
+        # The complete historical body intentionally retains its bad memcpy
+        # width. glibc fortify may reject it even when only safe cases are run.
+        # This control uses the same strict flags as current/disabled profiles.
+        binary,run=self.build('gcc-baseline',baseline=True,compiler=compiler,sanitize=False)
+        if not run.returncode:
+            for name in h.BASELINE_CASES:
+                self.assertEqual(self.run_case(name,'baseline',binary=binary),self.run_case(name,'baseline'))
+            return
+        errors=[line for line in run.stderr.splitlines()if re.search(r'\b(?:fatal )?error:',line)]
+        self.assertTrue(errors,run.stderr)
+        self.assertTrue(all(re.search(r'\[-Werror=(?:array-bounds|stringop-overflow|stringop-overread)\]',line)
+                            and re.search(r"object [‘']value[’']",line)
+                            for line in errors),run.stderr)
+        self.assertIn('oid_nvram_rw',run.stderr)
+        self.assertRegex(run.stderr,r"object [‘']value[’']|[‘']value[’'] declared here")
 
 if __name__=='__main__':unittest.main()

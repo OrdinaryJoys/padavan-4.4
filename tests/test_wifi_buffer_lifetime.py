@@ -46,7 +46,6 @@ def lifecycle_source():
                           ('#define TXDPD_IMAGE2_SIZE 8', '#define TXDPD_IMAGE2_SIZE 648'),
                           ('#define DPDPART1_OFFSET 8', '#define DPDPART1_OFFSET 9728'),
                           ('#define DPDPART2_OFFSET 16', '#define DPDPART2_OFFSET 19232'),
-                          ('struct _RTMP_CHIP_CAP {', 'struct _RTMP_CHIP_CAP {int ee_inited;'),
                           ('static int fsdepth,', 'static int allocation_enabled=1,flash_reads;\nstatic int fsdepth,'),
                           ('if(has("open-")||is("write-open-error"))',
                            'if((has("open-")&&!has("close-open"))||is("write-open-error"))'),

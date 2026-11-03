@@ -775,6 +775,7 @@ static NDIS_STATUS rtmp_ee_bin_init(PRTMP_ADAPTER pAd)
 #else
 	if (rtmp_ee_load_from_bin(pAd) != TRUE)
 		return NDIS_STATUS_FAILURE;
+	pAd->E2pAccessMode = E2P_BIN_MODE;
 #endif /* PRE_CAL_TRX_SET1_SUPPORT */
 #ifdef CAL_FREE_IC_SUPPORT
 	RTMP_CAL_FREE_IC_CHECK(pAd, bCalFree);
@@ -1358,18 +1359,26 @@ INT Set_LoadEepromBufferFromBin_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 	LONG bEnable = os_str_tol(arg, 0, 10);
 	INT result;
 
-	if (bEnable < 0)
+	if (bEnable < 0 || RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_NIC_NOT_EXIST))
 		return FALSE;
 	else {
 		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("Load EEPROM buffer from BIN, and change to BIN buffer mode\n"));
-		result = rtmp_ee_load_from_bin(pAd);
+		/* Establish complete owned BIN resources before publishing callbacks. */
+		result = rtmp_ee_bin_init(pAd);
 
-		if (result == FALSE)
+		if (result != NDIS_STATUS_SUCCESS)
 			return FALSE;
 
 		/* Change to BIN eeprom buffer mode */
-		if (RtmpChipOpsEepromHook(pAd, pAd->infType, E2P_BIN_MODE) != 0)
+		if (RtmpChipOpsEepromHook(pAd, pAd->infType, E2P_BIN_MODE) != 0) {
+			struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
+
+			/* Keep owned BIN buffers for teardown, but block stale callbacks. */
+			cap->ee_inited = 0;
+			pAd->E2pCtrl.e2pCurMode = E2P_NONE;
+			pAd->E2pCtrl.e2pSource = 0;
 			return FALSE;
+		}
 		return TRUE;
 	}
 }
