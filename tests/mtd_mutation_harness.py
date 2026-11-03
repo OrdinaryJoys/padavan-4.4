@@ -111,6 +111,13 @@ def generate_source(texts, fixture_root, owner_uid=0, baseline=False, disabled_o
                                       enabled=False)
     finally:
         legacy.CASE_ARGS = previous
+    # Keep the selected case explicitly stable across the model's longjmp.
+    # Only this adapter adds setjmp; the shared legacy prelude is unchanged.
+    selector = 'char modified[9000],*p;int which=-1,result;size_t i;'
+    if code.count(selector) != 1:
+        raise ValueError('Known mutation selector declaration required')
+    code = code.replace(selector,
+                        'char modified[9000],*p;volatile int which=-1;int result;size_t i;', 1)
     # Primary writes and JFFS appends are recording callbacks in this focused
     # erase-dispatch model. Actual legacy writer IO has its separate gate.
     code = code.replace(legacy.function(source, 'mtd_write'),

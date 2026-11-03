@@ -54,6 +54,21 @@ class ControllerClockTests(unittest.TestCase):
         for name in ('overflow-high','overflow-max','above-half','above-source','max-small'):
             self.assertNotEqual(h.BASELINE_EXPECTED[name],byname[name])
 
+    def test_gcc_accepts_both_generated_profiles_with_strict_gnu89_warnings(self):
+        compiler=shutil.which('gcc-16') or shutil.which('gcc')
+        self.assertIsNotNone(compiler,'GCC is required for cross-compiler warning coverage')
+        macros=subprocess.run([compiler,'-dM','-E','-x','c','-'],input='',capture_output=True,text=True,timeout=10)
+        self.assertEqual(macros.returncode,0,macros.stderr)
+        self.assertIn('#define __GNUC__ ',macros.stdout);self.assertNotIn('#define __clang__ ',macros.stdout)
+        for profile,baseline,cases in (('current',False,h.CASES),('baseline',True,h.BASELINE_CASES)):
+            source=self.directory/('gcc-'+profile+'.c');binary=source.with_suffix('')
+            source.write_text(h.generate_source(self.texts,baseline=baseline))
+            result=subprocess.run([compiler,'-std=gnu89','-O2','-Wall','-Wextra','-Werror',
+                                   str(source),'-o',str(binary)],capture_output=True,text=True,timeout=30)
+            self.assertEqual(result.returncode,0,result.stderr)
+            for name,expected in cases:
+                self.assertEqual(self.row(name,binary),expected)
+
     def test_old_zero_request_is_an_undefined_behavior_control_not_a_pass_case(self):
         result=subprocess.run([str(self.binaries['baseline']),'zero-rate'],capture_output=True,text=True,timeout=5)
         self.assertNotEqual(result.returncode,0);self.assertIn('division by zero',result.stderr)

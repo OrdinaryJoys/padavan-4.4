@@ -204,6 +204,57 @@ class MtdMutationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             h.generate_source(self.texts, '/tmp/inert', baseline=True, disabled_oracle=True)
 
+    def test_gnu_gate_flags_preserve_selector_across_model_longjmp(self):
+        compiler = shutil.which('gcc-16') or shutil.which('gcc')
+        self.assertIsNotNone(compiler, 'GNU C compiler required for target-warning regression')
+        macros = subprocess.run([compiler, '-dM', '-E', '-x', 'c', '-'], input='',
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(macros.returncode, 0, macros.stderr)
+        self.assertIn('#define __GNUC__ ', macros.stdout)
+        self.assertNotIn('#define __clang__ ', macros.stdout)
+        # Exact MIPS gate compile flags, including driver link switches. The
+        # object-only pass avoids requesting a macOS static C runtime.
+        flags = ('-std=gnu99', '-Os', '-static', '-s', '-Wall', '-Wextra', '-Werror',
+                 '-Wno-unused-parameter', '-Wno-unused-function', '-Wno-sign-compare')
+        volatile = 'volatile int which=-1;int result;'
+        old = 'int which=-1,result;'
+        for kind in ('current', 'baseline', 'disabled'):
+            with self.subTest(profile=kind):
+                code = self.codes[kind]
+                self.assertEqual(code.count(volatile), 1)
+                path = self.base / ('gnu-' + kind + '.c');path.write_text(code)
+                result = subprocess.run([compiler, *flags, '-c', str(path), '-o',
+                                         str(self.base / ('gnu-' + kind + '.o'))],
+                                        capture_output=True, text=True, timeout=30)
+                self.assertEqual((result.returncode, result.stderr), (0, ''), result.stderr)
+                binary = self.base / ('gnu-' + kind)
+                result = subprocess.run([compiler, *(flag for flag in flags if flag not in ('-static', '-s')),
+                                         str(path), '-o', str(binary)],
+                                        capture_output=True, text=True, timeout=30)
+                self.assertEqual((result.returncode, result.stderr), (0, ''), result.stderr)
+                cases = h.CASE_NAMES if kind == 'current' else h.BASELINE_CASES if kind == 'baseline' else ('erase-ok', 'erase-error-first')
+                for case in cases:
+                    row = self.row(case, binary)
+                    if kind == 'disabled':
+                        expected = {key:(case if key == 'case' else '' if key == 'trace' else 0)
+                                    for key in h.EXPECTED[case]}
+                        self.assertEqual(row, expected)
+                    else:
+                        self.assertTrue(h.validate_row(row, baseline=kind == 'baseline'))
+                if kind != 'disabled':
+                    old_code = code.replace(volatile, old, 1)
+                    # Retention is a source obligation even when a GNU
+                    # version's conservative clobber diagnostic differs.
+                    self.assertNotIn(volatile, old_code)
+                    path.write_text(old_code)
+                    result = subprocess.run([compiler, *flags, '-Wclobbered', '-c', str(path), '-o',
+                                             str(self.base / ('gnu-old-' + kind + '.o'))],
+                                            capture_output=True, text=True, timeout=30)
+                    if result.returncode:
+                        self.assertIn('clobbered', result.stderr)
+                    else:
+                        self.assertEqual(result.stderr, '')
+
 
 if __name__ == '__main__':
     unittest.main()

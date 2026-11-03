@@ -52,5 +52,5 @@ def generate_source(texts,fixture_root=None,owner_uid=0,baseline=False):
  body=BASELINE_BODY if baseline else function(texts['controller'])
  prefix='#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n#include <stdlib.h>\ntypedef uint32_t u32;\n'+production_fragments(texts)+'\n'
  cases=''.join('if(!strcmp(argv[1],'+repr(name).replace("'",'"')+')){h='+str(h)+'U;f='+str(f)+'U;name="'+name+'";}\n' for name,h,f,_ in INPUTS)
- main='int main(int argc,char **argv){u32 h=0,f=0,d;const char*name=NULL;if(argc!=2)return 90;'+cases+'if(!name)return 91;d=mt7621_spi_get_clk_div(h,f);printf("{\\"case\\":\\"%s\\",\\"hclk\\":%u,\\"rate\\":%u,\\"divider\\":%u}\\n",name,h,f,d);return 0;}'
+ main='int main(int argc,char **argv)\n{\n u32 h=0,f=0,d;\n const char*name=NULL;\n if(argc!=2)\n  return 90;\n'+cases+' if(!name)\n  return 91;\n d=mt7621_spi_get_clk_div(h,f);\n printf("{\\"case\\":\\"%s\\",\\"hclk\\":%u,\\"rate\\":%u,\\"divider\\":%u}\\n",name,h,f,d);\n return 0;\n}'
  return prefix+body+'\n'+main+'\n'
