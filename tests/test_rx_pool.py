@@ -1,5 +1,6 @@
 """Actual cyclic RX pool/allocator/getter identity checks, with inert DMA."""
 import json
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -21,6 +22,15 @@ class RxPoolTests(unittest.TestCase):
         result = subprocess.run(['clang', '-std=gnu99', '-Wall', '-Wextra', '-Werror',
                                  '-Wno-unused-function', '-Wno-unused-variable', '-Wno-unused-parameter',
                                  '-fsanitize=address,undefined', str(path), '-o', str(cls.binary)],
+                                capture_output=True, text=True, timeout=30)
+        if result.returncode:
+            raise AssertionError(result.stderr)
+        gcc = shutil.which('gcc-16') or shutil.which('gcc')
+        if not gcc:
+            raise AssertionError('GNU C required for warning parity')
+        result = subprocess.run([gcc, '-std=gnu99', '-Os', '-Wall', '-Wextra', '-Werror',
+                                 '-Wno-unused-function', '-Wno-unused-variable', '-Wno-unused-parameter',
+                                 str(path), '-o', str(cls.directory / 'pool-gnu')],
                                 capture_output=True, text=True, timeout=30)
         if result.returncode:
             raise AssertionError(result.stderr)

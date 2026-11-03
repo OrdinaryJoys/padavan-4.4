@@ -360,7 +360,8 @@ int main(int argc,char **argv){
   if(!owner_check(r)||live_maps()!=4)ownership_ok=0;
  }
  printf("[%d,%d,%d,%u,%d,%u,%u,%d,%d,%d,%d,%d,%d]\n",returns,zeros,calls,r->RxSwReadIdx,r->rx_discard,r->free_buf_head,r->free_buf_tail,map_calls,unmap_calls,live_maps(),alias_attempts,ownership_ok,content_ok);
- for(i=0;i<allocation_count;i++)free(allocations[i]);return 0;
+ for(i=0;i<allocation_count;i++) { free(allocations[i]); }
+ return 0;
 }
 '''
 
