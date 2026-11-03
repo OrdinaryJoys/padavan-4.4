@@ -2982,9 +2982,9 @@ VOID AndesMTRxEventHandler(RTMP_ADAPTER *pAd, UCHAR *data)
 
 	if (!data || !OS_TEST_BIT(MCU_INIT, &ctl->flags))
 		return;
-	/* The RX sanity path already bounds the low-16-bit wire length above.
-	 * Reject incomplete event headers before copying or subtracting their
-	 * size in the unsolicited-event dispatcher. No packet-length ABI exists. */
+	/* Reject incomplete event headers before copying or subtracting their
+	 * size in the unsolicited-event dispatcher. The callback has no separate
+	 * transport-buffer-length argument; this is only the minimum-header check. */
 	os_move_mem(&wire_length, data, sizeof(wire_length));
 	wire_length = le2cpu32(wire_length) & 0xffff;
 	if (wire_length < sizeof(EVENT_RXD))
