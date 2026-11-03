@@ -2973,21 +2973,21 @@ static VOID AndesMTRxProcessEvent(RTMP_ADAPTER *pAd, struct cmd_msg *rx_msg)
 }
 
 
-VOID AndesMTRxEventHandler(RTMP_ADAPTER *pAd, UCHAR *data)
+VOID AndesMTRxEventHandler(RTMP_ADAPTER *pAd, UCHAR *data, UINT32 data_len)
 {
 	struct cmd_msg *msg;
 	struct MCU_CTRL *ctl = &pAd->MCUCtrl;
 	EVENT_RXD *event_rxd = (EVENT_RXD *)data;
 	UINT32 wire_length;
 
-	if (!data || !OS_TEST_BIT(MCU_INIT, &ctl->flags))
+	/* data_len comes from completed DMA descriptors, bounded by their owned
+	 * allocations, with the optional transport RXD already removed. */
+	if (!data || data_len < sizeof(EVENT_RXD) ||
+		!OS_TEST_BIT(MCU_INIT, &ctl->flags))
 		return;
-	/* Reject incomplete event headers before copying or subtracting their
-	 * size in the unsolicited-event dispatcher. The callback has no separate
-	 * transport-buffer-length argument; this is only the minimum-header check. */
 	os_move_mem(&wire_length, data, sizeof(wire_length));
 	wire_length = le2cpu32(wire_length) & 0xffff;
-	if (wire_length < sizeof(EVENT_RXD))
+	if (wire_length < sizeof(EVENT_RXD) || wire_length > data_len)
 		return;
 
 #ifdef RT_BIG_ENDIAN

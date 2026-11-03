@@ -143,10 +143,22 @@ NDIS_STATUS RTEnqueueInternalCmd(
 	ULONG	flag = 0;
 	PCmdQElmt	cmdqelmt = NULL;
 
+	if (!pAd || (InformationBufferLength && !pInformationBuffer))
+		return NDIS_STATUS_FAILURE;
+
 	if (RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_NIC_NOT_EXIST)) {
 		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("--->RTEnqueueInternalCmd - NIC is not exist!!\n"));
 		return NDIS_STATUS_FAILURE;
 	}
+
+	/* Avoid allocating a copy for a stopped queue. State may change while
+	 * allocating, so insertion still rechecks it under the same queue lock. */
+	RTMP_SPIN_LOCK_IRQSAVE(&pAd->CmdQLock, &flag);
+	status = (pAd->CmdQ.CmdQState & RTMP_TASK_CAN_DO_INSERT) ?
+		NDIS_STATUS_SUCCESS : NDIS_STATUS_FAILURE;
+	RTMP_SPIN_UNLOCK_IRQRESTORE(&pAd->CmdQLock, &flag);
+	if (status != NDIS_STATUS_SUCCESS)
+		return status;
 
 	status = os_alloc_mem(pAd, (PUCHAR *)&cmdqelmt, sizeof(CmdQElmt));
 
@@ -197,7 +209,7 @@ NDIS_STATUS RTEnqueueInternalCmd(
 			RTCMDUp(&pAd->cmdQTask);
 	}
 
-	return NDIS_STATUS_SUCCESS;
+	return status;
 }
 
 

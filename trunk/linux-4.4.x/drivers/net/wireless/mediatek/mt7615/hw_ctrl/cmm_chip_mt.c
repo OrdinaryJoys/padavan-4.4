@@ -49,7 +49,7 @@ VOID MTPollTxRxEmpty(RTMP_ADAPTER *pAd)
 VOID MTHifPolling(RTMP_ADAPTER *pAd, UINT8 ucDbdcIdx)
 {
 #ifdef RTMP_MAC_PCI
-	UINT32 Loop, RxPending = 0;
+	UINT32 Loop, RxPending = 0, rx_length;
 	PNDIS_PACKET pRxPacket = NULL;
 	RX_BLK RxBlk, *pRxBlk;
 	BOOLEAN bReschedule = FALSE;
@@ -58,7 +58,7 @@ VOID MTHifPolling(RTMP_ADAPTER *pAd, UINT8 ucDbdcIdx)
 	for (Loop = 0; Loop < 10; Loop++) {
 		while (1) {
 			pRxBlk = &RxBlk;
-			pRxPacket = pAd->archOps.get_pkt_from_rx_resource(pAd, &bReschedule, &RxPending, 0);
+			pRxPacket = pAd->archOps.get_pkt_from_rx_resource(pAd, &bReschedule, &RxPending, 0, &rx_length);
 
 			if ((RxPending == 0) && (bReschedule == FALSE))
 				break;
@@ -76,7 +76,7 @@ VOID MTHifPolling(RTMP_ADAPTER *pAd, UINT8 ucDbdcIdx)
 
 		while (1) {
 			pRxBlk = &RxBlk;
-			pRxPacket = pAd->archOps.get_pkt_from_rx_resource(pAd, &bReschedule, &RxPending, 0);
+			pRxPacket = pAd->archOps.get_pkt_from_rx_resource(pAd, &bReschedule, &RxPending, 0, &rx_length);
 
 			if ((RxPending == 0) && (bReschedule == FALSE))
 				break;

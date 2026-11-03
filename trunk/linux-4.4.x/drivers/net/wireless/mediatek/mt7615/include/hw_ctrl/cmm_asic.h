@@ -589,10 +589,10 @@ typedef struct _RTMP_ARCH_OP {
 	/*  RX */
 	BOOLEAN (*rx_done_handle)(struct _RTMP_ADAPTER *pAd) ____cacheline_aligned;
 	VOID *(*get_pkt_from_rx_resource)(struct _RTMP_ADAPTER *pAd, BOOLEAN *re_schedule,
-							UINT32 *rx_pending, UCHAR ring_no);
+							UINT32 *rx_pending, UCHAR ring_no, UINT32 *rx_length);
 	VOID *(*get_pkt_from_rx1_resource)(struct _RTMP_ADAPTER *pAd, BOOLEAN *re_schedule,
-							UINT32 *rx_pending, UCHAR ring_no);
-	UINT32 (*rx_pkt_process)(struct _RTMP_ADAPTER *pAd, UINT8 hif_idx, struct _RX_BLK *pRxBlk, VOID *pRxPacket);
+							UINT32 *rx_pending, UCHAR ring_no, UINT32 *rx_length);
+	UINT32 (*rx_pkt_process)(struct _RTMP_ADAPTER *pAd, UINT8 hif_idx, struct _RX_BLK *pRxBlk, VOID *pRxPacket, UINT32 rx_length);
 #ifdef IGMP_SNOOP_SUPPORT
 	BOOLEAN (*archMcastEntryInsert)(RTMP_ADAPTER *pAd, PUCHAR GrpAddr, UINT8 BssIdx, UINT8 Type, PUCHAR MemberAddr, PNET_DEV dev, UINT8 WlanIndex);
 	BOOLEAN (*archMcastEntryDelete)(RTMP_ADAPTER *pAd, PUCHAR GrpAddr, UINT8 BssIdx, PUCHAR MemberAddr, PNET_DEV dev, UINT8 WlanIndex);

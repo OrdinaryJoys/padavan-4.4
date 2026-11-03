@@ -282,7 +282,7 @@ typedef struct _RTMP_CHIP_OP {
 
 	void (*andes_fill_cmd_header)(struct cmd_msg *msg, VOID *net_pkt);
 #endif /* CONFIG_ANDES_SUPPORT */
-	void (*rx_event_handler)(struct _RTMP_ADAPTER *ad, UCHAR *data);
+	void (*rx_event_handler)(struct _RTMP_ADAPTER *ad, UCHAR *data, UINT32 data_len);
 
 #ifdef MICROWAVE_OVEN_SUPPORT
 	VOID (*AsicMeasureFalseCCA)(IN struct _RTMP_ADAPTER *pAd);
@@ -1089,7 +1089,7 @@ VOID chip_spectrum_start(struct _RTMP_ADAPTER *ad, UINT8 *info);
 VOID chip_fw_init(struct _RTMP_ADAPTER *ad);
 VOID chip_parse_rxv_packet(struct _RTMP_ADAPTER *ad, UINT32 Type, struct _RX_BLK *RxBlk, UCHAR *Data);
 INT32 chip_txs_handler(struct _RTMP_ADAPTER *ad, struct _RX_BLK *rx_blk, VOID *rx_packet);
-VOID chip_rx_event_handler(struct _RTMP_ADAPTER *ad, VOID *rx_packet);
+VOID chip_rx_event_handler(struct _RTMP_ADAPTER *ad, VOID *rx_packet, UINT32 rx_length);
 INT chip_show_pwr_info(struct _RTMP_ADAPTER *ad, RTMP_STRING *arg);
 VOID chip_arch_set_aid(struct _RTMP_ADAPTER *ad, USHORT aid);
 INT32 chip_tssi_set(struct _RTMP_ADAPTER *ad, char *efuse);

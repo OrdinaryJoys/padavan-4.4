@@ -70,7 +70,7 @@ struct cmd_msg;
 #define CR_COLUMN_SIZE                   4
 
 VOID AndesMTFillCmdHeaderWithTXD(struct cmd_msg *msg, PNDIS_PACKET net_pkt);
-VOID AndesMTRxEventHandler(struct _RTMP_ADAPTER *pAd, UCHAR *data);
+VOID AndesMTRxEventHandler(struct _RTMP_ADAPTER *pAd, UCHAR *data, UINT32 data_len);
 INT32 AndesMTLoadFw(struct _RTMP_ADAPTER *pAd);
 INT32 AndesMTEraseFw(struct _RTMP_ADAPTER *pAd);
 

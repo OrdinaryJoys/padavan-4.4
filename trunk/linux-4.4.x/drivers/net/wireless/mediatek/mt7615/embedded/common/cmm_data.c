@@ -989,6 +989,60 @@ static BOOLEAN check_rx_pkt_pn_allowed(RTMP_ADAPTER *pAd, RX_BLK *rx_blk)
 	return isAllow;
 }
 
+static BOOLEAN rx_frame_header_valid(VOID *packet, UINT32 bytes, BOOLEAN translated)
+{
+	UCHAR *data = packet;
+	UINT32 header;
+	UCHAR type, subtype;
+
+	if (!data)
+		return FALSE;
+	if (translated) {
+		if (bytes < LENGTH_802_3)
+			return FALSE;
+		/* A VLAN Ethernet header also contains the inner EtherType. */
+		if (data[12] == 0x81 && data[13] == 0x00)
+			return bytes >= LENGTH_802_3 + LENGTH_802_1Q;
+		return TRUE;
+	}
+	if (bytes < 4)
+		return FALSE;
+	type = (data[0] >> 2) & 3;
+	subtype = data[0] >> 4;
+	if (type == FC_TYPE_CNTL) {
+		switch (subtype) {
+		case SUBTYPE_BLOCK_ACK_REQ:
+			return bytes >= 20;
+		case SUBTYPE_BLOCK_ACK:
+			/* The control/starting-sequence fields precede the bitmap. */
+			if (bytes < 20)
+				return FALSE;
+			return (data[16] & 0x05) == 0x04 ? bytes >= 28 : TRUE;
+		case SUBTYPE_PS_POLL:
+		case SUBTYPE_RTS:
+		case SUBTYPE_CFEND:
+		case SUBTYPE_CFEND_CFACK:
+		case SUBTYPE_VHT_NDPA:
+			return bytes >= 16;
+		default:
+			/* ACK/CTS and unsupported one-address control formats. */
+			return bytes >= 10;
+		}
+	}
+	if (type != FC_TYPE_MGMT && type != FC_TYPE_DATA)
+		return FALSE;
+	header = LENGTH_802_11;
+	if ((data[1] & 3) == 3)
+		header += 6;
+	if (type == FC_TYPE_DATA && (subtype & 8)) {
+		header += 2;
+		if (data[1] & 0x80)
+			header += 4;
+	} else if (type == FC_TYPE_MGMT && (data[1] & 0x80))
+		header += 4;
+	return bytes >= header;
+}
+
 static INT32 mt_rx_info_2_blk(RTMP_ADAPTER *pAd,
 							  RX_BLK *pRxBlk,
 							  PNDIS_PACKET pRxPacket)
@@ -1088,6 +1142,11 @@ static INT32 mt_rx_info_2_blk(RTMP_ADAPTER *pAd,
 		pRxBlk->pRxInfo->Bcast = rx_base->RxD1.Bcast;
 	}
 #endif /* defined(MT7615) || defined(MT7622) || defined(P18) || defined(MT7663) */
+	/* The caller bounds RMAC metadata; validate each payload header before
+	 * changing the packet view or reading frame-control/sequence fields. */
+	if (!rx_frame_header_valid(RMACInfo + RMACInfoLen, pRxBlk->DataSize,
+		RX_BLK_TEST_FLAG(pRxBlk, fRX_HDR_TRANS)))
+		return 0;
 	if (RxdGrp1 != NULL) {
 		UINT64 pn1 = RxdGrp1->rxd_9.RscPn1.PN;
 		UINT64 pnTotal = 0;
@@ -1128,9 +1187,13 @@ static INT32 mt_rx_info_2_blk(RTMP_ADAPTER *pAd,
 
 #ifdef VLAN_SUPPORT
 	/*For IOT, remove unused fields*/
-	if (pRxPacket) {
+	if (pRxPacket && RX_BLK_TEST_FLAG(pRxBlk, fRX_HDR_TRANS)) {
 		UCHAR byte0, byte1, extra_field_offset;
+		if (GET_OS_PKT_LEN(pRxPacket) < LENGTH_802_3)
+			return 0;
 		extra_field_offset = IS_VLAN_PACKET(GET_OS_PKT_DATAPTR(pRxPacket)) ? (2 * ETH_ALEN+LENGTH_802_1Q) : (2 * ETH_ALEN);
+		if (GET_OS_PKT_LEN(pRxPacket) < (UINT32)extra_field_offset + 2)
+			return 0;
 		/*Remove the extra field (2 Bytes) which is added by hardware*/
 		/*The added info is the length of actual data (without overhead)*/
 		byte0 = GET_OS_PKT_DATAPTR(pRxPacket)[extra_field_offset];
@@ -1202,10 +1265,8 @@ static INT32 mt_rx_info_2_blk(RTMP_ADAPTER *pAd,
 	{
 		pRxBlk->FC = pRxBlk->pData;
 		temp_fc = *((UINT16 *)(pRxBlk->FC));
-		fn_sn = *((UINT16 *)(pRxBlk->FC + 22));
 #ifdef RT_BIG_ENDIAN
 		temp_fc = le2cpu16(temp_fc);
-		fn_sn = le2cpu16(fn_sn);
 #endif
 		pRxBlk->Duration = *((UINT16 *)(pRxBlk->pData + 2));
 #ifdef RT_BIG_ENDIAN
@@ -1214,16 +1275,31 @@ static INT32 mt_rx_info_2_blk(RTMP_ADAPTER *pAd,
 
 		if ((((FRAME_CONTROL *)&temp_fc)->Type == FC_TYPE_MGMT) ||
 			(((FRAME_CONTROL *)&temp_fc)->Type == FC_TYPE_DATA)) {
+			fn_sn = *((UINT16 *)(pRxBlk->FC + 22));
+#ifdef RT_BIG_ENDIAN
+			fn_sn = le2cpu16(fn_sn);
+#endif
 			pRxBlk->FN = fn_sn & 0x000f;
 			pRxBlk->SN = (fn_sn & 0xfff0) >> 4;
 		}
 
 		pRxBlk->Addr1 = pRxBlk->pData + 4;
-		pRxBlk->Addr2 = pRxBlk->pData + 10;
-		pRxBlk->Addr3 = pRxBlk->pData + 16;
-
-		if ((((FRAME_CONTROL *)&temp_fc)->ToDs == 1) && (((FRAME_CONTROL *)&temp_fc)->FrDs == 1))
-			pRxBlk->Addr4 = pRxBlk->pData + 24;
+		pRxBlk->Addr2 = NULL;
+		pRxBlk->Addr3 = NULL;
+		pRxBlk->Addr4 = NULL;
+		if (((FRAME_CONTROL *)&temp_fc)->Type == FC_TYPE_CNTL) {
+			UCHAR subtype = ((FRAME_CONTROL *)&temp_fc)->SubType;
+			if (subtype == SUBTYPE_BLOCK_ACK_REQ || subtype == SUBTYPE_BLOCK_ACK ||
+				subtype == SUBTYPE_PS_POLL || subtype == SUBTYPE_RTS ||
+				subtype == SUBTYPE_CFEND || subtype == SUBTYPE_CFEND_CFACK ||
+				subtype == SUBTYPE_VHT_NDPA)
+				pRxBlk->Addr2 = pRxBlk->pData + 10;
+		} else {
+			pRxBlk->Addr2 = pRxBlk->pData + 10;
+			pRxBlk->Addr3 = pRxBlk->pData + 16;
+			if ((((FRAME_CONTROL *)&temp_fc)->ToDs == 1) && (((FRAME_CONTROL *)&temp_fc)->FrDs == 1))
+				pRxBlk->Addr4 = pRxBlk->pData + 24;
+		}
 	}
 
 	if (rx_base->RxD0.RfbGroupVld & RXS_GROUP3)
@@ -1717,13 +1793,13 @@ INT32 txs_handler_v2(RTMP_ADAPTER *pAd, RX_BLK *rx_blk, VOID *rx_packet)
 	return TRUE;
 }
 
-UINT32 rx_mcu_event_handler(RTMP_ADAPTER *ad, RX_BLK *rx_blk, VOID *rx_packet)
+UINT32 rx_mcu_event_handler(RTMP_ADAPTER *ad, RX_BLK *rx_blk, VOID *rx_packet, UINT32 rx_length)
 {
 #if (ENABLE_RXD_LOG)
 	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s:\n", __func__));
 #endif
 
-	chip_rx_event_handler(ad, rx_packet);
+	chip_rx_event_handler(ad, rx_packet, rx_length);
 
 	if (rx_blk)
 		RX_BLK_SET_FLAG(rx_blk, fRX_CMD_RSP);
@@ -1805,32 +1881,28 @@ UINT32 tx_free_event_handler(RTMP_ADAPTER *ad, VOID *ptr)
 #endif /* CUT_THROUGH */
 
 
-static UINT32 sanity_and_get_packet_type(RTMP_ADAPTER *ad, VOID *rx_packet)
+static UINT32 sanity_and_get_packet_type(RTMP_ADAPTER *ad, VOID *rx_packet, UINT32 rx_length)
 {
 	union _RMAC_RXD_0_UNION *rxd_0;
+	UINT32 byte_count;
 
-	rxd_0 = (union _RMAC_RXD_0_UNION *)(rx_packet);
+	if (!rx_packet || rx_length < sizeof(UINT32))
+		return (UINT32)-1;
+	rxd_0 = (union _RMAC_RXD_0_UNION *)rx_packet;
 #ifdef RT_BIG_ENDIAN
 	mt_rmac_d0_endian_change(&rxd_0->word);
-#endif /* RT_BIG_ENDIAN */
-#if defined(RTMP_PCI_SUPPORT) && !defined(RX_SCATTER)
-
-	if (RMAC_RX_PKT_RX_BYTE_COUNT(rxd_0->word) > RX_BUFFER_AGGRESIZE) {
-		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-				 ("%s():drop invalid RxD length = 0x%x packet",
-				  __func__, RMAC_RX_PKT_RX_BYTE_COUNT(rxd_0->word)));
-		return -1;
-	}
-
 #endif
+	byte_count = RMAC_RX_PKT_RX_BYTE_COUNT(rxd_0->word);
+	if (byte_count < sizeof(UINT32) || byte_count > rx_length)
+		return (UINT32)-1;
 	return RMAC_RX_PKT_TYPE(rxd_0->word);
 }
 
-UINT32 pkt_alloc_fail_handle(RTMP_ADAPTER *ad, PNDIS_PACKET rx_packet)
+UINT32 pkt_alloc_fail_handle(RTMP_ADAPTER *ad, PNDIS_PACKET rx_packet, UINT32 rx_length)
 {
 	UINT32 rx_pkt_type;
 
-	rx_pkt_type = sanity_and_get_packet_type(ad, rx_packet);
+	rx_pkt_type = sanity_and_get_packet_type(ad, rx_packet, rx_length);
 
 	switch (rx_pkt_type) {
 #ifdef CUT_THROUGH
@@ -1847,14 +1919,67 @@ UINT32 pkt_alloc_fail_handle(RTMP_ADAPTER *ad, PNDIS_PACKET rx_packet)
 	return 0;
 }
 
-UINT32 mt_rx_pkt_process(RTMP_ADAPTER *pAd, UINT8 hif_idx, RX_BLK *rx_blk, PNDIS_PACKET rx_packet)
+static BOOLEAN rx_normal_header_valid(VOID *packet, UINT32 rx_length)
+{
+	RXD_BASE_STRUCT base;
+	UINT32 declared, header = RMAC_INFO_BASE_SIZE, groups;
+	BOOLEAN translated = FALSE;
+#ifdef RT_BIG_ENDIAN
+	UINT32 word;
+#endif
+	if (!packet || rx_length < sizeof(base) || rx_length < RMAC_INFO_BASE_SIZE)
+		return FALSE;
+	NdisMoveMemory(&base, packet, sizeof(base));
+#ifdef RT_BIG_ENDIAN
+	/* The common type decoder already converted DWORD0 in place. */
+	NdisMoveMemory(&word, &base.RxD1, sizeof(word));
+	word = le2cpu32(word);
+	NdisMoveMemory(&base.RxD1, &word, sizeof(word));
+#endif
+	declared = base.RxD0.RxByteCnt;
+	groups = base.RxD0.RfbGroupVld;
+	if (groups & RXS_GROUP1)
+		header += RMAC_INFO_GRP_1_SIZE;
+	if (groups & RXS_GROUP2)
+		header += RMAC_INFO_GRP_2_SIZE;
+	if (groups & RXS_GROUP3)
+		header += RMAC_INFO_GRP_3_SIZE;
+	if (groups & RXS_GROUP4)
+		header += RMAC_INFO_GRP_4_SIZE;
+	if (base.RxD1.HdrOffset)
+		header += 2;
+#ifdef HDR_TRANS_RX_SUPPORT
+	translated = base.RxD1.HdrTranslation;
+	if (translated && !(groups & RXS_GROUP4))
+		return FALSE;
+#endif
+	/* Prove all descriptor metadata before legacy group reads/subtraction.
+	 * Bound the immediate MAC header consumers without treating this as a
+	 * proof of every later 802.11 management/data payload parser. */
+	return declared <= rx_length && declared >= header &&
+		rx_frame_header_valid((UCHAR *)packet + header, declared - header, translated);
+}
+
+UINT32 mt_rx_pkt_process(RTMP_ADAPTER *pAd, UINT8 hif_idx, RX_BLK *rx_blk, PNDIS_PACKET rx_packet, UINT32 rx_length)
 {
 	UINT32 rx_pkt_type;
 
 	if (hif_idx == HIF_RX_IDX0)
-		rx_pkt_type = sanity_and_get_packet_type(pAd, GET_OS_PKT_DATAPTR(rx_packet));
+		rx_pkt_type = sanity_and_get_packet_type(pAd, GET_OS_PKT_DATAPTR(rx_packet), rx_length);
 	else
-		rx_pkt_type = sanity_and_get_packet_type(pAd, rx_packet);
+		rx_pkt_type = sanity_and_get_packet_type(pAd, rx_packet, rx_length);
+
+	/* Ring0 owns an skb; the other handlers consume raw ring1 pool data. */
+	if (hif_idx == HIF_RX_IDX0 &&
+		(rx_pkt_type != RMAC_RX_PKT_TYPE_RX_NORMAL &&
+		 rx_pkt_type != RMAC_RX_PKT_TYPE_RX_DUP_RFB)) {
+		RELEASE_NDIS_PACKET(pAd, rx_packet, NDIS_STATUS_FAILURE);
+		return NDIS_STATUS_FAILURE;
+	}
+	if (rx_pkt_type == (UINT32)-1) {
+		free_rx_buf(pAd->hdev_ctrl, hif_idx);
+		return NDIS_STATUS_FAILURE;
+	}
 
 	switch (rx_pkt_type) {
 	case RMAC_RX_PKT_TYPE_RX_NORMAL:
@@ -1863,6 +1988,9 @@ UINT32 mt_rx_pkt_process(RTMP_ADAPTER *pAd, UINT8 hif_idx, RX_BLK *rx_blk, PNDIS
 			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				("%s():Rx PktType:%d From Ring 1!!!\n", __func__, rx_pkt_type));
 			free_rx_buf(pAd->hdev_ctrl, hif_idx);
+		} else if (!rx_normal_header_valid(GET_OS_PKT_DATAPTR(rx_packet), rx_length)) {
+			RELEASE_NDIS_PACKET(pAd, rx_packet, NDIS_STATUS_FAILURE);
+			return NDIS_STATUS_FAILURE;
 		} else
 			rx_data_handler(pAd, rx_blk, rx_packet);
 		break;
@@ -1878,7 +2006,7 @@ UINT32 mt_rx_pkt_process(RTMP_ADAPTER *pAd, UINT8 hif_idx, RX_BLK *rx_blk, PNDIS
 		break;
 
 	case RMAC_RX_PKT_TYPE_RX_EVENT:
-		rx_mcu_event_handler(pAd, rx_blk, rx_packet);
+		rx_mcu_event_handler(pAd, rx_blk, rx_packet, rx_length);
 		free_rx_buf(pAd->hdev_ctrl, hif_idx);
 		break;
 
@@ -1896,6 +2024,7 @@ UINT32 mt_rx_pkt_process(RTMP_ADAPTER *pAd, UINT8 hif_idx, RX_BLK *rx_blk, PNDIS
 
 	default:
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s():Invalid PktType:%d\n", __func__, rx_pkt_type));
+		free_rx_buf(pAd->hdev_ctrl, hif_idx);
 		break;
 	}
 
@@ -5356,6 +5485,11 @@ static INT rtmp_chk_rx_err(RTMP_ADAPTER *pAd, RX_BLK *pRxBlk)
 		/* +++Add by shiang for work-around, should remove it once we correctly configure the BSSID! */
 		/* TODO: shiang-MT7603 work around!! */
 		RXD_BASE_STRUCT *rxd_base = (RXD_BASE_STRUCT *)pRxBlk->rmac_info;
+		/* One-address control frames have no transmitter address. They
+		 * cannot enter error paths which compare a transmitter key. */
+		if (!pRxBlk->Addr2 &&
+			(rxd_base->RxD2.IcvErr || rxd_base->RxD2.TkipMicErr))
+			return NDIS_STATUS_FAILURE;
 
 		if (rxd_base->RxD2.IcvErr) {
 #ifdef WIFI_DIAG
@@ -6872,7 +7006,7 @@ NDIS_STATUS rx_packet_process(
 	}
 
 #ifdef LTF_SNR_SUPPORT
-	if (IS_MT7615(pAd) && MacTableLookup(pAd, pRxBlk->Addr2)) {
+	if (IS_MT7615(pAd) && pRxBlk->Addr2 && MacTableLookup(pAd, pRxBlk->Addr2)) {
 		if (pRxBlk->rx_rate.field.MODE > MODE_CCK) {
 			pAd->Avg_LTFSNRx16 = (pAd->Avg_LTFSNR != 0) ?
 					(pRxBlk->Ofdm_SNR - pAd->Avg_LTFSNR + pAd->Avg_LTFSNRx16) :
@@ -6889,7 +7023,7 @@ NDIS_STATUS rx_packet_process(
 #endif
 
 #ifdef RATE_PRIOR_SUPPORT
-		pEntry = MacTableLookup(pAd, pRxBlk->Addr2);
+		pEntry = pRxBlk->Addr2 ? MacTableLookup(pAd, pRxBlk->Addr2) : NULL;
 		if (pEntry && FC->SubType != SUBTYPE_DATA_NULL && FC->SubType != SUBTYPE_QOS_NULL) {
 			pEntry->McsTotalRxCount++;
 			if (pRxBlk->rx_rate.field.MCS <= 3)
@@ -6943,7 +7077,7 @@ NDIS_STATUS rx_packet_process(
 
 BOOLEAN mtd_rx_done_handle(RTMP_ADAPTER *pAd)
 {
-	UINT32 RxProcessed, RxPending;
+	UINT32 RxProcessed, RxPending, rx_length;
 	BOOLEAN bReschedule = FALSE;
 	PNDIS_PACKET pkt = NULL;
 	RTMP_ARCH_OP *arch_ops = &pAd->archOps;
@@ -6975,12 +7109,12 @@ BOOLEAN mtd_rx_done_handle(RTMP_ADAPTER *pAd)
 		}
 #endif /* RTMP_MAC_PCI */
 
-		pkt = arch_ops->get_pkt_from_rx_resource(pAd, &bReschedule, &RxPending, HIF_RX_IDX0);
+		pkt = arch_ops->get_pkt_from_rx_resource(pAd, &bReschedule, &RxPending, HIF_RX_IDX0, &rx_length);
 
 		if (pkt) {
 			os_zero_mem(&rx_blk, sizeof(RX_BLK));
 			p_rx_blk = &rx_blk;
-			arch_ops->rx_pkt_process(pAd, HIF_RX_IDX0, p_rx_blk, pkt);
+			arch_ops->rx_pkt_process(pAd, HIF_RX_IDX0, p_rx_blk, pkt, rx_length);
 		} else
 			break;
 	}
@@ -7013,7 +7147,7 @@ BOOLEAN mtd_rx_done_handle(RTMP_ADAPTER *pAd)
 
 BOOLEAN rtmp_rx_done_handle(RTMP_ADAPTER *pAd)
 {
-	UINT32 RxProcessed, RxPending;
+	UINT32 RxProcessed, RxPending, rx_length;
 	BOOLEAN bReschedule = FALSE;
 	PNDIS_PACKET pRxPacket = NULL;
 	RX_BLK rxblk, *pRxBlk;
@@ -7079,7 +7213,7 @@ BOOLEAN rtmp_rx_done_handle(RTMP_ADAPTER *pAd)
 #endif /* RTMP_MAC_PCI */
 		os_zero_mem(&rxblk, sizeof(RX_BLK));
 		pRxBlk = &rxblk;
-		pRxPacket = op->get_pkt_from_rx_resource(pAd, &bReschedule, &RxPending, HIF_RX_IDX0);
+		pRxPacket = op->get_pkt_from_rx_resource(pAd, &bReschedule, &RxPending, HIF_RX_IDX0, &rx_length);
 
 		if (pRxPacket == NULL)
 			break;

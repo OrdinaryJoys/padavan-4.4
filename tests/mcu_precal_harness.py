@@ -764,7 +764,7 @@ int main(int argc,char**argv){RTMP_ADAPTER a,b;queue_item q;UCHAR *store,*image,
  if(is("outer-payload"))n=20;
   memcpy(wire,&n,4);
  if(is("outer-uninitialized"))a.MCUCtrl.flags=0;
-  AndesMTRxEventHandler(&a,is("outer-null")?NULL:wire);r=outer_processes;
+  CALL_OUTER(&a,is("outer-null")?NULL:wire,sizeof(wire));r=outer_processes;
  }else if(!strncmp(case_name,"restore-",8)){UINT32 n=fixture_stream(store,1),rxfd_offset=352,second_rxfd=1712;UINT16 bits=0;UCHAR*validation;UINT32 physical,validation_hash;
  if(is("restore-six"))n=fixture_stream(store,0x3f);
  if(is("restore-nine")||is("restore-subset-rxfd")||is("restore-duplicate-rxfd")||is("restore-missing-rxfd")){n=fixture_stream(store,0x1ff);rxfd_offset=2848;second_rxfd=4208;}
@@ -888,4 +888,5 @@ def generate_source(texts,fixture_root=None,owner_uid=0,baseline=False,disabled_
     admission='\n'.join('if(!strcmp(case_name,'+json.dumps(n)+'))known=1;'for n in names)
     call='#define CALL_STORE(p,id,data,len) ExtEventPreCalStoreProc(p,id,data'+(')'if baseline else',len)')
     validate='#define VALIDATE_STORE(p,n) '+('((void)(p),(void)(n),0)'if baseline else'rtmp_precal_records_valid(p,n)')
-    return PREFIX.replace('SOURCE_DECLARATIONS',source_declarations(texts))+'\n'+call+'\n'+validate+'\n'+'\n'.join(bodies[n]for n in BODY_ORDER if n in bodies)+'\n'+MAIN.replace('CASE_ADMISSION',admission)
+    outer='#define CALL_OUTER(p,data,len) AndesMTRxEventHandler(p,data'+(')'if baseline or disabled_oracle else',len)')
+    return PREFIX.replace('SOURCE_DECLARATIONS',source_declarations(texts))+'\n'+outer+'\n'+call+'\n'+validate+'\n'+'\n'.join(bodies[n]for n in BODY_ORDER if n in bodies)+'\n'+MAIN.replace('CASE_ADMISSION',admission)

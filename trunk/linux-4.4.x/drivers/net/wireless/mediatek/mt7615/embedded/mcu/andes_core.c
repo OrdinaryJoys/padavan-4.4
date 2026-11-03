@@ -464,9 +464,11 @@ VOID PciKickOutCmdMsgComplete(PNDIS_PACKET net_pkt)
 
 VOID AndesRxProcessCmdMsg(RTMP_ADAPTER *ad, struct cmd_msg *rx_msg)
 {
-	RX_BLK RxBlk;
-
-	mt_rx_pkt_process(ad, HIF_RX_IDX1, &RxBlk, rx_msg->net_pkt);
+	/* This queue owns a packet, not a raw ring1 pool entry. */
+	if (!rx_msg || !rx_msg->net_pkt)
+		return;
+	chip_rx_event_handler(ad, GET_OS_PKT_DATAPTR(rx_msg->net_pkt),
+		GET_OS_PKT_LEN(rx_msg->net_pkt));
 }
 
 

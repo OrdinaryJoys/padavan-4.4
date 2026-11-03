@@ -8279,8 +8279,8 @@ BOOLEAN RTMPFreeTXDUponTxDmaDone(
 	BOOLEAN ForceFree);
 
 #ifdef MT_MAC
-UINT32 pkt_alloc_fail_handle(RTMP_ADAPTER *ad, PNDIS_PACKET rx_packet);
-UINT32 mt_rx_pkt_process(RTMP_ADAPTER *, UINT8 hif_idx, RX_BLK *pRxBlk, PNDIS_PACKET pRxPacket);
+UINT32 pkt_alloc_fail_handle(RTMP_ADAPTER *ad, PNDIS_PACKET rx_packet, UINT32 rx_length);
+UINT32 mt_rx_pkt_process(RTMP_ADAPTER *, UINT8 hif_idx, RX_BLK *pRxBlk, PNDIS_PACKET pRxPacket, UINT32 rx_length);
 #endif /* MT_MAC */
 
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
@@ -11332,19 +11332,19 @@ PNDIS_PACKET mtd_pci_get_pkt_from_rx_resource(
 	RTMP_ADAPTER *pAd,
 	BOOLEAN	*pbReschedule,
 	UINT32 *pRxPending,
-	UCHAR RxRingNo);
+	UCHAR RxRingNo, UINT32 *rx_length);
 
 PNDIS_PACKET mtd_pci_get_pkt_from_rx_resource_io(
 	RTMP_ADAPTER *pAd,
 	BOOLEAN	*pbReschedule,
 	UINT32 *pRxPending,
-	UCHAR RxRingNo);
+	UCHAR RxRingNo, UINT32 *rx_length);
 
 PNDIS_PACKET pci_get_pkt_from_rx_resource(
 	RTMP_ADAPTER *pAd,
 	BOOLEAN	*pbReschedule,
 	UINT32 *pRxPending,
-	UCHAR RxRingNo);
+	UCHAR RxRingNo, UINT32 *rx_length);
 
 PNDIS_PACKET usb_get_pkt_from_rx_resource(
 	RTMP_ADAPTER *pAd,

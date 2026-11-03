@@ -107,17 +107,20 @@ INT32 chip_txs_handler(RTMP_ADAPTER *ad, RX_BLK *rx_blk, VOID *rx_packet)
 	return FALSE;
 }
 
-VOID chip_rx_event_handler(struct _RTMP_ADAPTER *ad, VOID *rx_packet)
+VOID chip_rx_event_handler(struct _RTMP_ADAPTER *ad, VOID *rx_packet, UINT32 rx_length)
 {
 	struct _RTMP_CHIP_OP *ops = hc_get_chip_ops(ad->hdev_ctrl);
+	UCHAR *data = rx_packet;
 
-	if (ops->rx_event_handler != NULL) {
+	if (!data || !ops->rx_event_handler)
+		return;
 #ifdef UNIFY_FW_CMD
-		ops->rx_event_handler(ad, rx_packet + sizeof(RXD_BASE_STRUCT));
-#else
-		ops->rx_event_handler(ad, rx_packet);
-#endif /* UNIFY_FW_CMD */
-	}
+	if (rx_length < sizeof(RXD_BASE_STRUCT))
+		return;
+	data += sizeof(RXD_BASE_STRUCT);
+	rx_length -= sizeof(RXD_BASE_STRUCT);
+#endif
+	ops->rx_event_handler(ad, data, rx_length);
 }
 
 INT chip_show_pwr_info(RTMP_ADAPTER *pAd, RTMP_STRING *arg)

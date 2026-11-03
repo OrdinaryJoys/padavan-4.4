@@ -1802,6 +1802,7 @@ VOID mt_asic_init_txrx_ring(RTMP_ADAPTER *pAd)
 		offset = i * 0x10;
 		phy_addr = RTMP_GetPhysicalAddressLow(rx_ring->Cell[0].AllocPa);
 		rx_ring->RxSwReadIdx = 0;
+		rx_ring->rx_discard = FALSE;
 		rx_ring->RxCpuIdx = RX_RING_SIZE - 1;
 		rx_ring->hw_desc_base = MT_RX_RING_BASE + offset;
 		rx_ring->hw_cidx_addr = MT_RX_RING_CIDX + offset;

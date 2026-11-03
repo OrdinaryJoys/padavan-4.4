@@ -153,7 +153,10 @@ inline VOID *alloc_rx_buf_1k(void *hif_resource)
 	RTMP_RX_RING *rx_ring = (RTMP_RX_RING *)hif_resource;
 	RTMP_DMABUF *dma_buf = &rx_ring->free_buf[rx_ring->free_buf_head];
 
-	INC_INDEX(rx_ring->free_buf_head, rx_ring->free_buf_size);
+	/* A failed reservation must not consume a FIFO slot. The caller keeps
+	 * the completed descriptor and its existing mapped owner for retry. */
+	if (dma_buf->AllocVa)
+		INC_INDEX(rx_ring->free_buf_head, rx_ring->free_buf_size);
 
 	return dma_buf->AllocVa;
 }
@@ -170,7 +173,8 @@ inline VOID *alloc_rx_buf_64k(void *hif_resource)
 	RTMP_RX_RING *rx_ring = (RTMP_RX_RING *)hif_resource;
 	RTMP_DMABUF *dma_buf = &rx_ring->free_buf_64k[rx_ring->free_buf_64k_head];
 
-	INC_INDEX(rx_ring->free_buf_64k_head, rx_ring->free_buf_64k_size);
+	if (dma_buf->AllocVa)
+		INC_INDEX(rx_ring->free_buf_64k_head, rx_ring->free_buf_64k_size);
 
 	return dma_buf->AllocVa;
 }
@@ -197,6 +201,8 @@ VOID free_rx_buf(void *hdev_ctrl, UCHAR hif_idx)
 	}
 }
 
+static UINT32 release_rx_free_buffer(void *hdev_ctrl, UINT8 hif_idx);
+
 static UINT32 alloc_rx_free_buffer(RTMP_ADAPTER *pAd, UCHAR hif_idx, UINT32 num)
 {
 	UINT32 i;
@@ -204,35 +210,46 @@ static UINT32 alloc_rx_free_buffer(RTMP_ADAPTER *pAd, UCHAR hif_idx, UINT32 num)
 	RTMP_RX_RING *rx_ring = &hif->RxRing[hif_idx];
 	RTMP_DMABUF *dma_buf;
 
+	/* Do not replace an existing pool or expose partial metadata on failure. */
+	if (!num || num >= 0xffffU || rx_ring->free_buf || rx_ring->free_buf_64k)
+		return NDIS_STATUS_FAILURE;
 	rx_ring->free_buf_head = 0;
 	rx_ring->free_buf_tail = 0;
-	rx_ring->free_buf_size = (num + 1);
-
-	os_alloc_mem(pAd, (UCHAR **)&rx_ring->free_buf, rx_ring->free_buf_size * sizeof(struct _RTMP_DMABUF));
+	rx_ring->rx_discard = FALSE;
+	rx_ring->free_buf_size = num + 1;
+	if (os_alloc_mem(pAd, (UCHAR **)&rx_ring->free_buf,
+		rx_ring->free_buf_size * sizeof(struct _RTMP_DMABUF)) != NDIS_STATUS_SUCCESS ||
+		!rx_ring->free_buf)
+		goto fail;
 	NdisZeroMemory(rx_ring->free_buf, rx_ring->free_buf_size * sizeof(struct _RTMP_DMABUF));
-
 	for (i = 0; i < rx_ring->free_buf_size; i++) {
 		dma_buf = &rx_ring->free_buf[i];
 		dma_buf->AllocSize = RX1_BUFFER_SIZE;
-		os_alloc_mem(pAd, (UCHAR **)&dma_buf->AllocVa, dma_buf->AllocSize);
+		if (os_alloc_mem(pAd, (UCHAR **)&dma_buf->AllocVa, dma_buf->AllocSize) != NDIS_STATUS_SUCCESS ||
+			!dma_buf->AllocVa)
+			goto fail;
 		NdisZeroMemory(dma_buf->AllocVa, dma_buf->AllocSize);
 	}
-
 	rx_ring->free_buf_64k_head = 0;
 	rx_ring->free_buf_64k_tail = 0;
 	rx_ring->free_buf_64k_size = 1;
-
-	os_alloc_mem(pAd, (UCHAR **)&rx_ring->free_buf_64k, rx_ring->free_buf_64k_size * sizeof(struct _RTMP_DMABUF));
+	if (os_alloc_mem(pAd, (UCHAR **)&rx_ring->free_buf_64k,
+		rx_ring->free_buf_64k_size * sizeof(struct _RTMP_DMABUF)) != NDIS_STATUS_SUCCESS ||
+		!rx_ring->free_buf_64k)
+		goto fail;
 	NdisZeroMemory(rx_ring->free_buf_64k, rx_ring->free_buf_64k_size * sizeof(struct _RTMP_DMABUF));
-
 	for (i = 0; i < rx_ring->free_buf_64k_size; i++) {
 		dma_buf = &rx_ring->free_buf_64k[i];
 		dma_buf->AllocSize = 65536;
-		os_alloc_mem(pAd, (UCHAR **)&dma_buf->AllocVa, dma_buf->AllocSize);
+		if (os_alloc_mem(pAd, (UCHAR **)&dma_buf->AllocVa, dma_buf->AllocSize) != NDIS_STATUS_SUCCESS ||
+			!dma_buf->AllocVa)
+			goto fail;
 		NdisZeroMemory(dma_buf->AllocVa, dma_buf->AllocSize);
 	}
-
-	return 0;
+	return NDIS_STATUS_SUCCESS;
+fail:
+	release_rx_free_buffer(pAd->hdev_ctrl, hif_idx);
+	return NDIS_STATUS_RESOURCES;
 }
 
 #ifdef RESOURCE_PRE_ALLOC
@@ -246,6 +263,7 @@ static UINT32 reset_rx_free_buffer(void *hdev_ctrl, UINT8 hif_idx)
 
 	rx_ring->free_buf_head = 0;
 	rx_ring->free_buf_tail = 0;
+	rx_ring->rx_discard = FALSE;
 	rx_ring->free_buf_size = (num + 1);
 
 	for (i = 0; i < rx_ring->free_buf_size; i++) {
@@ -271,22 +289,27 @@ static UINT32 release_rx_free_buffer(void *hdev_ctrl, UINT8 hif_idx)
 	UINT32 i;
 	struct _PCI_HIF_T *hif = hc_get_hif_ctrl(hdev_ctrl);
 	RTMP_RX_RING *rx_ring = &hif->RxRing[hif_idx];
-	RTMP_DMABUF *dma_buf;
 
-	for (i = 0; i < rx_ring->free_buf_size; i++) {
-		dma_buf = &rx_ring->free_buf[i];
-		os_free_mem(dma_buf->AllocVa);
+	/* Allocation failure and later device teardown may both reach here. */
+	if (rx_ring->free_buf) {
+		for (i = 0; i < rx_ring->free_buf_size; i++)
+			if (rx_ring->free_buf[i].AllocVa)
+				os_free_mem(rx_ring->free_buf[i].AllocVa);
+		os_free_mem(rx_ring->free_buf);
 	}
-
-	os_free_mem(rx_ring->free_buf);
-
-	for (i = 0; i < rx_ring->free_buf_64k_size; i++) {
-		dma_buf = &rx_ring->free_buf_64k[i];
-		os_free_mem(dma_buf->AllocVa);
+	if (rx_ring->free_buf_64k) {
+		for (i = 0; i < rx_ring->free_buf_64k_size; i++)
+			if (rx_ring->free_buf_64k[i].AllocVa)
+				os_free_mem(rx_ring->free_buf_64k[i].AllocVa);
+		os_free_mem(rx_ring->free_buf_64k);
 	}
-
-	os_free_mem(rx_ring->free_buf_64k);
-
+	rx_ring->free_buf = NULL;
+	rx_ring->free_buf_64k = NULL;
+	rx_ring->free_buf_size = 0;
+	rx_ring->free_buf_64k_size = 0;
+	rx_ring->free_buf_head = rx_ring->free_buf_tail = 0;
+	rx_ring->free_buf_64k_head = rx_ring->free_buf_64k_tail = 0;
+	rx_ring->rx_discard = FALSE;
 	return 0;
 }
 
@@ -491,7 +514,9 @@ VOID RTMPFreeTxRxRingMemory(struct _RTMP_ADAPTER *pAd)
 		if (num == HIF_RX_IDX1)
 			release_rx_free_buffer(pAd->hdev_ctrl, num);
 
-		os_free_mem(hif->RxRing[num].Cell);
+		if (hif->RxRing[num].Cell)
+			os_free_mem(hif->RxRing[num].Cell);
+		hif->RxRing[num].Cell = NULL;
 	}
 
 	desc_ring_free(pAd->hdev_ctrl, &hif->CtrlDescRing);
@@ -508,7 +533,9 @@ VOID RTMPFreeTxRxRingMemory(struct _RTMP_ADAPTER *pAd)
 
 		NdisZeroMemory(&hif->TxBufSpace[num], sizeof(RTMP_DMABUF));
 		desc_ring_free(pAd->hdev_ctrl, &hif->TxDescRing[num]);
-		os_free_mem(hif->TxRing[num].Cell);
+		if (hif->TxRing[num].Cell)
+			os_free_mem(hif->TxRing[num].Cell);
+		hif->TxRing[num].Cell = NULL;
 
 	}
 
@@ -766,6 +793,7 @@ NDIS_STATUS RTMPInitTxRxRingMemory(RTMP_ADAPTER *pAd)
 		}
 
 		hif->RxRing[index].RxSwReadIdx = 0;
+		hif->RxRing[index].rx_discard = FALSE;
 		hif->RxRing[index].RxCpuIdx = RxRingSize - 1;
 		hif->RxRing[index].RxRingSize = RxRingSize;
 		hif->RxRing[index].RxBufferSize = RxBufferSize;
@@ -829,7 +857,11 @@ NDIS_STATUS RTMPAllocTxRxRingMemory(RTMP_ADAPTER *pAd)
 				break;
 			}
 
-			os_alloc_mem(pAd, (UCHAR **)&pTxRing->Cell, tx_ring_size * sizeof(struct _RTMP_DMACB));
+			if (os_alloc_mem(pAd, (UCHAR **)&pTxRing->Cell, tx_ring_size * sizeof(struct _RTMP_DMACB)) != NDIS_STATUS_SUCCESS ||
+				!pTxRing->Cell) {
+				Status = NDIS_STATUS_RESOURCES;
+				break;
+			}
 			NdisZeroMemory(pTxRing->Cell, tx_ring_size * sizeof(struct _RTMP_DMACB));
 		}
 
@@ -879,19 +911,27 @@ NDIS_STATUS RTMPAllocTxRxRingMemory(RTMP_ADAPTER *pAd)
 
 			/* Allocate RX Free Buf */
 			if (num == HIF_RX_IDX1) {
-				alloc_rx_free_buffer(pAd, num, RxRingSize);
+				if (alloc_rx_free_buffer(pAd, num, RxRingSize) != NDIS_STATUS_SUCCESS) {
+					Status = NDIS_STATUS_RESOURCES;
+					break;
+				}
 			}
 
 			MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_TRACE, ("Rx[%d] Ring: total %d bytes allocated\n",
 				num, (INT)hif->RxDescRing[num].AllocSize));
 
 
-			os_alloc_mem(pAd, (UCHAR **)&pRxRing->Cell, RxRingSize * sizeof(struct _RTMP_DMACB));
+			if (os_alloc_mem(pAd, (UCHAR **)&pRxRing->Cell, RxRingSize * sizeof(struct _RTMP_DMACB)) != NDIS_STATUS_SUCCESS ||
+				!pRxRing->Cell) {
+				Status = NDIS_STATUS_RESOURCES;
+				break;
+			}
 			NdisZeroMemory(pRxRing->Cell, RxRingSize * sizeof(struct _RTMP_DMACB));
 		}
 	} while (FALSE);
 
 	if (Status != NDIS_STATUS_SUCCESS) {
+		RTMPFreeTxRxRingMemory(pAd);
 		/* Log error inforamtion*/
 		NdisWriteErrorLogEntry(
 			pAd->AdapterHandle,
@@ -1009,7 +1049,11 @@ NDIS_STATUS RTMPAllocTxRxRingMemory(RTMP_ADAPTER *pAd)
 			*/
 			pTxRing = &hif->TxRing[num];
 
-			os_alloc_mem(pAd, (UCHAR **)&pTxRing->Cell, tx_ring_size * sizeof(struct _RTMP_DMACB));
+			if (os_alloc_mem(pAd, (UCHAR **)&pTxRing->Cell, tx_ring_size * sizeof(struct _RTMP_DMACB)) != NDIS_STATUS_SUCCESS ||
+				!pTxRing->Cell) {
+				Status = NDIS_STATUS_RESOURCES;
+				break;
+			}
 			NdisZeroMemory(pTxRing->Cell, tx_ring_size * sizeof(struct _RTMP_DMACB));
 
 			for (index = 0; index < tx_ring_size; index++) {
@@ -1221,10 +1265,17 @@ NDIS_STATUS RTMPAllocTxRxRingMemory(RTMP_ADAPTER *pAd)
 
 			/* Allocate RX Free Buf */
 			if (num == HIF_RX_IDX1) {
-				alloc_rx_free_buffer(pAd, num, RxRingSize);
+				if (alloc_rx_free_buffer(pAd, num, RxRingSize) != NDIS_STATUS_SUCCESS) {
+					Status = NDIS_STATUS_RESOURCES;
+					break;
+				}
 			}
 
-			os_alloc_mem(pAd, (UCHAR **)&rx_ring->Cell, RxRingSize * sizeof(struct _RTMP_DMACB));
+			if (os_alloc_mem(pAd, (UCHAR **)&rx_ring->Cell, RxRingSize * sizeof(struct _RTMP_DMACB)) != NDIS_STATUS_SUCCESS ||
+				!rx_ring->Cell) {
+				Status = NDIS_STATUS_RESOURCES;
+				break;
+			}
 			NdisZeroMemory(rx_ring->Cell, RxRingSize * sizeof(struct _RTMP_DMACB));
 
 			for (index = 0; index < RxRingSize; index++) {
@@ -1288,6 +1339,9 @@ NDIS_STATUS RTMPAllocTxRxRingMemory(RTMP_ADAPTER *pAd)
 		}
 	}	while (FALSE);
 
+	if (Status != NDIS_STATUS_SUCCESS)
+		goto alloc_done;
+
 	NdisZeroMemory(&pAd->FragFrame, sizeof(FRAGMENT_FRAME));
 	pAd->FragFrame.pFragPacket = RTMP_AllocateFragPacketBuffer(pAd, RX_BUFFER_NORMSIZE);
 
@@ -1338,6 +1392,7 @@ NDIS_STATUS RTMPAllocTxRxRingMemory(RTMP_ADAPTER *pAd)
 		}
 
 		hif->RxRing[index].RxSwReadIdx = 0;
+		hif->RxRing[index].rx_discard = FALSE;
 		hif->RxRing[index].RxCpuIdx = RxRingSize - 1;
 		hif->RxRing[index].RxRingSize = RxRingSize;
 		hif->RxRing[index].RxBufferSize = RxBufferSize;
@@ -1345,6 +1400,7 @@ NDIS_STATUS RTMPAllocTxRxRingMemory(RTMP_ADAPTER *pAd)
 	}
 
 	pAd->PrivateInfo.TxRingFullCnt = 0;
+alloc_done:
 	MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_OFF, ("<-- RTMPAllocTxRxRingMemory, Status=%x\n", Status));
 	return Status;
 }
@@ -1374,9 +1430,13 @@ VOID RTMPFreeTxRxRingMemory(struct _RTMP_ADAPTER *pAd)
 	/* Free Tx Ring Packet*/
 	for (index = 0; index < num_of_tx_ring; index++) {
 		pTxRing = &hif->TxRing[index];
+		if (!pTxRing->Cell)
+			continue;
 
 		for (j = 0; j < tx_ring_size; j++) {
 			dma_cb = &pTxRing->Cell[j];
+			if (!dma_cb->AllocVa)
+				continue;
 #ifdef RT_BIG_ENDIAN
 			pDestTxD  = (TXD_STRUC *)(dma_cb->AllocVa);
 			NdisMoveMemory(&tx_hw_info[0], (UCHAR *)pDestTxD, TXD_SIZE);
@@ -1420,9 +1480,10 @@ VOID RTMPFreeTxRxRingMemory(struct _RTMP_ADAPTER *pAd)
 #endif /* RT_BIG_ENDIAN */
 		}
 		os_free_mem(pTxRing->Cell);
+		pTxRing->Cell = NULL;
 	}
 
-	{
+	if (hif->CtrlDescRing.AllocVa) {
 		RTMP_CTRL_RING *pCtrlRing = &hif->CtrlRing;
 
 		NdisAcquireSpinLock(&hif->CtrlRingLock);
@@ -1477,7 +1538,7 @@ VOID RTMPFreeTxRxRingMemory(struct _RTMP_ADAPTER *pAd)
 		else
 			RxRingSize = rx1_ring_size;
 
-		for (index = RxRingSize - 1; index >= 0; index--) {
+		for (index = RxRingSize - 1; hif->RxRing[j].Cell && index >= 0; index--) {
 			dma_cb = &hif->RxRing[j].Cell[index];
 
 			if ((dma_cb->DmaBuf.AllocVa) && (dma_cb->pNdisPacket)) {
@@ -1506,7 +1567,9 @@ VOID RTMPFreeTxRxRingMemory(struct _RTMP_ADAPTER *pAd)
 		if (j == HIF_RX_IDX1)
 			release_rx_free_buffer(pAd->hdev_ctrl, j);
 
-		os_free_mem(hif->RxRing[j].Cell);
+		if (hif->RxRing[j].Cell)
+			os_free_mem(hif->RxRing[j].Cell);
+		hif->RxRing[j].Cell = NULL;
 
 		if (hif->RxDescRing[j].AllocVa)
 			RtmpFreeDescBuf(((POS_COOKIE)(pAd->OS_Cookie))->pDev,
@@ -1750,6 +1813,7 @@ VOID RTMPRingCleanUp(RTMP_ADAPTER *pAd, UCHAR RingType)
 
 			HIF_IO_READ32(pAd, pRxRing->hw_didx_addr, &pRxRing->RxDmaIdx);
 			pRxRing->RxSwReadIdx = pRxRing->RxDmaIdx;
+			pRxRing->rx_discard = FALSE;
 			pRxRing->RxCpuIdx = ((pRxRing->RxDmaIdx == 0) ? (RxRingSize - 1) : (pRxRing->RxDmaIdx - 1));
 			HIF_IO_WRITE32(pAd, pRxRing->hw_cidx_addr, pRxRing->RxCpuIdx);
 			RTMP_IRQ_UNLOCK(lock, IrqFlags);

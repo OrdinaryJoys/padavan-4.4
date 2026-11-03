@@ -797,6 +797,7 @@ typedef struct _RTMP_RX_RING {
 	UINT16 free_buf_size;
 	RTMP_DMABUF *free_buf;
 	UINT8 cur_free_buf_len;
+	BOOLEAN rx_discard; /* discard damaged scatter frame through LS0 */
 	UINT16 RxBufferSize;
 	UINT16 sw_read_idx_inc;
 	UINT32 RxCpuIdx;

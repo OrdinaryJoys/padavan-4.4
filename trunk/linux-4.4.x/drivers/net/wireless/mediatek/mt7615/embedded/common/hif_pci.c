@@ -18,6 +18,13 @@
 
 #include "rt_config.h"
 
+static BOOLEAN rx_dma_cell_valid(RTMP_DMACB *cell, RXD_STRUC *rxd)
+{
+	return cell && rxd && cell->pNdisPacket && cell->DmaBuf.AllocVa &&
+		cell->DmaBuf.AllocSize && rxd->SDL0 &&
+		rxd->SDL0 <= cell->DmaBuf.AllocSize;
+}
+
 #ifdef RX_SCATTER
 static INT rx_scatter_info(
 	IN RTMP_RX_RING * pRxRing,
@@ -1254,13 +1261,14 @@ PNDIS_PACKET ExpandPacketBuffer(
 		else
 			os_alloc_mem(pAd, (PUCHAR *)&new_pkt, skb_len);
 
-		*new_skb_len = skb_len;
+		if (new_pkt)
+			*new_skb_len = skb_len;
 
 		if (new_pkt && original_pkt)
 			os_move_mem(((PVOID)new_pkt + SKB_BUF_HEADROOM_RSV),
 				((PVOID)original_pkt + SKB_BUF_HEADROOM_RSV), original_pkt_len);
 
-		if (original_pkt)
+		if (new_pkt && original_pkt)
 			DEV_FREE_FRAG_BUF(original_pkt);
 
 		break;
@@ -1273,7 +1281,7 @@ PNDIS_PACKET ExpandPacketBuffer(
 		if (new_pkt && original_pkt)
 			os_move_mem((PVOID)new_pkt, ((PVOID)original_pkt), original_pkt_len);
 
-		if (original_pkt)
+		if (new_pkt && original_pkt)
 			free_rx_buf_1k(hif_resource);
 
 		break;
@@ -1293,285 +1301,218 @@ PNDIS_PACKET ExpandPacketBuffer(
 	return new_pkt;
 }
 
-static INT rx_scatter_info(
-	IN RTMP_RX_RING *pRxRing,
-	IN RXD_STRUC *pRxD,
-	OUT UINT *pPktSize)
+
+
+static INT rx_scatter_info(RTMP_RX_RING *pRxRing, RXD_STRUC *pRxD, UINT *pPktSize)
 {
 #ifdef RT_BIG_ENDIAN
 	RXD_STRUC *pDestRxD;
 	UCHAR rx_hw_info[RXD_SIZE];
 #endif
-	UINT LoopCnt;
-	INT32 RxCellIdx;
-	RTMP_DMACB *pCurRxCell = NULL;
-	RXD_STRUC *pCurRxD;
-
-	LoopCnt = 0;
+	UINT count = 0, total = 0;
+	UINT32 index;
+	RTMP_DMACB *cell;
+	RXD_STRUC *rxd;
 
 	*pPktSize = 0;
-	RxCellIdx =  pRxRing->RxSwReadIdx;
-
-	/* walk through rx-ring and find the rx-cell content LS0 to be 1. */
-	do {
-		pCurRxCell = &pRxRing->Cell[RxCellIdx];
-		/* flush dcache if no consistent memory is supported */
-		RTMP_DCACHE_FLUSH(pCurRxCell->AllocPa, RXD_SIZE);
+	if (!pRxRing || !pRxRing->Cell || !pRxRing->RxRingSize ||
+		pRxRing->RxSwReadIdx >= pRxRing->RxRingSize)
+		return -1;
+	index = pRxRing->RxSwReadIdx;
+	while (count < pRxRing->RxRingSize) {
+		cell = &pRxRing->Cell[index];
+		RTMP_DCACHE_FLUSH(cell->AllocPa, RXD_SIZE);
 #ifdef RT_BIG_ENDIAN
-		pDestRxD = (RXD_STRUC *)pCurRxCell->AllocVa;
-		/* RxD = *pDestRxD; */
-		NdisMoveMemory(&rx_hw_info[0], pDestRxD, RXD_SIZE);
-		pCurRxD = (RXD_STRUC *)&rx_hw_info[0];
-		RTMPDescriptorEndianChange((PUCHAR)pCurRxD, TYPE_RXD);
+		pDestRxD = (RXD_STRUC *)cell->AllocVa;
+		NdisMoveMemory(rx_hw_info, pDestRxD, RXD_SIZE);
+		rxd = (RXD_STRUC *)rx_hw_info;
+		RTMPDescriptorEndianChange((PUCHAR)rxd, TYPE_RXD);
 #else
-		/* Point to Rx indexed rx ring descriptor */
-		pCurRxD = (RXD_STRUC *)pCurRxCell->AllocVa;
+		rxd = (RXD_STRUC *)cell->AllocVa;
 #endif
-
-		if (pCurRxD->DDONE == 0) {
-			LoopCnt = 0;
-			break;
+		if (!rxd->DDONE)
+			return 0;
+		if (!rx_dma_cell_valid(cell, rxd) || rxd->SDL0 > 65536U - total)
+			return -1;
+		total += rxd->SDL0;
+		count++;
+		if (rxd->LS0) {
+			*pPktSize = total;
+			return count;
 		}
-
-		*pPktSize += pCurRxD->SDL0;
-		LoopCnt++;
-
-		/* find the last pice of rx scattering. */
-		if (pCurRxD->LS0 == 1) {
-			break;
-		}
-
-		INC_RING_INDEX(RxCellIdx, pRxRing->RxRingSize);
-	} while (TRUE);
-
-	return LoopCnt;
+		INC_RING_INDEX(index, pRxRing->RxRingSize);
+	}
+	return -1;
 }
 
-static INT rx_scatter_info_io(
-	struct _RTMP_RX_RING *pRxRing,
-	RXD_STRUC *pRxD,
-	UINT *pPktSize)
+static INT rx_scatter_info_io(RTMP_RX_RING *pRxRing, RXD_STRUC *pRxD, UINT *pPktSize)
 {
 #ifdef RT_BIG_ENDIAN
 	RXD_STRUC *pDestRxD;
 	UCHAR rx_hw_info[RXD_SIZE];
 #endif
-	UINT LoopCnt;
-	INT32 RxCellIdx;
-	RTMP_DMACB *pCurRxCell = NULL;
-	RXD_STRUC *pCurRxD;
-	UINT isLsPktFound = FALSE;
-
-	LoopCnt = 0;
+	UINT count = 0, total = 0;
+	UINT32 index;
+	RTMP_DMACB *cell;
+	RXD_STRUC *rxd;
 
 	*pPktSize = 0;
-	RxCellIdx =  pRxRing->RxSwReadIdx;
+	if (!pRxRing || !pRxRing->Cell || !pRxRing->RxRingSize ||
+		pRxRing->RxSwReadIdx >= pRxRing->RxRingSize)
+		return -1;
+	index = pRxRing->RxSwReadIdx;
+	while (count < pRxRing->RxRingSize) {
+		if (index == pRxRing->RxDmaIdx)
+			return 0;
+		cell = &pRxRing->Cell[index];
+		RTMP_DCACHE_FLUSH(cell->AllocPa, RXD_SIZE);
+#ifdef RT_BIG_ENDIAN
+		pDestRxD = (RXD_STRUC *)cell->AllocVa;
+		NdisMoveMemory(rx_hw_info, pDestRxD, RXD_SIZE);
+		rxd = (RXD_STRUC *)rx_hw_info;
+		RTMPDescriptorEndianChange((PUCHAR)rxd, TYPE_RXD);
+#else
+		rxd = (RXD_STRUC *)cell->AllocVa;
+#endif
+		if (!rxd->DDONE)
+			return 0;
+		if (!rx_dma_cell_valid(cell, rxd) || rxd->SDL0 > 65536U - total)
+			return -1;
+		total += rxd->SDL0;
+		count++;
+		if (rxd->LS0) {
+			*pPktSize = total;
+			return count;
+		}
+		INC_RING_INDEX(index, pRxRing->RxRingSize);
+	}
+	return -1;
+}
 
-	/* walk through rx-ring and find the rx-cell content LS0 to be 1. */
-	do {
-		if (RxCellIdx == pRxRing->RxDmaIdx) {
-			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_INFO, ("%s: RxCellIdx == pRxRing->RxDmaIdx\n", __func__));
-			if (pRxD->LS0 == 0) {
-				MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_INFO, ("%s: pRxD->LS0 == 0\n", __func__));
-				LoopCnt = 0;
+static INT rx_scatter_gather(RTMP_ADAPTER *pAd, UCHAR hif_idx,
+	RTMP_DMACB *pRxCell, RXD_STRUC *pRxD, UINT scatterCnt,
+	UINT pktSize, UINT *skb_data_len)
+{
+#ifdef RT_BIG_ENDIAN
+	RXD_STRUC *dest;
+	UCHAR rx_hw_info[RXD_SIZE];
+#endif
+	RTMP_RX_RING *ring = &pAd->PciHif.RxRing[hif_idx];
+	RTMP_DMACB *cell;
+	RXD_STRUC *rxd;
+	PNDIS_PACKET expanded, replacement;
+	VOID *new_va;
+	NDIS_PHYSICAL_ADDRESS new_pa;
+	UINT count, offset, checked_size;
+	UINT32 index, previous;
+	BOOLEAN dropped = FALSE;
+
+	if (!pRxCell || !pRxD || !skb_data_len || scatterCnt < 2 ||
+		scatterCnt > ring->RxRingSize || pktSize > 65536U ||
+		rx_scatter_info(ring, pRxD, &checked_size) != (INT)scatterCnt ||
+		checked_size != pktSize)
+		return 0;
+	offset = pRxD->SDL0;
+#ifdef CONFIG_WIFI_BUILD_SKB
+	if (hif_idx == HIF_RX_IDX0) {
+		expanded = ExpandPacketBuffer(pAd, ring, DYNAMIC_PAGE_ALLOC,
+			pRxCell->pNdisPacket, offset, pktSize, skb_data_len);
+		if (!expanded)
+			return 0;
+		pRxCell->pNdisPacket = expanded;
+		pRxCell->DmaBuf.AllocVa = expanded + SKB_BUF_HEADROOM_RSV;
+		offset += SKB_BUF_HEADROOM_RSV;
+	} else
+#else
+	if (hif_idx == HIF_RX_IDX0) {
+		/* ExpandPacket frees its input even on failure. Allocate first so
+		 * the caller still owns its original packet when allocation fails. */
+		expanded = RTMP_AllocateFragPacketBuffer(pAd, pktSize);
+		if (!expanded)
+			return 0;
+		memcpy(OS_PKT_TAIL_BUF_EXTEND(expanded, offset),
+			pRxCell->DmaBuf.AllocVa, offset);
+		RELEASE_NDIS_PACKET(pAd, pRxCell->pNdisPacket, NDIS_STATUS_SUCCESS);
+		pRxCell->pNdisPacket = expanded;
+		pRxCell->DmaBuf.AllocVa = GET_OS_PKT_DATAPTR(expanded);
+	} else
+#endif
+	{
+		expanded = ExpandPacketBuffer(pAd, ring, PRE_SLAB_ALLOC,
+			pRxCell->pNdisPacket, offset, pktSize, skb_data_len);
+		if (!expanded)
+			return 0;
+		pRxCell->pNdisPacket = expanded;
+		pRxCell->DmaBuf.AllocVa = expanded;
+		ring->cur_free_buf_len = FREE_BUF_64k;
+	}
+	index = ring->RxSwReadIdx;
+	for (count = 1; count < scatterCnt; count++) {
+		previous = index;
+		INC_RING_INDEX(index, ring->RxRingSize);
+		cell = &ring->Cell[index];
+#ifdef RT_BIG_ENDIAN
+		dest = (RXD_STRUC *)cell->AllocVa;
+		NdisMoveMemory(rx_hw_info, dest, RXD_SIZE);
+		rxd = (RXD_STRUC *)rx_hw_info;
+		RTMPDescriptorEndianChange((PUCHAR)rxd, TYPE_RXD);
+#else
+		rxd = (RXD_STRUC *)cell->AllocVa;
+#endif
+		/* Reserve before releasing this cell's allocation/mapping. If any
+		 * reserve fails, discard the frame and recycle the remaining owned
+		 * mappings without touching their data or allocating more memory. */
+		replacement = NULL;
+		if (!dropped)
+			replacement = RTMP_AllocateRxPacketBuffer(ring,
+				((POS_COOKIE)pAd->OS_Cookie)->pDev,
+				hif_idx == HIF_RX_IDX0 ? DYNAMIC_PAGE_ALLOC : PRE_SLAB_ALLOC,
+				cell->DmaBuf.AllocSize, &new_va, &new_pa);
+		if (!replacement) {
+			dropped = TRUE;
+			if (hif_idx == HIF_RX_IDX1) {
+				/* The cyclic pool must retain FIFO ownership. Do not skip
+				 * this still-owned slot or advance beyond missing storage. */
+				ring->RxSwReadIdx = previous;
+				ring->rx_discard = TRUE;
+				return -1;
 			}
-
-			break;
-		}
-
-		pCurRxCell = &pRxRing->Cell[RxCellIdx];
-		/* flush dcache if no consistent memory is supported */
-		RTMP_DCACHE_FLUSH(pCurRxCell->AllocPa, RXD_SIZE);
-#ifdef RT_BIG_ENDIAN
-		pDestRxD = (RXD_STRUC *)pCurRxCell->AllocVa;
-		/* RxD = *pDestRxD; */
-		NdisMoveMemory(&rx_hw_info[0], pDestRxD, RXD_SIZE);
-		pCurRxD = (RXD_STRUC *)&rx_hw_info[0];
-		RTMPDescriptorEndianChange((PUCHAR)pCurRxD, TYPE_RXD);
-#else
-		/* Point to Rx indexed rx ring descriptor */
-		pCurRxD = (RXD_STRUC *)pCurRxCell->AllocVa;
-#endif
-
-		if (pCurRxD->DDONE == 0) {
-			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_INFO, ("%s: pCurRxD->DDONE == 0 \n", __func__));
-			break;
-		}
-
-		*pPktSize += pCurRxD->SDL0;
-		LoopCnt++;
-		INC_RING_INDEX(RxCellIdx, pRxRing->RxRingSize);
-
-		/* find the last pice of rx scattering. */
-		if (pCurRxD->LS0 == 1) {
-			isLsPktFound = TRUE;
-			break;
-		}
-	} while (TRUE);
-
-	return LoopCnt;
-}
-
-static INT rx_scatter_gather(
-	RTMP_ADAPTER *pAd,
-	UCHAR hif_idx,
-	RTMP_DMACB *pRxCell,
-	RXD_STRUC *pRxD,
-	UINT scatterCnt,
-	UINT pktSize,
-	UINT *skb_data_len)
-{
-#ifdef RT_BIG_ENDIAN
-	RXD_STRUC *pDestRxD;
-	UCHAR rx_hw_info[RXD_SIZE];
-#endif
-	UINT LoopCnt;
-	INT32 RxCellIdx;
-	UINT32 buf_idx;
-
-	RTMP_DMACB *pCurRxCell = NULL;
-	RXD_STRUC *pCurRxD;
-	PNDIS_PACKET pRxCellPacket;
-	RTMP_RX_RING *pRxRing = &pAd->PciHif.RxRing[hif_idx];
-
-	if (pRxRing == NULL || pRxCell == NULL || pRxD == NULL) {
-		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_INFO, ("%s: pRxRing == NULL || pRxCell == NULL\
-					|| pRxD == NULL\n", __func__));
-		return FALSE;
-	}
-
-	/* keep pRxCell value and replace pRxCell->pNdisPacket with expand skb buffer. */
-	pRxCellPacket = pRxCell->pNdisPacket;
-
-	if (pRxCellPacket == NULL) {
-		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_INFO, ("%s: pRxCellPacket == NULL\n", __func__));
-		return FALSE;
-	}
-
-	buf_idx = pRxD->SDL0;
+		} else {
+			PCI_UNMAP_SINGLE(pAd, cell->DmaBuf.AllocPa,
+				cell->DmaBuf.AllocSize, RTMP_PCI_DMA_FROMDEVICE);
+			RTMP_DCACHE_FLUSH(cell->DmaBuf.AllocPa, cell->DmaBuf.AllocSize);
 #ifdef CONFIG_WIFI_BUILD_SKB
-	if (hif_idx == HIF_RX_IDX0) {
-		pRxCell->pNdisPacket = ExpandPacketBuffer(pAd, pRxRing, DYNAMIC_PAGE_ALLOC,
-						pRxCellPacket, buf_idx, pktSize, skb_data_len);
-
-		buf_idx += (SKB_BUF_HEADROOM_RSV);
-
-		if (pRxCell->pNdisPacket != NULL) {
-			pRxCell->DmaBuf.AllocVa = (PVOID)(pRxCell->pNdisPacket)
-							+ SKB_BUF_HEADROOM_RSV;
-		}
-	} else if (hif_idx == HIF_RX_IDX1) {
-		pRxCell->pNdisPacket = ExpandPacketBuffer(pAd, pRxRing, PRE_SLAB_ALLOC,
-						pRxCellPacket, buf_idx, pktSize, skb_data_len);
-
-		if (pRxCell->pNdisPacket != NULL) {
-			pRxCell->DmaBuf.AllocVa = (PVOID)(pRxCell->pNdisPacket);
-		}
-
-		pRxRing->cur_free_buf_len = FREE_BUF_64k;
-	}
-
-#else  /*CONFIG_WIFI_BUILD_SKB*/
-	if (hif_idx == HIF_RX_IDX0) {
-		OS_PKT_TAIL_BUF_EXTEND(pRxCellPacket, pRxD->SDL0);
-
-		pRxCell->pNdisPacket = ExpandPacket(NULL, pRxCellPacket, 0, pktSize);
-
-		if (pRxCell->pNdisPacket != NULL)
-			pRxCell->DmaBuf.AllocVa = GET_OS_PKT_DATAPTR(pRxCell->pNdisPacket);
-	} else if (hif_idx == HIF_RX_IDX1) {
-		pRxCell->pNdisPacket = ExpandPacketBuffer(pAd, pRxRing, PRE_SLAB_ALLOC,
-						pRxCellPacket, buf_idx, pktSize, skb_data_len);
-
-		if (pRxCell->pNdisPacket != NULL)
-			pRxCell->DmaBuf.AllocVa = (PVOID)(pRxCell->pNdisPacket);
-
-		pRxRing->cur_free_buf_len = FREE_BUF_64k;
-	}
-#endif  /*CONFIG_WIFI_BUILD_SKB*/
-	else
-		pRxCell->DmaBuf.AllocVa = NULL;
-
-	if (pRxCell->pNdisPacket == NULL) {
-		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_INFO, ("%s: pRxCell->pNdisPacket == NULL\n", __func__));
-		return TRUE;
-	}
-
-	RxCellIdx =  pRxRing->RxSwReadIdx;
-
-	for (LoopCnt = 0; LoopCnt < (scatterCnt - 1); LoopCnt++) {
-		INC_RING_INDEX(RxCellIdx, pRxRing->RxRingSize);
-		pCurRxCell = &pRxRing->Cell[RxCellIdx];
-		/* return tokens of all rx scatter-gather cells. */
-		PCI_UNMAP_SINGLE(pAd, pCurRxCell->DmaBuf.AllocPa,
-						 pCurRxCell->DmaBuf.AllocSize,
-						 RTMP_PCI_DMA_FROMDEVICE);
-		/* flush dcache if no consistent memory is supported */
-		RTMP_DCACHE_FLUSH(pCurRxCell->DmaBuf.AllocPa, pCurRxCell->DmaBuf.AllocSize);
-#ifdef RT_BIG_ENDIAN
-		pDestRxD = (RXD_STRUC *)pCurRxCell->AllocVa;
-		/* RxD = *pDestRxD; */
-		NdisMoveMemory(&rx_hw_info[0], pDestRxD, RXD_SIZE);
-		pCurRxD = (RXD_STRUC *)&rx_hw_info[0];
-		RTMPDescriptorEndianChange((PUCHAR)pCurRxD, TYPE_RXD);
+			memcpy(expanded + offset, cell->DmaBuf.AllocVa, rxd->SDL0);
 #else
-		/* Point to Rx indexed rx ring descriptor */
-		pCurRxD = (RXD_STRUC *)pCurRxCell->AllocVa;
+			if (hif_idx == HIF_RX_IDX0)
+				memcpy(OS_PKT_TAIL_BUF_EXTEND(expanded, rxd->SDL0), cell->DmaBuf.AllocVa, rxd->SDL0);
+			else
+				memcpy(expanded + offset, cell->DmaBuf.AllocVa, rxd->SDL0);
 #endif
+			offset += rxd->SDL0;
+			if (hif_idx == HIF_RX_IDX0) {
 #ifdef CONFIG_WIFI_BUILD_SKB
-		memcpy((pRxCell->pNdisPacket + buf_idx),
-		    (VOID *)(pCurRxCell->DmaBuf.AllocVa), pCurRxD->SDL0);
-
-		buf_idx += pCurRxD->SDL0;
-#else	/* CONFIG_WIFI_BUILD_SKB */
-		if (hif_idx == HIF_RX_IDX0) {
-			memcpy(OS_PKT_TAIL_BUF_EXTEND(pRxCell->pNdisPacket, pCurRxD->SDL0),
-				   (VOID *)(pCurRxCell->DmaBuf.AllocVa), pCurRxD->SDL0);
-		} else if (hif_idx == HIF_RX_IDX1) {
-			memcpy((pRxCell->pNdisPacket + buf_idx),
-				(VOID *)(pCurRxCell->DmaBuf.AllocVa), pCurRxD->SDL0);
-
-			buf_idx += pCurRxD->SDL0;
-		}
-#endif  /* CONFIG_WIFI_BUILD_SKB */
-		/* update done bit of all rx scatter-gather cells to zero. */
-
-		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_INFO, ("%s: pCurRxD->SDL0 = %d, \n", __func__, pCurRxD->SDL0));
-
-		if (hif_idx == HIF_RX_IDX0) {
-#ifdef CONFIG_WIFI_BUILD_SKB
-			DEV_FREE_FRAG_BUF(pCurRxCell->pNdisPacket);
+				DEV_FREE_FRAG_BUF(cell->pNdisPacket);
 #else
-			RELEASE_NDIS_PACKET(pAd, pCurRxCell->pNdisPacket, NDIS_STATUS_SUCCESS);
+				RELEASE_NDIS_PACKET(pAd, cell->pNdisPacket, NDIS_STATUS_SUCCESS);
 #endif
-
-			pCurRxCell->pNdisPacket = RTMP_AllocateRxPacketBuffer(pRxRing,
-					((POS_COOKIE)(pAd->OS_Cookie))->pDev,
-					DYNAMIC_PAGE_ALLOC,
-					pCurRxCell->DmaBuf.AllocSize,
-					&pCurRxCell->DmaBuf.AllocVa, &pCurRxCell->DmaBuf.AllocPa);
-		} else if (hif_idx == HIF_RX_IDX1) {
-			free_rx_buf_1k(pRxRing);
-			pCurRxCell->pNdisPacket = RTMP_AllocateRxPacketBuffer(pRxRing,
-					((POS_COOKIE)(pAd->OS_Cookie))->pDev,
-					PRE_SLAB_ALLOC,
-					pCurRxCell->DmaBuf.AllocSize,
-					&pCurRxCell->DmaBuf.AllocVa, &pCurRxCell->DmaBuf.AllocPa);
+			} else
+				free_rx_buf_1k(ring);
+			cell->pNdisPacket = replacement;
+			cell->DmaBuf.AllocVa = new_va;
+			cell->DmaBuf.AllocPa = new_pa;
+			rxd->SDP0 = new_pa;
 		}
-
-		pCurRxD->SDP0 = pCurRxCell->DmaBuf.AllocPa;
-		pCurRxD->SDL0 = pRxRing->RxBufferSize;
-		pCurRxD->DDONE = 0;
-		/* update rx descriptor */
+		rxd->SDL0 = cell->DmaBuf.AllocSize;
+		rxd->DDONE = 0;
 #ifdef RT_BIG_ENDIAN
-		RTMPDescriptorEndianChange((PUCHAR)pCurRxD, TYPE_RXD);
-		WriteBackToDescriptor((PUCHAR)pDestRxD, (PUCHAR)pCurRxD, FALSE, TYPE_RXD);
+		RTMPDescriptorEndianChange((PUCHAR)rxd, TYPE_RXD);
+		WriteBackToDescriptor((PUCHAR)dest, (PUCHAR)rxd, FALSE, TYPE_RXD);
 #endif
 	}
-
-	/* update pRxRing->RxSwReadIdx do last cell of rx scatter-gather. */
-	pRxRing->RxSwReadIdx = RxCellIdx;
-	return TRUE;
+	ring->RxSwReadIdx = index;
+	ring->rx_discard = FALSE;
+	return dropped ? -1 : 1;
 }
 #endif /* RX_SCATTER */
 
@@ -1603,7 +1544,7 @@ PNDIS_PACKET mtd_pci_get_pkt_from_rx_resource(
 	struct _RTMP_ADAPTER *pAd,
 	BOOLEAN *pbReschedule,
 	UINT32 *pRxPending,
-	UCHAR RxRingNo)
+	UCHAR RxRingNo, UINT32 *rx_length)
 {
 	RXD_STRUC *pRxD;
 #ifdef RT_BIG_ENDIAN
@@ -1615,19 +1556,22 @@ PNDIS_PACKET mtd_pci_get_pkt_from_rx_resource(
 	PNDIS_PACKET pRxPacket = NULL, pNewPacket = NULL;
 	VOID *AllocVa;
 	NDIS_PHYSICAL_ADDRESS AllocPa;
-	BOOLEAN bReschedule = FALSE;
+	BOOLEAN bReschedule = FALSE, drop_packet = FALSE;
 	RTMP_DMACB *pRxCell = NULL;
 #ifdef CONFIG_CSO_SUPPORT
 	RX_CSO_STRUCT *prCso = NULL;
 	RTMP_CHIP_CAP *pChipCap = &pAd->chipCap;
 #endif
 #ifdef RX_SCATTER
-	UINT scatterCnt = 1;
+	INT scatterCnt = 1;
 	UINT pktScatterGatherSize = 0;
 #endif /* RX_SCATTER */
 	UINT pkt_buf_size = 0;
 	UINT skb_data_len = 0;
 
+	if (!rx_length)
+		return NULL;
+	*rx_length = 0;
 	RTMP_SEM_LOCK(pRxRingLock);
 
 	pRxCell = &pRxRing->Cell[pRxRing->RxSwReadIdx];
@@ -1653,11 +1597,19 @@ PNDIS_PACKET mtd_pci_get_pkt_from_rx_resource(
 
 	skb_data_len = SKB_DATA_ALIGN(SKB_BUF_HEADROOM_RSV + pRxCell->DmaBuf.AllocSize) +
 				SKB_DATA_ALIGN(SKB_BUF_TAILROOM_RSV);
+	if (pRxRing->rx_discard || !rx_dma_cell_valid(pRxCell, pRxD)) {
+		drop_packet = TRUE;
+		goto reserve_replacement;
+	}
 #ifdef RX_SCATTER
 	if (IS_ASIC_CAP(pAd, fASIC_CAP_RX_DMA_SCATTER)) {
 		scatterCnt = rx_scatter_info(pRxRing, pRxD, &pktScatterGatherSize);
 
-		if (scatterCnt < 1) {
+		if (scatterCnt < 0) {
+			drop_packet = TRUE;
+			goto reserve_replacement;
+		}
+		if (scatterCnt == 0) {
 			bReschedule = TRUE;
 			goto done;
 		}
@@ -1669,6 +1621,11 @@ PNDIS_PACKET mtd_pci_get_pkt_from_rx_resource(
 		pkt_buf_size = pRxD->SDL0;
 	}
 
+reserve_replacement:
+	if (!pRxCell->pNdisPacket || !pRxCell->DmaBuf.AllocVa || !pRxCell->DmaBuf.AllocSize) {
+		bReschedule = TRUE;
+		goto done;
+	}
 	if (RxRingNo == HIF_RX_IDX0) {
 		pNewPacket = RTMP_AllocateRxPacketBuffer(pRxRing,
 				((POS_COOKIE)(pAd->OS_Cookie))->pDev,
@@ -1690,17 +1647,47 @@ PNDIS_PACKET mtd_pci_get_pkt_from_rx_resource(
 						 pRxCell->DmaBuf.AllocSize, RTMP_PCI_DMA_FROMDEVICE);
 		/* flush dcache if no consistent memory is supported */
 		RTMP_DCACHE_FLUSH(pRxCell->DmaBuf.AllocPa, pRxCell->DmaBuf.AllocSize);
+		if (drop_packet) {
+			pRxRing->rx_discard = !pRxD->LS0;
+			if (RxRingNo == HIF_RX_IDX0) {
+#ifdef CONFIG_WIFI_BUILD_SKB
+				if (skb_data_len <= PAGE_SIZE)
+					DEV_FREE_FRAG_BUF(pRxCell->pNdisPacket);
+				else
+					os_free_mem(pRxCell->pNdisPacket);
+#else
+				RELEASE_NDIS_PACKET(pAd, pRxCell->pNdisPacket, NDIS_STATUS_FAILURE);
+#endif
+			} else
+				free_rx_buf_1k(pRxRing);
+			bReschedule = TRUE;
+			goto install_replacement;
+		}
 
 #ifdef RX_SCATTER
 		if (IS_ASIC_CAP(pAd, fASIC_CAP_RX_DMA_SCATTER)
 			&& (scatterCnt > 1)) {
 
-			if (rx_scatter_gather(pAd, RxRingNo, pRxCell,
-				pRxD, scatterCnt,
-				pkt_buf_size, &skb_data_len) == FALSE)	{
-				RELEASE_NDIS_PACKET_IRQ(pAd, pNewPacket, NDIS_STATUS_SUCCESS);
+			INT gather_status = rx_scatter_gather(pAd, RxRingNo, pRxCell,
+				pRxD, scatterCnt, pkt_buf_size, &skb_data_len);
+			if (gather_status != 1) {
+				if (gather_status == 0)
+					pRxRing->rx_discard = !pRxD->LS0;
+				/* Original/expanded first cell is unmapped; replacement is
+				 * already reserved. Never return a partial gathered packet. */
+				if (RxRingNo == HIF_RX_IDX0) {
+#ifdef CONFIG_WIFI_BUILD_SKB
+					if (skb_data_len <= PAGE_SIZE)
+						DEV_FREE_FRAG_BUF(pRxCell->pNdisPacket);
+					else
+						os_free_mem(pRxCell->pNdisPacket);
+#else
+					RELEASE_NDIS_PACKET(pAd, pRxCell->pNdisPacket, NDIS_STATUS_FAILURE);
+#endif
+				} else
+					free_rx_buf(pAd->hdev_ctrl, RxRingNo);
 				bReschedule = TRUE;
-				goto done;
+				goto install_replacement;
 			}
 		}
 #endif /* RX_SCATTER */
@@ -1747,6 +1734,7 @@ PNDIS_PACKET mtd_pci_get_pkt_from_rx_resource(
 			NdisCopyMemory(&(pAd->rCso), prCso, sizeof(RX_CSO_STRUCT));
 		}
 #endif
+	install_replacement:
 		pRxCell->pNdisPacket = (PNDIS_PACKET)pNewPacket;
 		pRxCell->DmaBuf.AllocVa = AllocVa;
 		pRxCell->DmaBuf.AllocPa = AllocPa;
@@ -1767,38 +1755,28 @@ PNDIS_PACKET mtd_pci_get_pkt_from_rx_resource(
 			}
 		}
 	} else {
-		PCI_UNMAP_SINGLE(pAd, pRxCell->DmaBuf.AllocPa, pRxCell->DmaBuf.AllocSize, RTMP_PCI_DMA_FROMDEVICE);
-		/* flush dcache if no consistent memory is supported */
-		RTMP_DCACHE_FLUSH(pRxCell->DmaBuf.AllocPa, pRxCell->DmaBuf.AllocSize);
-
-		if (RxRingNo == HIF_RX_IDX0) {
-#ifdef CONFIG_WIFI_BUILD_SKB
-			DEV_FREE_FRAG_BUF(pRxCell->pNdisPacket);
-#else
-			RELEASE_NDIS_PACKET(pAd, pRxCell->pNdisPacket, NDIS_STATUS_SUCCESS);
-#endif
-
-			pRxCell->pNdisPacket = RTMP_AllocateRxPacketBuffer(pRxRing,
-					((POS_COOKIE)(pAd->OS_Cookie))->pDev,
-					DYNAMIC_PAGE_ALLOC,
-					pRxCell->DmaBuf.AllocSize,
-					&pRxCell->DmaBuf.AllocVa, &pRxCell->DmaBuf.AllocPa);
-		} else if (RxRingNo == HIF_RX_IDX1) {
-			pkt_alloc_fail_handle(pAd, pRxCell->pNdisPacket);
-			free_rx_buf_1k(pRxRing);
-			pRxCell->pNdisPacket = RTMP_AllocateRxPacketBuffer(pRxRing,
-					((POS_COOKIE)(pAd->OS_Cookie))->pDev,
-					PRE_SLAB_ALLOC,
-					pRxCell->DmaBuf.AllocSize,
-					&pRxCell->DmaBuf.AllocVa, &pRxCell->DmaBuf.AllocPa);
+		/* No replacement: retain the original allocation and its mapping.
+		 * Drop/recycle this completed cell without a second allocation. */
+		if (RxRingNo == HIF_RX_IDX1) {
+			bReschedule = TRUE;
+			goto done;
 		}
-
-		pRxD->SDP0 = pRxCell->DmaBuf.AllocPa;
-		pRxD->SDL0 = pRxRing->RxBufferSize;
-		pRxPacket = NULL;
-		bReschedule = TRUE;
+		goto recycle_rx_cell;
 	}
 
+	if (pRxPacket)
+		*rx_length = pkt_buf_size;
+	goto publish_rx_cell;
+recycle_rx_cell:
+	bReschedule = TRUE;
+	pRxRing->rx_discard = !pRxD->LS0;
+	/* A missing owner cannot safely be rearmed. Keep DDONE and retry only
+	 * after external recovery; physical DMA address zero is not an error. */
+	if (!pRxCell->pNdisPacket || !pRxCell->DmaBuf.AllocVa || !pRxCell->DmaBuf.AllocSize)
+		goto done;
+	pRxD->SDP0 = pRxCell->DmaBuf.AllocPa;
+	pRxD->SDL0 = pRxCell->DmaBuf.AllocSize;
+publish_rx_cell:
 	pRxD->DDONE = 0;
 #ifdef RT_BIG_ENDIAN
 	RTMPDescriptorEndianChange((PUCHAR)pRxD, TYPE_RXD);
@@ -1825,7 +1803,7 @@ PNDIS_PACKET mtd_pci_get_pkt_from_rx_resource_io(
 	struct _RTMP_ADAPTER *pAd,
 	BOOLEAN *pbReschedule,
 	UINT32 *pRxPending,
-	UCHAR RxRingNo)
+	UCHAR RxRingNo, UINT32 *rx_length)
 {
 	RXD_STRUC *pRxD;
 #ifdef RT_BIG_ENDIAN
@@ -1838,14 +1816,14 @@ PNDIS_PACKET mtd_pci_get_pkt_from_rx_resource_io(
 	PNDIS_PACKET pRxPacket = NULL, pNewPacket = NULL;
 	VOID *AllocVa;
 	NDIS_PHYSICAL_ADDRESS AllocPa;
-	BOOLEAN bReschedule = FALSE;
+	BOOLEAN bReschedule = FALSE, drop_packet = FALSE;
 	RTMP_DMACB *pRxCell = NULL;
 #ifdef CONFIG_CSO_SUPPORT
 	RX_CSO_STRUCT *prCso = NULL;
 	RTMP_CHIP_CAP *pChipCap = hc_get_chip_cap(pAd->hdev_ctrl);
 #endif
 #ifdef RX_SCATTER
-	UINT scatterCnt = 1;
+	INT scatterCnt = 1;
 	UINT pktScatterGatherSize = 0;
 #endif /* RX_SCATTER */
 	UINT pkt_buf_size = 0;
@@ -1856,6 +1834,9 @@ PNDIS_PACKET mtd_pci_get_pkt_from_rx_resource_io(
 	struct tp_debug *tp_dbg = &pAd->tr_ctl.tp_dbg;
 #endif
 
+	if (!rx_length)
+		return NULL;
+	*rx_length = 0;
 	RTMP_SEM_LOCK(pRxRingLock);
 
 	if (*pRxPending == 0) {
@@ -1905,11 +1886,19 @@ PNDIS_PACKET mtd_pci_get_pkt_from_rx_resource_io(
 
 	skb_data_len = SKB_DATA_ALIGN(SKB_BUF_HEADROOM_RSV + pRxCell->DmaBuf.AllocSize) +
 				SKB_DATA_ALIGN(SKB_BUF_TAILROOM_RSV);
+	if (pRxRing->rx_discard || !rx_dma_cell_valid(pRxCell, pRxD)) {
+		drop_packet = TRUE;
+		goto reserve_replacement;
+	}
 #ifdef RX_SCATTER
 	if (IS_ASIC_CAP(pAd, fASIC_CAP_RX_DMA_SCATTER)) {
 		scatterCnt = rx_scatter_info_io(pRxRing, pRxD, &pktScatterGatherSize);
 
-		if (scatterCnt < 1) {
+		if (scatterCnt < 0) {
+			drop_packet = TRUE;
+			goto reserve_replacement;
+		}
+		if (scatterCnt == 0) {
 			bReschedule = TRUE;
 			goto done;
 		}
@@ -1921,6 +1910,11 @@ PNDIS_PACKET mtd_pci_get_pkt_from_rx_resource_io(
 		pkt_buf_size = pRxD->SDL0;
 	}
 
+reserve_replacement:
+	if (!pRxCell->pNdisPacket || !pRxCell->DmaBuf.AllocVa || !pRxCell->DmaBuf.AllocSize) {
+		bReschedule = TRUE;
+		goto done;
+	}
 	if (RxRingNo == HIF_RX_IDX0) {
 		pNewPacket = RTMP_AllocateRxPacketBuffer(pRxRing,
 				((POS_COOKIE)(pAd->OS_Cookie))->pDev,
@@ -1942,17 +1936,47 @@ PNDIS_PACKET mtd_pci_get_pkt_from_rx_resource_io(
 						 pRxCell->DmaBuf.AllocSize, RTMP_PCI_DMA_FROMDEVICE);
 		/* flush dcache if no consistent memory is supported */
 		RTMP_DCACHE_FLUSH(pRxCell->DmaBuf.AllocPa, pRxCell->DmaBuf.AllocSize);
+		if (drop_packet) {
+			pRxRing->rx_discard = !pRxD->LS0;
+			if (RxRingNo == HIF_RX_IDX0) {
+#ifdef CONFIG_WIFI_BUILD_SKB
+				if (skb_data_len <= PAGE_SIZE)
+					DEV_FREE_FRAG_BUF(pRxCell->pNdisPacket);
+				else
+					os_free_mem(pRxCell->pNdisPacket);
+#else
+				RELEASE_NDIS_PACKET(pAd, pRxCell->pNdisPacket, NDIS_STATUS_FAILURE);
+#endif
+			} else
+				free_rx_buf_1k(pRxRing);
+			bReschedule = TRUE;
+			goto install_replacement;
+		}
 
 #ifdef RX_SCATTER
 		if (IS_ASIC_CAP(pAd, fASIC_CAP_RX_DMA_SCATTER)
 			&& (scatterCnt > 1)) {
 
-			if (rx_scatter_gather(pAd, RxRingNo, pRxCell,
-				pRxD, scatterCnt,
-				pkt_buf_size, &skb_data_len) == FALSE)	{
-				RELEASE_NDIS_PACKET_IRQ(pAd, pNewPacket, NDIS_STATUS_SUCCESS);
+			INT gather_status = rx_scatter_gather(pAd, RxRingNo, pRxCell,
+				pRxD, scatterCnt, pkt_buf_size, &skb_data_len);
+			if (gather_status != 1) {
+				if (gather_status == 0)
+					pRxRing->rx_discard = !pRxD->LS0;
+				/* Original/expanded first cell is unmapped; replacement is
+				 * already reserved. Never return a partial gathered packet. */
+				if (RxRingNo == HIF_RX_IDX0) {
+#ifdef CONFIG_WIFI_BUILD_SKB
+					if (skb_data_len <= PAGE_SIZE)
+						DEV_FREE_FRAG_BUF(pRxCell->pNdisPacket);
+					else
+						os_free_mem(pRxCell->pNdisPacket);
+#else
+					RELEASE_NDIS_PACKET(pAd, pRxCell->pNdisPacket, NDIS_STATUS_FAILURE);
+#endif
+				} else
+					free_rx_buf(pAd->hdev_ctrl, RxRingNo);
 				bReschedule = TRUE;
-				goto done;
+				goto install_replacement;
 			}
 		}
 #endif /* RX_SCATTER */
@@ -2000,6 +2024,7 @@ PNDIS_PACKET mtd_pci_get_pkt_from_rx_resource_io(
 			NdisCopyMemory(&(pAd->rCso), prCso, sizeof(RX_CSO_STRUCT));
 		}
 #endif
+	install_replacement:
 		pRxCell->pNdisPacket = (PNDIS_PACKET)pNewPacket;
 		pRxCell->DmaBuf.AllocVa = AllocVa;
 		pRxCell->DmaBuf.AllocPa = AllocPa;
@@ -2020,38 +2045,26 @@ PNDIS_PACKET mtd_pci_get_pkt_from_rx_resource_io(
 			}
 		}
 	} else {
-		PCI_UNMAP_SINGLE(pAd, pRxCell->DmaBuf.AllocPa, pRxCell->DmaBuf.AllocSize, RTMP_PCI_DMA_FROMDEVICE);
-		/* flush dcache if no consistent memory is supported */
-		RTMP_DCACHE_FLUSH(pRxCell->DmaBuf.AllocPa, pRxCell->DmaBuf.AllocSize);
-
-		if (RxRingNo == HIF_RX_IDX0) {
-#ifdef CONFIG_WIFI_BUILD_SKB
-			DEV_FREE_FRAG_BUF(pRxCell->pNdisPacket);
-#else
-			RELEASE_NDIS_PACKET(pAd, pRxCell->pNdisPacket, NDIS_STATUS_SUCCESS);
-#endif
-
-			pRxCell->pNdisPacket = RTMP_AllocateRxPacketBuffer(pRxRing,
-					((POS_COOKIE)(pAd->OS_Cookie))->pDev,
-					DYNAMIC_PAGE_ALLOC,
-					pRxCell->DmaBuf.AllocSize,
-					&pRxCell->DmaBuf.AllocVa, &pRxCell->DmaBuf.AllocPa);
-		} else if (RxRingNo == HIF_RX_IDX1) {
-			pkt_alloc_fail_handle(pAd, pRxCell->pNdisPacket);
-			free_rx_buf_1k(pRxRing);
-			pRxCell->pNdisPacket = RTMP_AllocateRxPacketBuffer(pRxRing,
-					((POS_COOKIE)(pAd->OS_Cookie))->pDev,
-					PRE_SLAB_ALLOC,
-					pRxCell->DmaBuf.AllocSize,
-					&pRxCell->DmaBuf.AllocVa, &pRxCell->DmaBuf.AllocPa);
+		/* No replacement: retain the original allocation and its mapping.
+		 * Drop/recycle this completed cell without a second allocation. */
+		if (RxRingNo == HIF_RX_IDX1) {
+			bReschedule = TRUE;
+			goto done;
 		}
-
-		pRxD->SDP0 = pRxCell->DmaBuf.AllocPa;
-		pRxD->SDL0 = pRxRing->RxBufferSize;
-		pRxPacket = NULL;
-		bReschedule = TRUE;
+		goto recycle_rx_cell;
 	}
 
+	if (pRxPacket)
+		*rx_length = pkt_buf_size;
+	goto publish_rx_cell;
+recycle_rx_cell:
+	bReschedule = TRUE;
+	pRxRing->rx_discard = !pRxD->LS0;
+	if (!pRxCell->pNdisPacket || !pRxCell->DmaBuf.AllocVa || !pRxCell->DmaBuf.AllocSize)
+		goto done;
+	pRxD->SDP0 = pRxCell->DmaBuf.AllocPa;
+	pRxD->SDL0 = pRxCell->DmaBuf.AllocSize;
+publish_rx_cell:
 	*pRxPending = *pRxPending - 1;
 	pRxD->DDONE = 0;
 #ifdef RT_BIG_ENDIAN
@@ -2061,7 +2074,7 @@ PNDIS_PACKET mtd_pci_get_pkt_from_rx_resource_io(
 	INC_RING_INDEX(pRxRing->RxSwReadIdx, rx_ring_size);
 	pRxRing->sw_read_idx_inc++;
 	pRxRing->RxCpuIdx = (pRxRing->RxSwReadIdx == 0)
-						? (rx_ring_size - 1) : (pRxRing->RxSwReadIdx - 1);
+						? (UINT32)(rx_ring_size - 1) : (pRxRing->RxSwReadIdx - 1);
 
 #ifdef CONFIG_WIFI_PREFETCH_RXDATA
 	/* prefetch to enhance throughput */
@@ -2080,7 +2093,7 @@ PNDIS_PACKET pci_get_pkt_from_rx_resource(
 	IN RTMP_ADAPTER *pAd,
 	OUT BOOLEAN *pbReschedule,
 	INOUT UINT32 *pRxPending,
-	UCHAR RxRingNo)
+	UCHAR RxRingNo, UINT32 *rx_length)
 {
 
 	return NULL;
@@ -2088,7 +2101,7 @@ PNDIS_PACKET pci_get_pkt_from_rx_resource(
 
 BOOLEAN RxRing1DoneInterruptHandle(RTMP_ADAPTER *pAd)
 {
-	UINT32 RxProcessed, RxPending;
+	UINT32 RxProcessed, RxPending, rx_length;
 	BOOLEAN bReschedule = FALSE;
 	RX_BLK rx_blk, *p_rx_blk = NULL;
 	PNDIS_PACKET pkt = NULL;
@@ -2120,12 +2133,12 @@ BOOLEAN RxRing1DoneInterruptHandle(RTMP_ADAPTER *pAd)
 		}
 #endif /* RTMP_MAC_PCI */
 
-		pkt = arch_ops->get_pkt_from_rx1_resource(pAd, &bReschedule, &RxPending, HIF_RX_IDX1);
+		pkt = arch_ops->get_pkt_from_rx1_resource(pAd, &bReschedule, &RxPending, HIF_RX_IDX1, &rx_length);
 
 		if (pkt) {
 			os_zero_mem(&rx_blk, sizeof(RX_BLK));
 			p_rx_blk = &rx_blk;
-			arch_ops->rx_pkt_process(pAd, HIF_RX_IDX1, p_rx_blk, pkt);
+			arch_ops->rx_pkt_process(pAd, HIF_RX_IDX1, p_rx_blk, pkt, rx_length);
 		} else
 			break;
 	}
