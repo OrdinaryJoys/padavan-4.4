@@ -1,10 +1,33 @@
 """Actual calibration IO/close lifetimes and explicit NIC pre-cal section."""
-import hashlib,json,shutil,subprocess,tempfile,unittest
+import hashlib,json,re,shutil,subprocess,tempfile,unittest
 from pathlib import Path
 from unittest import mock
 import wifi_cal_io_harness as h
 ROOT=Path(__file__).resolve().parents[1]
 FLAGS=['-std=gnu89','-O1','-Wall','-Wextra','-Werror','-Wno-unused-function','-Wno-unused-parameter','-Wno-unused-variable']
+
+
+def lost_old_free_row(completed,current):
+    """Accept only the deliberate one-buffer leak, with its exact typed row."""
+    expected=dict(current)
+    if current['case']!='restore-previous-ok' or current['trace'].split(',').count('free')!=1:
+        raise AssertionError('Unexpected lost-old-free control input')
+    expected.update(frees=current['frees']-1,live_allocs=current['live_allocs']+1,
+                    trace=','.join(x for x in current['trace'].split(',')if x!='free'))
+    row=json.loads(completed.stdout)
+    if (type(row)is not dict or set(row)!=set(expected) or
+            any(type(row[k])is not type(expected[k])for k in expected)or row!=expected):
+        raise AssertionError('Lost-old-free control lacks its exact typed resource delta')
+    if completed.returncode==0:
+        if completed.stderr:raise AssertionError('Unexpected successful-control diagnostic')
+    else:
+        pattern=(r'\n={10,}\n==[0-9]+==ERROR: LeakSanitizer: detected memory leaks\n\n'
+                 r'Direct leak of 64 byte\(s\) in 1 object\(s\) allocated from:\n'
+                 r'(?:[ \t]+#[0-9]+ [^\n]+\n)+\n'
+                 r'SUMMARY: AddressSanitizer: 64 byte\(s\) leaked in 1 allocation\(s\)\.\n')
+        if completed.returncode!=1 or not re.fullmatch(pattern,completed.stderr):
+            raise AssertionError('Unexpected lost-old-free sanitizer failure: '+completed.stderr)
+    return row
 
 
 class WifiCalIOTests(unittest.TestCase):
@@ -118,8 +141,43 @@ class WifiCalIOTests(unittest.TestCase):
         )
         for name,before,after,case in changes:
             with self.subTest(control=name):
-                self.assertEqual(source.count(before),1);b=self.compile(source.replace(before,after),name)
-                self.assertNotEqual(self.row(case,b),self.row(case))
+                self.assertEqual(source.count(before),1)
+                mutant=source.replace(before,after);current=self.row(case)
+                if name=='lost-old-free':
+                    # LSan can terminate before libc flushes stdout. Flush only
+                    # this private negative control, keeping every model/driver unchanged.
+                    terminal=' free(a.PreCalReStoreBuffer);\n return 0;'
+                    self.assertEqual(mutant.count(terminal),1)
+                    mutant=mutant.replace(terminal,' fflush(stdout);\n'+terminal)
+                b=self.compile(mutant,name)
+                if name!='lost-old-free':
+                    self.assertNotEqual(self.row(case,b),current)
+                    continue
+                result=subprocess.run([str(b),case],capture_output=True,text=True,timeout=5)
+                row=lost_old_free_row(result,current);self.assertNotEqual(row,current)
+                # Replay the Linux diagnostic from CI41590074389 on all hosts.
+                diagnostic=("\n=================================================================\n"
+                    "==17734==ERROR: LeakSanitizer: detected memory leaks\n\n"
+                    "Direct leak of 64 byte(s) in 1 object(s) allocated from:\n"
+                    "    #0 0x5636b5f7314e in __interceptor_malloc (/tmp/wifi-cal-native-pvgc8xft/lost-old-free+0xa514e) (BuildId: 820a04f274e23a79815f167e2081fbff1e7c162d)\n"
+                    "    #1 0x5636b5faf150 in main (/tmp/wifi-cal-native-pvgc8xft/lost-old-free+0xe1150) (BuildId: 820a04f274e23a79815f167e2081fbff1e7c162d)\n"
+                    "    #2 0x7f38a4029d8f  (/lib/x86_64-linux-gnu/libc.so.6+0x29d8f) (BuildId: 6a6cb5a80fd5e5bb5bf3aeaa111add98e88843a5)\n\n"
+                    "SUMMARY: AddressSanitizer: 64 byte(s) leaked in 1 allocation(s).\n")
+                stdout=json.dumps(row)
+                self.assertEqual(lost_old_free_row(subprocess.CompletedProcess([],1,stdout,diagnostic),current),row)
+                self.assertEqual(lost_old_free_row(subprocess.CompletedProcess([],0,stdout,''),current),row)
+                wrong_type=dict(row,live_allocs=str(row['live_allocs']))
+                faults=[(2,stdout,diagnostic),(-11,stdout,diagnostic),(0,stdout,diagnostic),
+                        (1,stdout,diagnostic.replace('64 byte','128 byte')),
+                        (1,stdout,diagnostic.replace('1 object','2 object')),
+                        (1,stdout,diagnostic.replace('1 allocation','2 allocation')),
+                        (1,stdout,diagnostic+'unrelated failure\n'),
+                        (1,stdout,'AddressSanitizer: heap-use-after-free\n'),
+                        (1,json.dumps(current),diagnostic),(1,json.dumps(wrong_type),diagnostic),
+                        (1,'',diagnostic)]
+                for code,out,err in faults:
+                    with self.assertRaises((AssertionError,ValueError)):
+                        lost_old_free_row(subprocess.CompletedProcess([],code,out,err),current)
 
     def test_strict_gnu89_all69_cases_match_clang(self):
         compiler=shutil.which('gcc-16') or shutil.which('gcc')
