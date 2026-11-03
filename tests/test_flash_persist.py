@@ -138,6 +138,11 @@ class FlashPersistenceTests(unittest.TestCase):
         result=subprocess.run([str(binary)],capture_output=True,text=True,timeout=10)
         self.assertEqual((result.returncode,result.stdout,result.stderr),(0,'',''))
 
+    def test_control_profiles_refuse_other_valid_selectors(self):
+        for profile,case in (('baseline','commit-ok'),('disabled','word-ok')):
+            result=subprocess.run([str(self.binaries[profile]),case],capture_output=True,text=True,timeout=10)
+            self.assertEqual((result.returncode,result.stdout,result.stderr),(91,'',''))
+
     def test_fixed_baselines_and_disabled_bodies_reveal_false_success(self):
         for name in h.BASELINE_CASES:
             if name in('pa-flash-ok','pa-bin-ok')or name.startswith('bulk-'):continue

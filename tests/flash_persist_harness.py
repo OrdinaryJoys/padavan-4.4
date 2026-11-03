@@ -952,7 +952,8 @@ def generate_source(texts,fixture_root=None,owner_uid=0,baseline=False,disabled_
     bodies=BASELINE_FUNCTIONS if baseline else DISABLED_STUBS if disabled_oracle else {n:v['body']for n,v in current.items()}
     macros=BASELINE_LEGACY_MACRO if baseline else legacy+'\n'+checked
     if disabled_oracle:macros='#define RT28xx_EEPROM_WRITE16_CHECKED(p,o,v) 0'
-    admission='\n'.join('if(!strcmp(case_name,'+json.dumps(n)+'))known=1;'for n in CASE_NAMES)
+    names=BASELINE_CASES if baseline else DISABLED_CASES if disabled_oracle else CASE_NAMES
+    admission='\n'.join('if(!strcmp(case_name,'+json.dumps(n)+'))known=1;'for n in names)
     main=MAIN.replace('CASE_ADMISSION',admission)
     main=main.replace('RAW_CALL','RtmpFlashWrite(NULL,source,last_offset,last_length);result=0;'if baseline else'result=RtmpFlashWriteChecked(NULL,source,last_offset,last_length);')
     main=main.replace('COMMIT_CALL','(void)staged;rtmp_ee_flash_write_all(&a);result=0;'if baseline else'result=rtmp_ee_flash_write_image_checked(&a,has("null-input")?NULL:staged,has("length-mismatch")?image_size-1:image_size);')
