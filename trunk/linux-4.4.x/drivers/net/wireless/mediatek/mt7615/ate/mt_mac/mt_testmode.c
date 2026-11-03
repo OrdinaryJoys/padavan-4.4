@@ -7477,9 +7477,12 @@ INT MtATE_DPD_Cal_Store_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 
 #ifdef RTMP_FLASH_SUPPORT
 
-		if (pAd->E2pAccessMode == E2P_FLASH_MODE)
-			RtmpFlashWrite(pAd->hdev_ctrl, pAd->CalDPDAPart1Image,
-				get_dev_eeprom_offset(pAd) + DPDPART1_OFFSET, TXDPD_PART1_LIMIT * TXDPD_SIZE);
+		if (pAd->E2pAccessMode == E2P_FLASH_MODE &&
+			RtmpFlashWriteChecked(pAd->hdev_ctrl, pAd->CalDPDAPart1Image,
+				get_dev_eeprom_offset(pAd) + DPDPART1_OFFSET, TXDPD_PART1_LIMIT * TXDPD_SIZE)) {
+			DPDPassOrFail = FALSE;
+			goto exit;
+		}
 
 #endif
 		if (pAd->E2pAccessMode == E2P_BIN_MODE) {
@@ -7524,9 +7527,12 @@ INT MtATE_DPD_Cal_Store_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 
 #ifdef RTMP_FLASH_SUPPORT
 
-		if (pAd->E2pAccessMode == E2P_FLASH_MODE)
-			RtmpFlashWrite(pAd->hdev_ctrl, pAd->CalDPDAPart2Image,
-				get_dev_eeprom_offset(pAd) + DPDPART2_OFFSET, (DPD_G20_SIZE * TXDPD_SIZE));
+		if (pAd->E2pAccessMode == E2P_FLASH_MODE &&
+			RtmpFlashWriteChecked(pAd->hdev_ctrl, pAd->CalDPDAPart2Image,
+				get_dev_eeprom_offset(pAd) + DPDPART2_OFFSET, (DPD_G20_SIZE * TXDPD_SIZE))) {
+			DPDPassOrFail = FALSE;
+			goto exit;
+		}
 
 #endif
 
@@ -7562,8 +7568,11 @@ INT MtATE_DPD_Cal_Store_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 
 #ifdef RTMP_FLASH_SUPPORT
 
-	if (pAd->E2pAccessMode == E2P_FLASH_MODE)
-		rtmp_ee_flash_write(pAd, 0x52, doCal1);
+	if (pAd->E2pAccessMode == E2P_FLASH_MODE &&
+		rtmp_ee_flash_write(pAd, 0x52, doCal1)) {
+		DPDPassOrFail = FALSE;
+		goto exit;
+	}
 
 #endif
 	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("raised E2P 0x52 = %x\n", doCal1));
@@ -7617,6 +7626,14 @@ INT MtATE_DPD_Cal_Store_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF,
 			 ("raised E2P 0x52 = %x\n", doCal1));
 exit:
+	if (!DPDPassOrFail) {
+		/* Invalidate RAM calibration flags after a failed persistence attempt.
+		 * This RAM-only invalidation cannot undo a partially written Flash. */
+		rtmp_ee_bin_read16(pAd, 0x52, &doCal1);
+		doCal1 &= ~((1 << 0) | (1 << 4));
+		rtmp_ee_bin_write16(pAd, 0x52, doCal1);
+		pAd->bDPDReloaded = FALSE;
+	}
 	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF,
 			 ("====================\n"));
 	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF,
@@ -7797,9 +7814,12 @@ INT MtATE_DCOC_Cal_Store_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 			  DCOC_OFFSET, (K_ALL_SIZE * RXDCOC_SIZE)));
 #ifdef RTMP_FLASH_SUPPORT
 
-	if (pAd->E2pAccessMode == E2P_FLASH_MODE)
-		RtmpFlashWrite(pAd->hdev_ctrl, pAd->CalDCOCImage,
-			get_dev_eeprom_offset(pAd) + DCOC_OFFSET, (K_ALL_SIZE * RXDCOC_SIZE));
+	if (pAd->E2pAccessMode == E2P_FLASH_MODE &&
+		RtmpFlashWriteChecked(pAd->hdev_ctrl, pAd->CalDCOCImage,
+			get_dev_eeprom_offset(pAd) + DCOC_OFFSET, (K_ALL_SIZE * RXDCOC_SIZE))) {
+		DCOCPassOrFail = FALSE;
+		goto exit;
+	}
 
 #endif
 
@@ -7824,8 +7844,11 @@ INT MtATE_DCOC_Cal_Store_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 	doCal1 |= (1 << 1);
 #ifdef RTMP_FLASH_SUPPORT
 
-	if (pAd->E2pAccessMode == E2P_FLASH_MODE)
-		rtmp_ee_flash_write(pAd, 0x52, doCal1);
+	if (pAd->E2pAccessMode == E2P_FLASH_MODE &&
+		rtmp_ee_flash_write(pAd, 0x52, doCal1)) {
+		DCOCPassOrFail = FALSE;
+		goto exit;
+	}
 
 #endif
 
@@ -7872,6 +7895,14 @@ INT MtATE_DCOC_Cal_Store_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 	}
 
 exit:
+	if (!DCOCPassOrFail) {
+		/* Invalidate RAM calibration flags after a failed persistence attempt.
+		 * This RAM-only invalidation cannot undo a partially written Flash. */
+		rtmp_ee_bin_read16(pAd, 0x52, &doCal1);
+		doCal1 &= ~((1 << 1));
+		rtmp_ee_bin_write16(pAd, 0x52, doCal1);
+		pAd->bDCOCReloaded = FALSE;
+	}
 	/* Enable RMAC */
 	MtATESetMacTxRx(pAd, ASIC_MAC_RX, TRUE, TESTMODE_BAND0);
 	if (IS_ATE_DBDC(pAd))
@@ -7934,36 +7965,58 @@ INT MtATE_Pre_Cal_Proc(RTMP_ADAPTER *pAd, UINT8 CalId, UINT32 ChGrpId)
 #if defined(CAL_BIN_FILE_SUPPORT) && defined(MT7615)
 INT MtATE_PA_Trim_Proc(RTMP_ADAPTER *pAd, PUINT32 pData)
 {
-	UINT16 DoPATrim;
+	UINT16 DoPATrim, value;
+	UINT image_size;
 	UINT16 WriteAddr;
 	UINT8 idx;
 	USHORT *pStoreData = (USHORT *)pData;
-	USHORT value;
+	UCHAR *image = NULL;
+	INT status = 0;
 
-	if (IS_MT7615(pAd)) {
-		WriteAddr = PA_TRIM_START_ADDR1;
-		for (idx = 0; idx < PA_TRIM_BLOCK_SIZE; idx++) {
-			value = *pStoreData;
-			RT28xx_EEPROM_WRITE16(pAd, WriteAddr, value);
-			WriteAddr += 2;
-			pStoreData++;
-		}
-
-		WriteAddr = PA_TRIM_START_ADDR2;
-		for (idx = 0; idx < PA_TRIM_BLOCK_SIZE; idx++) {
-			value = *pStoreData;
-			RT28xx_EEPROM_WRITE16(pAd, 	WriteAddr, value);
-			WriteAddr += 2;
-			pStoreData++;
-		}
-
-		/* Raise DoPATrim bits */
-		RT28xx_EEPROM_READ16(pAd, 0x52, DoPATrim);
-		DoPATrim |= (1 << 3);
-		RT28xx_EEPROM_WRITE16(pAd, 0x52, DoPATrim);
-
+	if (!pAd || !pData || !IS_MT7615(pAd) ||
+		RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_NIC_NOT_EXIST) ||
+		(pAd->E2pAccessMode != E2P_FLASH_MODE && pAd->E2pAccessMode != E2P_BIN_MODE))
+		return FALSE;
+	image_size = rtmp_ee_flash_image_capacity(pAd);
+	if (!image_size || PA_TRIM_START_ADDR1 > image_size ||
+		PA_TRIM_BLOCK_SIZE * sizeof(value) > image_size - PA_TRIM_START_ADDR1 ||
+		PA_TRIM_START_ADDR2 > image_size ||
+		PA_TRIM_BLOCK_SIZE * sizeof(value) > image_size - PA_TRIM_START_ADDR2 ||
+		0x52 + sizeof(DoPATrim) > image_size)
+		return FALSE;
+	if (os_alloc_mem(pAd, &image, image_size) != NDIS_STATUS_SUCCESS || !image)
+		return FALSE;
+	memcpy(image, pAd->EEPROMImage, image_size);
+	WriteAddr = PA_TRIM_START_ADDR1;
+	for (idx = 0; idx < PA_TRIM_BLOCK_SIZE; idx++) {
+		value = *pStoreData++;
+		if (pAd->E2pAccessMode == E2P_BIN_MODE)
+			value = le2cpu16(value);
+		memcpy(image + WriteAddr, &value, sizeof(value));
+		WriteAddr += sizeof(value);
 	}
-			return TRUE;
+	WriteAddr = PA_TRIM_START_ADDR2;
+	for (idx = 0; idx < PA_TRIM_BLOCK_SIZE; idx++) {
+		value = *pStoreData++;
+		if (pAd->E2pAccessMode == E2P_BIN_MODE)
+			value = le2cpu16(value);
+		memcpy(image + WriteAddr, &value, sizeof(value));
+		WriteAddr += sizeof(value);
+	}
+	memcpy(&DoPATrim, image + 0x52, sizeof(DoPATrim));
+	if (pAd->E2pAccessMode == E2P_BIN_MODE)
+		DoPATrim = le2cpu16(DoPATrim);
+	DoPATrim |= (1 << 3);
+	if (pAd->E2pAccessMode == E2P_BIN_MODE)
+		DoPATrim = le2cpu16(DoPATrim);
+	memcpy(image + 0x52, &DoPATrim, sizeof(DoPATrim));
+	/* Batch the same eight words and bit; BIN retains its RAM-only contract. */
+	if (pAd->E2pAccessMode == E2P_FLASH_MODE)
+		status = rtmp_ee_flash_write_image_checked(pAd, image, image_size);
+	else
+		memcpy(pAd->EEPROMImage, image, image_size);
+	os_free_mem(image);
+	return status == 0;
 }
 #endif/* CAL_BIN_FILE_SUPPORT */
 

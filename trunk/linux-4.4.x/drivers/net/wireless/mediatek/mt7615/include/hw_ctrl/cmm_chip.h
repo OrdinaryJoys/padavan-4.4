@@ -741,6 +741,15 @@ BOOLEAN chip_eeprom_read_with_range(struct _RTMP_ADAPTER *pAd, USHORT start, USH
 
 #define RT28xx_EEPROM_READ_WITH_RANGE(_pAd, _start, _length, _pbuf)   chip_eeprom_read_with_range(_pAd, _start, _length, _pbuf)
 
+/* Status expression for reviewed callers; keep the old statement API intact. */
+#define RT28xx_EEPROM_WRITE16_CHECKED(_pAd, _offset, _val) \
+	({ \
+		struct _RTMP_ADAPTER *__ee_ad = (_pAd); \
+		struct _RTMP_CHIP_OP *__ee_ops = __ee_ad ? hc_get_chip_ops(__ee_ad->hdev_ctrl) : NULL; \
+		__ee_ops && __ee_ops->eewrite ? \
+			__ee_ops->eewrite(__ee_ad, (_offset), (USHORT)(_val)) : -1; \
+	})
+
 #define RT28xx_EEPROM_WRITE_WITH_RANGE(_pAd, _start, _length, _pbuf)		\
 	do { \
 		struct _RTMP_CHIP_OP *ops = hc_get_chip_ops(_pAd->hdev_ctrl);\

@@ -208,6 +208,7 @@ static LONG os_str_tol(const char*s,void*end,int base){(void)end;return strtol(s
 static int RtmpChipOpsEepromHook(RTMP_ADAPTER*p,int type,int mode){(void)p;(void)type;hook_calls++;event("hook");if(has("hook-error"))return -1;callback_mode=mode;return 0;}
 static NDIS_STATUS rtmp_cal_load_from_bin(RTMP_ADAPTER*p,UCHAR*buf,unsigned long off,unsigned long len){(void)p;event("cal-read");if((has("cal-dcoc-error")&&off==0)||(has("cal-dpd1-error")&&off==DPDPART1_OFFSET)||(has("cal-dpd2-error")&&off==DPDPART2_OFFSET))return NDIS_STATUS_FAILURE;memset(buf,0xa5,len);return NDIS_STATUS_SUCCESS;}
 static void rtmp_ee_flash_write_all(RTMP_ADAPTER*p){(void)p;event("other-flash-write");}
+static int rtmp_ee_flash_write_all_checked(RTMP_ADAPTER*p){(void)p;event("other-flash-write");return 0;}
 static void rtmp_ee_write_to_efuse(RTMP_ADAPTER*p){(void)p;event("other-efuse-write");}
 static void rtmp_ee_write_to_prom(RTMP_ADAPTER*p){(void)p;event("other-prom-write");}
 static void eFuseGetFreeBlockCount(RTMP_ADAPTER*p,UINT*n){(void)p;*n=is("efuse-nonempty")?0:2;}

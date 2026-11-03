@@ -66,6 +66,18 @@ void RtmpFlashWrite(
 
 static NDIS_STATUS rtmp_ee_flash_init(PRTMP_ADAPTER pAd, PUCHAR start);
 
+INT RtmpFlashWriteChecked(void *hdev_ctrl, const UCHAR *p, ULONG a, ULONG b)
+{
+	/* Other legacy backends lack an audited persistence result. */
+#ifdef CONFIG_WIFI_MTD
+	if (!p && b)
+		return -EINVAL;
+	return flash_write(hdev_ctrl, p, a, b);
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+
 static BOOLEAN rtmp_ee_init_check(struct _RTMP_ADAPTER *ad)
 {
 	struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(ad->hdev_ctrl);
@@ -100,14 +112,7 @@ BOOLEAN rtmp_ee_flash_read(PRTMP_ADAPTER pAd, UINT16 Offset, UINT16 *pValue)
 
 int rtmp_ee_flash_write(PRTMP_ADAPTER pAd, USHORT Offset, USHORT Data)
 {
-	if (IS_EE_INIT(pAd)) {
-		memcpy(pAd->EEPROMImage + Offset, &Data, 2);
-		/*rt_nv_commit();*/
-		/*rt_cfg_commit();*/
-		RtmpFlashWrite(pAd->hdev_ctrl, pAd->EEPROMImage, get_dev_eeprom_offset(pAd), get_dev_eeprom_size(pAd));
-	}
-
-	return 0;
+	return rtmp_ee_flash_write_with_range(pAd, Offset, sizeof(Data), (UCHAR *)&Data);
 }
 
 
@@ -134,14 +139,21 @@ BOOLEAN rtmp_ee_flash_read_with_range(PRTMP_ADAPTER pAd, UINT16 start, UINT16 Le
 
 int rtmp_ee_flash_write_with_range(PRTMP_ADAPTER pAd, USHORT start, USHORT Length, UCHAR *pbuf)
 {
-	if (IS_EE_INIT(pAd)) {
-		memcpy(pAd->EEPROMImage + start, pbuf, Length);
-		/*rt_nv_commit();*/
-		/*rt_cfg_commit();*/
-		RtmpFlashWrite(pAd->hdev_ctrl, pAd->EEPROMImage, get_dev_eeprom_offset(pAd), get_dev_eeprom_size(pAd));
-	}
+	UINT capacity = rtmp_ee_flash_image_capacity(pAd);
+	UCHAR *image = NULL;
+	INT status;
 
-	return 0;
+	if (!capacity || start > capacity || Length > capacity - start || (!pbuf && Length))
+		return -EINVAL;
+	if (!Length)
+		return 0;
+	if (os_alloc_mem(pAd, &image, capacity) != NDIS_STATUS_SUCCESS || !image)
+		return -ENOMEM;
+	memcpy(image, pAd->EEPROMImage, capacity);
+	memmove(image + start, pbuf, Length);
+	status = rtmp_ee_flash_write_image_checked(pAd, image, capacity);
+	os_free_mem(image);
+	return status;
 }
 
 

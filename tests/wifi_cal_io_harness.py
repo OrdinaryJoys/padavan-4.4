@@ -181,6 +181,8 @@ static int mt_mtd_read_nm_wifi(char*name,loff_t offset,size_t n,u_char*buf){
  return 0;
 }
 static void RtmpFlashRead(void*p,UCHAR*buf,unsigned int offset,unsigned int n){(void)p;mt_mtd_read_nm_wifi((char*)"Factory",offset,n,buf);}
+/* Record grammar is exercised by mcu_precal_harness, separate from IO seams. */
+static int rtmp_precal_records_valid(const UCHAR*buf,unsigned int size){return buf&&size;}
 static int MtCmdPreCalReStoreProc(RTMP_ADAPTER*p,INT32*buf){UCHAR*b=(UCHAR*)buf;(void)p;commands++;event("command");if(b[0]!=0x33||b[precal_size-1]!=0x33)poison++;return has("command-error")?1:0;}
 '''
 

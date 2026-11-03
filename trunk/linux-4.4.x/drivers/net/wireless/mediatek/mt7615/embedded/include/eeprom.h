@@ -757,6 +757,9 @@ int rtmp_ee_flash_write_with_range(struct _RTMP_ADAPTER *pAd, USHORT start, USHO
 VOID rtmp_ee_flash_read_all(struct _RTMP_ADAPTER *pAd, USHORT *Data);
 VOID rtmp_ee_flash_write_all(struct _RTMP_ADAPTER *pAd);
 #endif /* defined(RTMP_RBUS_SUPPORT) || defined(RTMP_FLASH_SUPPORT) */
+UINT rtmp_ee_flash_image_capacity(struct _RTMP_ADAPTER *pAd);
+INT rtmp_ee_flash_write_image_checked(struct _RTMP_ADAPTER *pAd, const UCHAR *image, UINT length);
+INT rtmp_ee_flash_write_all_checked(struct _RTMP_ADAPTER *pAd);
 
 
 #ifdef RTMP_EFUSE_SUPPORT

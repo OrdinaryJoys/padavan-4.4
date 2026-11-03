@@ -259,7 +259,148 @@ static INT32 checkAntCapSanity(RTMP_ADAPTER *ad)
 
 	========================================================================
 */
+UINT rtmp_ee_flash_image_capacity(PRTMP_ADAPTER pAd)
+{
+	/* Other modes can own only the base allocation despite a larger profile. */
+	UINT size;
+	struct _RTMP_CHIP_CAP *cap;
+
+	if (!pAd || !pAd->EEPROMImage)
+		return 0;
+	cap = hc_get_chip_cap(pAd->hdev_ctrl);
+	if (!cap || !cap->ee_inited ||
+		pAd->E2pAccessMode < E2P_EFUSE_MODE || pAd->E2pAccessMode > E2P_BIN_MODE ||
+		pAd->E2pCtrl.e2pCurMode != pAd->E2pAccessMode)
+		return 0;
+	size = get_dev_eeprom_size(pAd);
+	if (pAd->E2pAccessMode != E2P_FLASH_MODE && size > MAX_EEPROM_BUFFER_SIZE)
+		size = MAX_EEPROM_BUFFER_SIZE;
+	return size >= EEPROM_SIZE ? size : 0;
+}
+
+INT rtmp_ee_flash_write_image_checked(PRTMP_ADAPTER pAd, const UCHAR *image, UINT length)
+{
+	/* Preserve RAM on failure; a partial physical erase/write cannot be undone. */
+	UINT capacity = rtmp_ee_flash_image_capacity(pAd);
+	INT status;
+
+	if (!capacity || !image || length != capacity)
+		return -EINVAL;
+#ifdef RTMP_FLASH_SUPPORT
+	status = RtmpFlashWriteChecked(pAd->hdev_ctrl, image,
+		get_dev_eeprom_offset(pAd), length);
+#else
+	status = -EOPNOTSUPP;
+#endif
+	if (!status && image != pAd->EEPROMImage)
+		memmove(pAd->EEPROMImage, image, length);
+	return status;
+}
+
+INT rtmp_ee_flash_write_all_checked(PRTMP_ADAPTER pAd)
+{
+	UINT capacity = rtmp_ee_flash_image_capacity(pAd);
+
+	if (!capacity)
+		return -EINVAL;
+	return rtmp_ee_flash_write_image_checked(pAd, pAd->EEPROMImage, capacity);
+}
+
 #ifdef PRE_CAL_TRX_SET2_SUPPORT
+static BOOLEAN rtmp_precal_records_valid(const UCHAR *buffer, UINT32 size)
+{
+	UINT32 offset = 0, id, length, header, per_group, count, group, i;
+	UINT32 stage = 0, seen_rxfd = 0, payload;
+	UINT32 allowed = (1U << CHANNEL_GROUP_NUM) - 1;
+	UINT16 bitmap, requested = 0;
+
+	if (!buffer || !size || size > PRE_CAL_SIZE_ONE_CARD)
+		return FALSE;
+	/* The legacy restore consumer reads these records in this exact order.
+	 * Validate every jump and copy before it sees any untrusted file bytes. */
+	while (offset < size) {
+		if (size - offset < 8)
+			return FALSE;
+		os_move_mem(&id, buffer + offset, sizeof(id));
+		os_move_mem(&length, buffer + offset + 4, sizeof(length));
+		if ((length & 3) || length < 4 || length > size - offset - 4)
+			return FALSE;
+		switch (id) {
+		case PRECAL_TXLPF:
+			if (stage != 0)
+				return FALSE;
+			header = offsetof(TXLPF_CAL_INFO_T, au4Data);
+			per_group = TXLPF_PER_GROUP_DATA_SIZE;
+			break;
+		case PRECAL_TXIQ:
+			if (stage != 1)
+				return FALSE;
+			header = offsetof(TXIQ_CAL_INFO_T, au4Data);
+			per_group = TXIQ_PER_GROUP_DATA_SIZE;
+			break;
+		case PRECAL_TXDC:
+			if (stage != 2)
+				return FALSE;
+			header = offsetof(TXDC_CAL_INFO_T, au4Data);
+			per_group = TXDC_PER_GROUP_DATA_SIZE;
+			break;
+		case PRECAL_RXFD:
+			if (stage != 3)
+				return FALSE;
+			header = offsetof(RXFD_CAL_INFO_T, au4Data);
+			per_group = RXFD_PER_GROUP_DATA_SIZE;
+			break;
+		case PRECAL_RXFI:
+			if (stage != 3 || seen_rxfd != requested)
+				return FALSE;
+			header = offsetof(RXFI_CAL_INFO_T, au4Data);
+			per_group = RXFI_PER_GROUP_DATA_SIZE;
+			break;
+		default:
+			return FALSE;
+		}
+		if (header > length - 4 || !per_group ||
+			header < offsetof(TXLPF_CAL_INFO_T, u2BitMap) + sizeof(bitmap))
+			return FALSE;
+		os_move_mem(&bitmap, buffer + offset + 8 +
+			offsetof(TXLPF_CAL_INFO_T, u2BitMap), sizeof(bitmap));
+		if (!bitmap || (bitmap & ~allowed))
+			return FALSE;
+		if (!stage)
+			requested = bitmap;
+		if (bitmap & ~requested)
+			return FALSE;
+		count = 0;
+		if (id == PRECAL_RXFD) {
+			if (header < offsetof(RXFD_CAL_INFO_T, u4ChGroupId) + sizeof(group))
+				return FALSE;
+			os_move_mem(&group, buffer + offset + 8 +
+				offsetof(RXFD_CAL_INFO_T, u4ChGroupId), sizeof(group));
+			if (group >= CHANNEL_GROUP_NUM || !(bitmap & (1U << group)) ||
+				(seen_rxfd & (1U << group)))
+				return FALSE;
+			seen_rxfd |= 1U << group;
+			count = 1;
+		} else {
+			if (bitmap != requested)
+				return FALSE;
+			for (i = 0; i < CHANNEL_GROUP_NUM; i++)
+				if (bitmap & (1U << i))
+					count++;
+		}
+		payload = length - 4 - header;
+		if (count > payload / per_group || count * per_group != payload)
+			return FALSE;
+		/* Final RXFI terminates the record stream; the fixed image may pad it. */
+		if (id == PRECAL_RXFI)
+			return TRUE;
+		if (id != PRECAL_RXFD)
+			stage++;
+		offset += 4 + length;
+	}
+	return FALSE;
+}
+
 static BOOLEAN rtmp_eeprom_restore_precal(
 	IN PRTMP_ADAPTER pAd,
 	IN UINT16 size,
@@ -310,6 +451,10 @@ static BOOLEAN rtmp_eeprom_restore_precal(
 		os_free_mem(staged);
 		return FALSE;
 #endif
+	}
+	if (!rtmp_precal_records_valid(staged, size)) {
+		os_free_mem(staged);
+		return FALSE;
 	}
 	/* The command copies this buffer; keep the owned image until teardown. */
 	if (pAd->PreCalReStoreBuffer)
@@ -1408,8 +1553,7 @@ INT Set_EepromBufferWriteBack_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg)
 
 	case E2P_FLASH_MODE:
 		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("Write EEPROM buffer back to Flash\n"));
-		rtmp_ee_flash_write_all(pAd);
-		break;
+		return rtmp_ee_flash_write_all_checked(pAd) == 0;
 #endif /* RTMP_FLASH_SUPPORT */
 
 	case E2P_EEPROM_MODE:

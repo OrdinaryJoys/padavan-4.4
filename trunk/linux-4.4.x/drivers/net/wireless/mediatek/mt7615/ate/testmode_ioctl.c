@@ -1796,55 +1796,71 @@ static INT32 HQA_WriteBulkEEPROM(
 	RTMP_IOCTL_INPUT_STRUCT *WRQ,
 	struct _HQA_CMD_FRAME *HqaCmdFrame)
 {
-	INT32 Ret = 0;
-#if !defined(COMPOS_TESTMODE_WIN) /* 1Todo	 RT28xx_EEPROM_WRITE16 */
-	USHORT Offset;
-	USHORT Len;
-	UINT16 *Buffer = NULL;
+	INT32 Ret = NDIS_STATUS_FAILURE;
+#if !defined(COMPOS_TESTMODE_WIN)
+	USHORT Offset = 0, Len = 0, Pos, Value;
+	UINT capacity, request_length;
+	UINT header_length = offsetof(struct _HQA_CMD_FRAME, Data);
+	UCHAR *Buffer = NULL;
 
-	MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s\n", __func__));
-	memcpy(&Offset, HqaCmdFrame->Data, 2);
+	if (!pAd || !WRQ || !HqaCmdFrame)
+		return NDIS_STATUS_FAILURE;
+	request_length = PKTS_TRAN_TO_HOST(HqaCmdFrame->Length);
+	if (request_length < 4 || request_length > sizeof(HqaCmdFrame->Data) ||
+		WRQ->u.data.length < header_length ||
+		request_length > WRQ->u.data.length - header_length)
+		goto HQA_WriteBulkEEPROM_RET;
+	memcpy(&Offset, HqaCmdFrame->Data, sizeof(Offset));
 	Offset = PKTS_TRAN_TO_HOST(Offset);
-	memcpy(&Len, HqaCmdFrame->Data + 2, 2);
+	memcpy(&Len, HqaCmdFrame->Data + 2, sizeof(Len));
 	Len = PKTS_TRAN_TO_HOST(Len);
-	Ret = os_alloc_mem(pAd, (PUCHAR *)&Buffer, EEPROM_SIZE);	/* TODO verify */
-
-	if (Ret == NDIS_STATUS_FAILURE) {
-		MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-				 ("%s: allocate memory for read EEPROM fail\n", __func__));
+	/* EEPROM writes are word-oriented. Validate before any typed copy. */
+	if ((Offset & 1) || (Len & 1) || Offset > EEPROM_SIZE ||
+		Len > EEPROM_SIZE - Offset || Len > request_length - 4)
+		goto HQA_WriteBulkEEPROM_RET;
+	capacity = EEPROM_SIZE;
+	if (pAd->E2pAccessMode == E2P_FLASH_MODE || pAd->E2pAccessMode == E2P_BIN_MODE) {
+		capacity = rtmp_ee_flash_image_capacity(pAd);
+		if (!capacity)
+			goto HQA_WriteBulkEEPROM_RET;
+	} else if ((pAd->E2pAccessMode != E2P_EEPROM_MODE &&
+		pAd->E2pAccessMode != E2P_EFUSE_MODE) ||
+		pAd->E2pCtrl.e2pCurMode != pAd->E2pAccessMode)
+		goto HQA_WriteBulkEEPROM_RET;
+	if (!Len) {
+		Ret = NDIS_STATUS_SUCCESS;
 		goto HQA_WriteBulkEEPROM_RET;
 	}
-
-	memcpy_exs(pAd, (UCHAR *)Buffer + Offset, (UCHAR *)HqaCmdFrame->Data + 4, Len);
-#if defined(RTMP_FLASH_SUPPORT)
-
-	if (Len == 16)
-		memcpy(pAd->EEPROMImage + Offset, (UCHAR *)Buffer + Offset, Len);
-
-	if ((Offset + Len) == EEPROM_SIZE)
-		rtmp_ee_flash_write_all(pAd);
-
-	if (Len != 16)
-#endif /* RTMP_FLASH_SUPPORT */
-	{
-		if ((Offset + Len) <= EEPROM_SIZE)
-			EEWriteBulk(pAd, (UINT16 *)(((UCHAR *)Buffer) + Offset), Offset, Len);
-		else {
-			MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-					 ("%s: exceed EEPROM size(%d)\n", __func__, EEPROM_SIZE));
-			MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-					 ("Offset = %u\n", Offset));
-			MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-					 ("Length = %u\n", Len));
-			MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-					 ("Offset + Length=%u\n", (Offset + Len)));
+	if (os_alloc_mem(pAd, &Buffer, capacity) != NDIS_STATUS_SUCCESS || !Buffer)
+		goto HQA_WriteBulkEEPROM_RET;
+	if (pAd->E2pAccessMode == E2P_FLASH_MODE || pAd->E2pAccessMode == E2P_BIN_MODE)
+		memcpy(Buffer, pAd->EEPROMImage, capacity);
+	memcpy_exs(pAd, Buffer + Offset, HqaCmdFrame->Data + 4, Len);
+	if (pAd->E2pAccessMode == E2P_FLASH_MODE) {
+		/* Preserve the QA 16-byte chunk protocol: stage until its last block. */
+		if (Len == 16 && Offset + Len != EEPROM_SIZE) {
+			memcpy(pAd->EEPROMImage, Buffer, capacity);
+			Ret = NDIS_STATUS_SUCCESS;
+		} else
+			Ret = rtmp_ee_flash_write_image_checked(pAd, Buffer, capacity) ?
+				NDIS_STATUS_FAILURE : NDIS_STATUS_SUCCESS;
+	} else if (pAd->E2pAccessMode == E2P_BIN_MODE) {
+		memcpy(pAd->EEPROMImage, Buffer, capacity);
+		Ret = NDIS_STATUS_SUCCESS;
+	} else {
+		Ret = NDIS_STATUS_SUCCESS;
+		for (Pos = 0; Pos < Len; Pos += sizeof(Value)) {
+			memcpy(&Value, Buffer + Offset + Pos, sizeof(Value));
+			if (RT28xx_EEPROM_WRITE16_CHECKED(pAd, Offset + Pos, Value)) {
+				Ret = NDIS_STATUS_FAILURE;
+				break;
+			}
 		}
 	}
-
 HQA_WriteBulkEEPROM_RET:
-	ResponseToQA(HqaCmdFrame, WRQ, 2 + Len, Ret);
 	if (Buffer)
 		os_free_mem(Buffer);
+	ResponseToQA(HqaCmdFrame, WRQ, Ret ? 2 : 2 + Len, Ret);
 #endif
 	return Ret;
 }

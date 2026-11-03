@@ -2107,221 +2107,230 @@ static BOOLEAN IsUnsolicitedEvent(EVENT_RXD *event_rxd)
 }
 
 #if defined(RLM_CAL_CACHE_SUPPORT) || defined(PRE_CAL_TRX_SET2_SUPPORT)
-static INT ExtEventPreCalStoreProc(RTMP_ADAPTER *pAd, UINT32 EventId, UINT8 *Data)
+static BOOLEAN rtmp_precal_event_layout(UINT32 id, UINT32 *header,
+	UINT32 *input, UINT32 *size)
 {
-	UINT32 Offset = 0, IDOffset = 0, LenOffset = 0, HeaderSize = 0, CalDataSize = 0, BitMap = 0;
-	UINT32 i, Length, TotalSize, ChGroupId = 0;
-	UINT16 DoPreCal = 0;
-	static int rf_count;
-	int rf_countMax;
-	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
-			 ("\x1b[41m %s ------------> \x1b[m\n", __FUNCTION__));
-	rf_countMax = pAd->ChGrpMap == 0x1FF ? 9 : 6;
-
-	switch (EventId) {
-	case PRECAL_TXLPF: {
-		TXLPF_CAL_INFO_T *prTxLPFGetEvent = (TXLPF_CAL_INFO_T *)Data;
-		/* Store header */
-		HeaderSize = (UINT32)(uintptr_t)&((TXLPF_CAL_INFO_T *)NULL)->au4Data[0];
-		/* Update Cal data size */
-		CalDataSize = TXLPF_PER_GROUP_DATA_SIZE;
-		/* Update channel group BitMap */
-		prTxLPFGetEvent->u2BitMap = le2cpu16(prTxLPFGetEvent->u2BitMap);
-		BitMap = prTxLPFGetEvent->u2BitMap;
-		for (i = 0; i < CHANNEL_GROUP_NUM*SCN_NUM; i++)
-			prTxLPFGetEvent->au4Data[i] = le2cpu32(prTxLPFGetEvent->au4Data[i]);
-	}
-	break;
-
-	case PRECAL_TXIQ: {
-		TXIQ_CAL_INFO_T *prTxIQGetEvent = (TXIQ_CAL_INFO_T *)Data;
-		/* Store header */
-		HeaderSize = (UINT32)(uintptr_t)&((TXIQ_CAL_INFO_T *)NULL)->au4Data[0];
-		/* Update Cal data size */
-		CalDataSize = TXIQ_PER_GROUP_DATA_SIZE;
-		/* Update channel group BitMap */
-		prTxIQGetEvent->u2BitMap = le2cpu16(prTxIQGetEvent->u2BitMap);
-		BitMap = prTxIQGetEvent->u2BitMap;
-		for (i = 0; i < CHANNEL_GROUP_NUM*SCN_NUM*6; i++)
-			prTxIQGetEvent->au4Data[i] = le2cpu32(prTxIQGetEvent->au4Data[i]);
-	}
-	break;
-
-	case PRECAL_TXDC: {
-		TXDC_CAL_INFO_T *prTxDCGetEvent = (TXDC_CAL_INFO_T *)Data;
-		/* Store header */
-		HeaderSize = (UINT32)(uintptr_t)&((TXDC_CAL_INFO_T *)NULL)->au4Data[0];
-		/* Update Cal data size */
-		CalDataSize = TXDC_PER_GROUP_DATA_SIZE;
-		/* Update channel group BitMap */
-		prTxDCGetEvent->u2BitMap = le2cpu16(prTxDCGetEvent->u2BitMap);
-		BitMap = prTxDCGetEvent->u2BitMap;
-		for (i = 0; i < CHANNEL_GROUP_NUM*SCN_NUM*6; i++)
-			prTxDCGetEvent->au4Data[i] = le2cpu32(prTxDCGetEvent->au4Data[i]);
-	}
-	break;
-
-	case PRECAL_RXFI: {
-		RXFI_CAL_INFO_T *prRxFIGetEvent = (RXFI_CAL_INFO_T *)Data;
-		/* Store header */
-		HeaderSize = (UINT32)(uintptr_t)&((RXFI_CAL_INFO_T *)NULL)->au4Data[0];
-		/* Update Cal data size */
-		CalDataSize = RXFI_PER_GROUP_DATA_SIZE;
-		/* Update channel group BitMap */
-		prRxFIGetEvent->u2BitMap = le2cpu16(prRxFIGetEvent->u2BitMap);
-		BitMap = prRxFIGetEvent->u2BitMap;
-		for (i = 0; i < CHANNEL_GROUP_NUM*SCN_NUM*4; i++)
-			prRxFIGetEvent->au4Data[i] = le2cpu32(prRxFIGetEvent->au4Data[i]);
-	}
-	break;
-
-	case PRECAL_RXFD: {
-		RXFD_CAL_INFO_T *prRxFDGetEvent = (RXFD_CAL_INFO_T *)Data;
-		/* Store header */
-		HeaderSize = (UINT32)(uintptr_t)&((RXFD_CAL_INFO_T *)NULL)->au4Data[0];
-		/* Update Cal data size */
-		CalDataSize = RXFD_PER_GROUP_DATA_SIZE;
-		/* Update channel group BitMap */
-		prRxFDGetEvent->u2BitMap = le2cpu16(prRxFDGetEvent->u2BitMap);
-		BitMap = prRxFDGetEvent->u2BitMap;
-		/* Update group ID */
-		prRxFDGetEvent->u4ChGroupId = le2cpu32(prRxFDGetEvent->u4ChGroupId);
-		ChGroupId = prRxFDGetEvent->u4ChGroupId;
-		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
-				 ("\x1b[33m%s: RXFD ChGroupId %d\x1b[m\n", __FUNCTION__, ChGroupId));
-		for (i = 0;
-		i < (SCN_NUM*RX_SWAGC_LNA_NUM)+(SCN_NUM*RX_FDIQ_LPF_GAIN_NUM*RX_FDIQ_TABLE_SIZE*3);
-		i++)
-			prRxFDGetEvent->au4Data[i] = le2cpu32(prRxFDGetEvent->au4Data[i]);
-	}
-	break;
-
-	default:
-		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-				 ("\x1b[41m %s: Not support this calibration item !!!! \x1b[m\n", __FUNCTION__));
+	switch (id) {
+	case PRECAL_TXLPF:
+		*header = offsetof(TXLPF_CAL_INFO_T, au4Data);
+		*input = sizeof(TXLPF_CAL_INFO_T);
+		*size = TXLPF_PER_GROUP_DATA_SIZE;
 		break;
-	}
-
-	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
-			 ("\x1b[33m%s: EventID = %d, Bitmp = %x\x1b[m\n", __FUNCTION__, EventId, BitMap));
-	/* Update offset parameter */
-	IDOffset = LenOffset = Offset = pAd->PreCalWriteOffSet;
-	LenOffset += 4; /*Skip ID field*/
-	Offset += 8; /*Skip (ID + Len) field*/
-
-	if (pAd->PreCalStoreBuffer != NULL) {
-		/* Store ID */
-		os_move_mem(pAd->PreCalStoreBuffer + IDOffset, &EventId, sizeof(EventId));
-		/* Store header */
-		os_move_mem(pAd->PreCalStoreBuffer + Offset, Data, (ULONG)HeaderSize);
-		Offset += HeaderSize; /*Skip header*/
-		Data += HeaderSize; /*Skip header*/
-
-		/* Store pre-cal data */
-		if (EventId == PRECAL_RXFD) {
-			if ((rf_count < rf_countMax) && (BitMap & (1 << ChGroupId))) {
-				rf_count++;
-				os_move_mem(pAd->PreCalStoreBuffer + Offset, Data, CalDataSize);
-				Offset += CalDataSize;
-			}
-		} else {
-			int count = 0;
-			int countMax = pAd->ChGrpMap == 0x1FF ? 8 : 5;
-
-			for (i = 0; i < CHANNEL_GROUP_NUM; i++) {
-				if (count > countMax)
-					break;
-
-				if (BitMap & (1 << i)) {
-					count++;
-					os_move_mem(pAd->PreCalStoreBuffer + Offset, Data + i * CalDataSize, CalDataSize);
-					Offset += CalDataSize;
-				}
-			}
-		}
-
-		/* Update current temp buffer write-offset */
-		pAd->PreCalWriteOffSet = Offset;
-		/* Calculate buffer size (len + header + data) for each calibration item */
-		Length = Offset - LenOffset;
-		/* Store buffer size for each calibration item */
-		os_move_mem(pAd->PreCalStoreBuffer + LenOffset, &Length, sizeof(Length));
-
-		/* The last event ID - update calibration data to flash */
-		if (EventId == PRECAL_RXFI) {
-			TotalSize = pAd->PreCalWriteOffSet;
-#ifdef RTMP_FLASH_SUPPORT
-			/* Write pre-cal data to flash */
-			if (pAd->E2pAccessMode == E2P_FLASH_MODE)
-				RtmpFlashWrite(pAd->hdev_ctrl, pAd->PreCalStoreBuffer,
-					get_dev_eeprom_offset(pAd) + PRECALPART_OFFSET, TotalSize);
-#endif/* RTMP_FLASH_SUPPORT */
-			if (pAd->E2pAccessMode == E2P_BIN_MODE &&
-			    rtmp_cal_write_to_bin(pAd, pAd->PreCalStoreBuffer,
-				PRECALPART_OFFSET, TotalSize) != NDIS_STATUS_SUCCESS) {
-				pAd->PreCalWriteOffSet = 0;
-				rf_count = 0;
-				MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-					("Pre-calibration BIN write failed; completion flag not raised\n"));
-				return FALSE;
-			}
-
-			/* Raise DoPreCal bits */
-			if (pAd->E2pAccessMode == E2P_FLASH_MODE || pAd->E2pAccessMode == E2P_BIN_MODE) {
-				RT28xx_EEPROM_READ16(pAd, 0x52, DoPreCal);
-				DoPreCal |= (1 << 2);
-				RT28xx_EEPROM_WRITE16(pAd, 0x52, DoPreCal);
-			}
-
-			/* Reset parameter */
-			pAd->PreCalWriteOffSet = 0;
-			rf_count = 0;
-			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF,
-					 ("\x1b[41m %s: Pre-calibration done !! \x1b[m\n", __FUNCTION__));
-		}
-	} else {
-		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-				 ("\x1b[41m %s: PreCalStoreBuffer is NULL !! \x1b[m\n", __FUNCTION__));
+	case PRECAL_TXIQ:
+		*header = offsetof(TXIQ_CAL_INFO_T, au4Data);
+		*input = sizeof(TXIQ_CAL_INFO_T);
+		*size = TXIQ_PER_GROUP_DATA_SIZE;
+		break;
+	case PRECAL_TXDC:
+		*header = offsetof(TXDC_CAL_INFO_T, au4Data);
+		*input = sizeof(TXDC_CAL_INFO_T);
+		*size = TXDC_PER_GROUP_DATA_SIZE;
+		break;
+	case PRECAL_RXFI:
+		*header = offsetof(RXFI_CAL_INFO_T, au4Data);
+		*input = sizeof(RXFI_CAL_INFO_T);
+		*size = RXFI_PER_GROUP_DATA_SIZE;
+		break;
+	case PRECAL_RXFD:
+		*header = offsetof(RXFD_CAL_INFO_T, au4Data);
+		*input = sizeof(RXFD_CAL_INFO_T);
+		*size = RXFD_PER_GROUP_DATA_SIZE;
+		break;
+	default:
 		return FALSE;
 	}
-
-	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
-			 ("\x1b[41m %s <------------ \x1b[m\n", __FUNCTION__));
 	return TRUE;
+}
+
+/* The committed record stream is this adapter's batch state. Resetting its
+ * offset starts a new batch without a counter shared by other adapters. */
+static BOOLEAN rtmp_precal_store_can_append(RTMP_ADAPTER *pAd, UINT32 EventId,
+	UINT32 ChGroupId, UINT32 used, UINT16 requested)
+{
+	UINT32 offset = 0, id, length, header, input, size, payload, group, i, count;
+	UINT32 seen_events = 0, seen_rxfd = 0;
+	UINT32 allowed = (1U << CHANNEL_GROUP_NUM) - 1;
+	UINT16 bitmap;
+
+	while (offset < used) {
+		if (used - offset < 8)
+			return FALSE;
+		os_move_mem(&id, pAd->PreCalStoreBuffer + offset, sizeof(id));
+		os_move_mem(&length, pAd->PreCalStoreBuffer + offset + 4, sizeof(length));
+		if (length < 4 || length > used - offset - 4 ||
+			!rtmp_precal_event_layout(id, &header, &input, &size) ||
+			header > length - 4 ||
+			header < offsetof(TXLPF_CAL_INFO_T, u2BitMap) + sizeof(bitmap))
+			return FALSE;
+		os_move_mem(&bitmap, pAd->PreCalStoreBuffer + offset + 8 +
+			offsetof(TXLPF_CAL_INFO_T, u2BitMap), sizeof(bitmap));
+		if (!bitmap || (bitmap & ~allowed) || (bitmap & ~requested))
+			return FALSE;
+		if (id == PRECAL_RXFD) {
+			if (header < offsetof(RXFD_CAL_INFO_T, u4ChGroupId) + sizeof(group))
+				return FALSE;
+			os_move_mem(&group, pAd->PreCalStoreBuffer + offset + 8 +
+				offsetof(RXFD_CAL_INFO_T, u4ChGroupId), sizeof(group));
+			if (group >= CHANNEL_GROUP_NUM || !(bitmap & (1U << group)) ||
+				!(requested & (1U << group)) || (seen_rxfd & (1U << group)))
+				return FALSE;
+			seen_rxfd |= 1U << group;
+			payload = size;
+		} else {
+			if (seen_events & (1U << id))
+				return FALSE;
+			seen_events |= 1U << id;
+			count = 0;
+			for (i = 0; i < CHANNEL_GROUP_NUM; i++)
+				if (bitmap & (1U << i))
+					count++;
+			if (!size || count > (length - 4 - header) / size)
+				return FALSE;
+			payload = count * size;
+		}
+		if (payload != length - 4 - header)
+			return FALSE;
+		/* The remaining-byte bound above guarantees forward progress. */
+		offset += 4 + length;
+	}
+	return EventId == PRECAL_RXFD ? !(seen_rxfd & (1U << ChGroupId)) :
+		!(seen_events & (1U << EventId));
+}
+
+static INT ExtEventPreCalStoreProc(RTMP_ADAPTER *pAd, UINT32 EventId,
+	UINT8 *Data, UINT32 DataLength)
+{
+	UINT32 header, input, size, payload, record_size, used, offset, group = 0;
+	UINT32 i, j, count = 0, value, length, image_size;
+	UINT32 capacity = PRE_CAL_SIZE_ONE_CARD;
+	UINT32 allowed = (1U << CHANNEL_GROUP_NUM) - 1;
+	UINT16 bitmap, requested, DoPreCal = 0;
+
+	if (!pAd || !Data || !pAd->PreCalStoreBuffer ||
+		RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_NIC_NOT_EXIST) ||
+		RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_HALT_IN_PROGRESS) ||
+		(pAd->E2pAccessMode != E2P_FLASH_MODE && pAd->E2pAccessMode != E2P_BIN_MODE) ||
+		pAd->E2pCtrl.e2pCurMode != pAd->E2pAccessMode ||
+		!rtmp_precal_event_layout(EventId, &header, &input, &size) ||
+		DataLength < input)
+		return FALSE;
+	if (pAd->E2pAccessMode == E2P_FLASH_MODE) {
+		image_size = get_dev_eeprom_size(pAd);
+		if (!pAd->EEPROMImage || (UINT32)PRECALPART_OFFSET > image_size ||
+			capacity > image_size - PRECALPART_OFFSET ||
+			pAd->PreCalStoreBuffer != pAd->EEPROMImage + PRECALPART_OFFSET)
+			return FALSE;
+	}
+	requested = pAd->ChGrpMap;
+	os_move_mem(&bitmap, Data + offsetof(TXLPF_CAL_INFO_T, u2BitMap), sizeof(bitmap));
+	bitmap = le2cpu16(bitmap);
+	if (!requested || (requested & ~allowed) || !bitmap ||
+		(bitmap & ~allowed) || (bitmap & ~requested))
+		return FALSE;
+	if (EventId == PRECAL_RXFD) {
+		os_move_mem(&group, Data + offsetof(RXFD_CAL_INFO_T, u4ChGroupId), sizeof(group));
+		group = le2cpu32(group);
+		if (group >= CHANNEL_GROUP_NUM || !(bitmap & (1U << group)) ||
+			!(requested & (1U << group)))
+			return FALSE;
+		count = 1;
+	} else {
+		for (i = 0; i < CHANNEL_GROUP_NUM; i++)
+			if (bitmap & (1U << i))
+				count++;
+	}
+	used = pAd->PreCalWriteOffSet;
+	if (used > capacity || header > capacity - 8 || !size ||
+		count > (capacity - 8 - header) / size)
+		return FALSE;
+	payload = count * size;
+	record_size = 8 + header + payload;
+	if (record_size > capacity - used ||
+		!rtmp_precal_store_can_append(pAd, EventId, group, used, requested))
+		return FALSE;
+
+	/* No store occurs until the entire source/destination and committed
+	 * record stream have been validated. The input event stays unchanged. */
+	length = record_size - 4;
+	os_move_mem(pAd->PreCalStoreBuffer + used, &EventId, sizeof(EventId));
+	os_move_mem(pAd->PreCalStoreBuffer + used + 4, &length, sizeof(length));
+	os_move_mem(pAd->PreCalStoreBuffer + used + 8, Data, header);
+	os_move_mem(pAd->PreCalStoreBuffer + used + 8 +
+		offsetof(TXLPF_CAL_INFO_T, u2BitMap), &bitmap, sizeof(bitmap));
+	if (EventId == PRECAL_RXFD)
+		os_move_mem(pAd->PreCalStoreBuffer + used + 8 +
+			offsetof(RXFD_CAL_INFO_T, u4ChGroupId), &group, sizeof(group));
+	offset = used + 8 + header;
+	for (i = 0; i < CHANNEL_GROUP_NUM; i++) {
+		if (EventId != PRECAL_RXFD && !(bitmap & (1U << i)))
+			continue;
+		for (j = 0; j < size; j += sizeof(value)) {
+			os_move_mem(&value, Data + header +
+				(EventId == PRECAL_RXFD ? 0 : i * size) + j, sizeof(value));
+			value = le2cpu32(value);
+			os_move_mem(pAd->PreCalStoreBuffer + offset + j, &value, sizeof(value));
+		}
+		offset += size;
+		if (EventId == PRECAL_RXFD)
+			break;
+	}
+	pAd->PreCalWriteOffSet = offset;
+	if (EventId == PRECAL_RXFI) {
+#ifdef RTMP_FLASH_SUPPORT
+		if (pAd->E2pAccessMode == E2P_FLASH_MODE &&
+			RtmpFlashWriteChecked(pAd->hdev_ctrl, pAd->PreCalStoreBuffer,
+				get_dev_eeprom_offset(pAd) + PRECALPART_OFFSET, offset))
+			goto persist_failed;
+#endif
+		if (pAd->E2pAccessMode == E2P_BIN_MODE &&
+			rtmp_cal_write_to_bin(pAd, pAd->PreCalStoreBuffer,
+				PRECALPART_OFFSET, offset) != NDIS_STATUS_SUCCESS)
+			goto persist_failed;
+		RT28xx_EEPROM_READ16(pAd, 0x52, DoPreCal);
+		if (RT28xx_EEPROM_WRITE16_CHECKED(pAd, 0x52, DoPreCal | (1 << 2)))
+			goto persist_failed;
+		pAd->PreCalWriteOffSet = 0;
+	}
+	return TRUE;
+persist_failed:
+	pAd->PreCalWriteOffSet = 0;
+	return FALSE;
 }
 
 NTSTATUS PreCalTxLPFStoreProcHandler(PRTMP_ADAPTER pAd, PCmdQElmt CMDQelmt)
 {
-	return ExtEventPreCalStoreProc(pAd, PRECAL_TXLPF, CMDQelmt->buffer) ?
+	return ExtEventPreCalStoreProc(pAd, PRECAL_TXLPF, CMDQelmt->buffer, CMDQelmt->bufferlength) ?
 		NDIS_STATUS_SUCCESS : NDIS_STATUS_FAILURE;
 }
 
 NTSTATUS PreCalTxIQStoreProcHandler(PRTMP_ADAPTER pAd, PCmdQElmt CMDQelmt)
 {
-	return ExtEventPreCalStoreProc(pAd, PRECAL_TXIQ, CMDQelmt->buffer) ?
+	return ExtEventPreCalStoreProc(pAd, PRECAL_TXIQ, CMDQelmt->buffer, CMDQelmt->bufferlength) ?
 		NDIS_STATUS_SUCCESS : NDIS_STATUS_FAILURE;
 }
 
 NTSTATUS PreCalTxDCStoreProcHandler(PRTMP_ADAPTER pAd, PCmdQElmt CMDQelmt)
 {
-	return ExtEventPreCalStoreProc(pAd, PRECAL_TXDC, CMDQelmt->buffer) ?
+	return ExtEventPreCalStoreProc(pAd, PRECAL_TXDC, CMDQelmt->buffer, CMDQelmt->bufferlength) ?
 		NDIS_STATUS_SUCCESS : NDIS_STATUS_FAILURE;
 }
 
 NTSTATUS PreCalRxFIStoreProcHandler(PRTMP_ADAPTER pAd, PCmdQElmt CMDQelmt)
 {
-	return ExtEventPreCalStoreProc(pAd, PRECAL_RXFI, CMDQelmt->buffer) ?
+	return ExtEventPreCalStoreProc(pAd, PRECAL_RXFI, CMDQelmt->buffer, CMDQelmt->bufferlength) ?
 		NDIS_STATUS_SUCCESS : NDIS_STATUS_FAILURE;
 }
 
 NTSTATUS PreCalRxFDStoreProcHandler(PRTMP_ADAPTER pAd, PCmdQElmt CMDQelmt)
 {
-	return ExtEventPreCalStoreProc(pAd, PRECAL_RXFD, CMDQelmt->buffer) ?
+	return ExtEventPreCalStoreProc(pAd, PRECAL_RXFD, CMDQelmt->buffer, CMDQelmt->bufferlength) ?
 		NDIS_STATUS_SUCCESS : NDIS_STATUS_FAILURE;
 }
 static VOID ExtEventTxLPFCalInfoHandler(
 	RTMP_ADAPTER *pAd, UINT8 *Data, UINT32 Length)
 {
+	if (!Data || Length < sizeof(TXLPF_CAL_INFO_T))
+		return;
 	hex_dump("P_TXLPF_CAL_INFO", Data, Length);
 
 	if (RLM_PRECAL_TXLPF_TO_FLASH_CHECK(Data)) {
@@ -2339,6 +2348,8 @@ static VOID ExtEventTxLPFCalInfoHandler(
 static VOID ExtEventTxIQCalInfoHandler(
 	RTMP_ADAPTER *pAd, UINT8 *Data, UINT32 Length)
 {
+	if (!Data || Length < sizeof(TXIQ_CAL_INFO_T))
+		return;
 	hex_dump("P_TXIQ_CAL_INFO", Data, Length);
 
 	if (RLM_PRECAL_TXIQ_TO_FLASH_CHECK(Data)) {
@@ -2356,6 +2367,8 @@ static VOID ExtEventTxIQCalInfoHandler(
 static VOID ExtEventTxDCCalInfoHandler(
 	RTMP_ADAPTER *pAd, UINT8 *Data, UINT32 Length)
 {
+	if (!Data || Length < sizeof(TXDC_CAL_INFO_T))
+		return;
 	hex_dump("P_TXDC_CAL_INFO", Data, Length);
 
 	if (RLM_PRECAL_TXDC_TO_FLASH_CHECK(Data)) {
@@ -2373,6 +2386,8 @@ static VOID ExtEventTxDCCalInfoHandler(
 static VOID ExtEventRxFICalInfoHandler(
 	RTMP_ADAPTER *pAd, UINT8 *Data, UINT32 Length)
 {
+	if (!Data || Length < sizeof(RXFI_CAL_INFO_T))
+		return;
 	hex_dump("P_RXFI_CAL_INFO", Data, Length);
 
 	if (RLM_PRECAL_RXFI_TO_FLASH_CHECK(Data)) {
@@ -2390,6 +2405,8 @@ static VOID ExtEventRxFICalInfoHandler(
 static VOID ExtEventRxFDCalInfoHandler(
 	RTMP_ADAPTER *pAd, UINT8 *Data, UINT32 Length)
 {
+	if (!Data || Length < sizeof(RXFD_CAL_INFO_T))
+		return;
 	hex_dump("P_RXFD_CAL_INFO", Data, Length);
 
 	if (RLM_PRECAL_RXFD_TO_FLASH_CHECK(Data)) {
@@ -2961,8 +2978,16 @@ VOID AndesMTRxEventHandler(RTMP_ADAPTER *pAd, UCHAR *data)
 	struct cmd_msg *msg;
 	struct MCU_CTRL *ctl = &pAd->MCUCtrl;
 	EVENT_RXD *event_rxd = (EVENT_RXD *)data;
+	UINT32 wire_length;
 
-	if (!OS_TEST_BIT(MCU_INIT, &ctl->flags))
+	if (!data || !OS_TEST_BIT(MCU_INIT, &ctl->flags))
+		return;
+	/* The RX sanity path already bounds the low-16-bit wire length above.
+	 * Reject incomplete event headers before copying or subtracting their
+	 * size in the unsolicited-event dispatcher. No packet-length ABI exists. */
+	os_move_mem(&wire_length, data, sizeof(wire_length));
+	wire_length = le2cpu32(wire_length) & 0xffff;
+	if (wire_length < sizeof(EVENT_RXD))
 		return;
 
 #ifdef RT_BIG_ENDIAN

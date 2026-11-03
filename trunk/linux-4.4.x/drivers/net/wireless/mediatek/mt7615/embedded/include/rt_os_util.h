@@ -678,6 +678,7 @@ void RtmpFlashWrite(
 	UCHAR *p,
 	ULONG a,
 	ULONG b);
+INT RtmpFlashWriteChecked(void *hdev_ctrl, const UCHAR *p, ULONG a, ULONG b);
 #endif /* defined(RTMP_RBUS_SUPPORT) || defined(RTMP_FLASH_SUPPORT) */
 
 UINT32 RtmpOsGetUsbDevVendorID(
