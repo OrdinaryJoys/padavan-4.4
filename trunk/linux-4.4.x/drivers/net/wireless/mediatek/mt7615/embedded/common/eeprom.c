@@ -716,6 +716,11 @@ static NDIS_STATUS rtmp_ee_bin_init(PRTMP_ADAPTER pAd)
 #ifdef CAL_FREE_IC_SUPPORT
 	BOOLEAN bCalFree = 0;
 #endif /* CAL_FREE_IC_SUPPORT */
+#ifdef PRE_CAL_TRX_SET2_SUPPORT
+	/* A non-BIN store buffer can be a live view into the Flash image. */
+	if (pAd->E2pAccessMode != E2P_BIN_MODE && pAd->PreCalStoreBuffer)
+		return NDIS_STATUS_FAILURE;
+#endif
 #ifdef PRE_CAL_TRX_SET1_SUPPORT
 	{
 		BOOLEAN owned = pAd->E2pAccessMode == E2P_BIN_MODE;

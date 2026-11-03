@@ -33,19 +33,28 @@ def lifecycle_source():
         sizes.append(count * width)
     if sizes != [8704, 9504, 648]:
         raise ValueError('Changed calibration spans require explicit lifetime expectations')
+    all_dpd=re.search(r'UINT16 DPD_AllFreq\[\] = \{([^}]+)\}',chip).group(1)
+    dpd_stride=int(re.search(r'^#define TXDPD_SIZE (\d+)$',command_header,re.M).group(1))
+    all_dpd_size=len(re.findall(r'\d+',all_dpd))*dpd_stride
+    if all_dpd_size != sizes[1]+sizes[2] or 1024+sizes[0]+all_dpd_size != 19880:
+        raise ValueError('Changed complete pre-calibration offset')
     for expression in ('#define DCOC_FLASH_OFFSET\t\t1024',
                        '#define DCOC_OFFSET\t\t     (DCOC_FLASH_OFFSET)',
                        '#define DPDPART1_OFFSET\t        (DCOC_OFFSET + DCOC_IMAGE_SIZE)',
-                       '#define DPDPART2_OFFSET\t\t(DCOC_OFFSET + DCOC_IMAGE_SIZE + TXDPD_IMAGE1_SIZE)'):
+                       '#define DPDPART2_OFFSET\t\t(DCOC_OFFSET + DCOC_IMAGE_SIZE + TXDPD_IMAGE1_SIZE)',
+                       '#define PRECALPART_OFFSET       (DPDPART1_OFFSET + DPD_ALL_SIZE * TXDPD_SIZE)',
+                       '#define PRE_CAL_SIZE_ONE_CARD   (16 * 1024)'):
         if expression not in chip_header:
             raise ValueError('Changed calibration layout')
 
-    prefix = h.PREFIX.replace('#define RT_SOC_SUPPORT 1\n#define MULTIPLE_CARD_SUPPORT 1\n', '')
+    prefix = h.PREFIX.replace('#define RT_SOC_SUPPORT 1\n#define MULTIPLE_CARD_SUPPORT 1\n', '').replace('PRECAL_DECLARATIONS', h.precal_declarations(texts['ate']))
     for before, after in [('#define DCOC_IMAGE_SIZE 8', '#define DCOC_IMAGE_SIZE 8704'),
                           ('#define TXDPD_IMAGE1_SIZE 8', '#define TXDPD_IMAGE1_SIZE 9504'),
                           ('#define TXDPD_IMAGE2_SIZE 8', '#define TXDPD_IMAGE2_SIZE 648'),
                           ('#define DPDPART1_OFFSET 8', '#define DPDPART1_OFFSET 9728'),
                           ('#define DPDPART2_OFFSET 16', '#define DPDPART2_OFFSET 19232'),
+                          ('#define PRECALPART_OFFSET 32', '#define PRECALPART_OFFSET 19880'),
+                          ('#define PRE_CAL_SIZE_ONE_CARD 16', '#define PRE_CAL_SIZE_ONE_CARD 16384'),
                           ('static int fsdepth,', 'static int allocation_enabled=1,flash_reads;\nstatic int fsdepth,'),
                           ('if(has("open-")||is("write-open-error"))',
                            'if((has("open-")&&!has("close-open"))||is("write-open-error"))'),
@@ -58,6 +67,7 @@ def lifecycle_source():
     prefix = prefix[:start] + r'''
  if(len==DCOC_IMAGE_SIZE||len==TXDPD_IMAGE1_SIZE||len==TXDPD_IMAGE2_SIZE){cal_allocs++;
   fail=allocation_enabled&&((has("allocation-dcoc")&&len==DCOC_IMAGE_SIZE)||(has("allocation-dpd1")&&len==TXDPD_IMAGE1_SIZE)||(has("allocation-dpd2")&&len==TXDPD_IMAGE2_SIZE));}
+ if(len==PRE_CAL_SIZE_ONE_CARD){precal_allocs++;if(allocation_enabled&&has("precal-allocation-error"))fail=1;}
  if(allocation_enabled&&has("image-allocation-error")&&len==MAX_EEPROM_BUFFER_SIZE)fail=1;
  if(allocation_enabled&&has("flash-allocation-error")&&len==profile_size)fail=1;''' + prefix[end:]
     prefix += r'''
@@ -86,7 +96,7 @@ static int is_owned(void*p){int i;for(i=0;i<32;i++)if(p&&owned[i]==p)return 1;re
     bodies += '\nstatic void reopen_image(RTMP_ADAPTER*pAd){\n' + allocation + '\n}\n'
     return prefix + '\n' + bodies + r'''
 int main(int argc,char**argv){
- RTMP_ADAPTER a;UCHAR snapshot[32768];UCHAR*previous_image,*previous_dcoc,*previous_dpd1,*previous_dpd2;
+ RTMP_ADAPTER a;UCHAR snapshot[65536];UCHAR*previous_image,*previous_dcoc,*previous_dpd1,*previous_dpd2,*previous_precal;
  int status=0,i,previous_mode,previous_source,previous_access,previous_flags,unchanged,views,owned_mask,close_clear=-1;
  UINT snapshot_size=1024;
  if(argc!=2)return 90;
@@ -97,15 +107,22 @@ int main(int argc,char**argv){
  if(os_alloc_mem(&a,&a.EEPROMImage,1024))return 91;
  memset(a.EEPROMImage,0x55,1024);a.EEPROMImage[0x52]=3;a.EEPROMImage[0x53]=0;
  allocation_enabled=0;
- if(has("flash-bin")){profile_size=16384;status=rtmp_nv_init(&a);snapshot_size=profile_size;}
+ if(has("precal-flash-real")||has("precal-flash-alias")){profile_size=36264;if(is("precal-flash-real-small"))profile_size=16384;if(is("precal-flash-real-short"))profile_size=36263;status=rtmp_nv_init(&a);snapshot_size=profile_size;}
+ else if(has("precal-bin-owned"))status=rtmp_ee_bin_init(&a);
+ else if(has("flash-bin")){profile_size=16384;status=rtmp_nv_init(&a);snapshot_size=profile_size;}
  else if(has("bin-close")||has("bin-flash")||has("bin-partial")||is("bin-repeat"))status=rtmp_ee_bin_init(&a);
  if(status)return 92;
- if(has("bin-close")){close_calibration(&a);close_calibration(&a);close_clear=!a.EEPROMImage&&!a.CalDCOCImage&&!a.CalDPDAPart1Image&&!a.CalDPDAPart2Image&&!a.bDCOCReloaded&&!a.bDPDReloaded;allocation_enabled=1;reopen_image(&a);}
+ if(has("precal-flash-alias")||has("precal-bin-owned")){if(!MtATE_Pre_Cal_Proc(&a,0,0))return 93;}
+ if(has("bin-close")){close_calibration(&a);close_calibration(&a);close_clear=!a.EEPROMImage&&!a.CalDCOCImage&&!a.CalDPDAPart1Image&&!a.CalDPDAPart2Image&&!a.PreCalStoreBuffer&&!a.bDCOCReloaded&&!a.bDPDReloaded;allocation_enabled=1;reopen_image(&a);}
  if(has("bin-partial")){os_free_mem(a.CalDPDAPart1Image);os_free_mem(a.CalDPDAPart2Image);a.CalDPDAPart1Image=a.CalDPDAPart2Image=NULL;a.bDPDReloaded=FALSE;}
- previous_image=a.EEPROMImage;previous_dcoc=a.CalDCOCImage;previous_dpd1=a.CalDPDAPart1Image;previous_dpd2=a.CalDPDAPart2Image;
+ previous_image=a.EEPROMImage;previous_dcoc=a.CalDCOCImage;previous_dpd1=a.CalDPDAPart1Image;previous_dpd2=a.CalDPDAPart2Image;previous_precal=a.PreCalStoreBuffer;
  previous_mode=a.E2pCtrl.e2pCurMode;previous_source=a.E2pCtrl.e2pSource;previous_access=a.E2pAccessMode;previous_flags=a.bDCOCReloaded+2*a.bDPDReloaded;
  if(a.EEPROMImage)memcpy(snapshot,a.EEPROMImage,snapshot_size);cal_allocs=0;allocs=0;frees_count=0;allocation_enabled=1;
- if(!strncmp(case_name,"flash-",6)&&!has("flash-bin")){
+ if(has("precal-flash-real"))status=MtATE_Pre_Cal_Proc(&a,0,0);
+ else if(has("precal-flash-alias-reinit")||has("precal-bin-owned-flash-reinit"))status=rtmp_nv_init(&a);
+ else if(has("precal-flash-alias-bin"))status=rtmp_ee_bin_init(&a);
+ else if(has("precal-flash-alias-close")||has("precal-bin-owned-close"))status=0;
+ else if(!strncmp(case_name,"flash-",6)&&!has("flash-bin")){
   profile_size=16384;
   if(is("flash-small"))profile_size=512;
   if(is("flash-base"))profile_size=1024;
@@ -118,11 +135,11 @@ int main(int argc,char**argv){
   status=rtmp_nv_init(&a);
  }else if(has("bin-flash")){profile_size=16384;status=rtmp_nv_init(&a);}
  else status=rtmp_ee_bin_init(&a);
- if(has("flash-close")){close_calibration(&a);close_calibration(&a);close_clear=!a.EEPROMImage&&!a.CalDCOCImage&&!a.CalDPDAPart1Image&&!a.CalDPDAPart2Image&&!a.bDCOCReloaded&&!a.bDPDReloaded;}
- unchanged=a.EEPROMImage==previous_image&&a.CalDCOCImage==previous_dcoc&&a.CalDPDAPart1Image==previous_dpd1&&a.CalDPDAPart2Image==previous_dpd2&&a.E2pCtrl.e2pCurMode==previous_mode&&a.E2pCtrl.e2pSource==previous_source&&a.E2pAccessMode==previous_access&&a.bDCOCReloaded+2*a.bDPDReloaded==previous_flags&&(!a.EEPROMImage||!memcmp(snapshot,a.EEPROMImage,snapshot_size));
+ if(has("flash-close")||has("precal-flash-alias-close")||has("precal-bin-owned-close")){close_calibration(&a);close_calibration(&a);close_clear=!a.EEPROMImage&&!a.CalDCOCImage&&!a.CalDPDAPart1Image&&!a.CalDPDAPart2Image&&!a.PreCalStoreBuffer&&!a.bDCOCReloaded&&!a.bDPDReloaded;}
+ unchanged=a.EEPROMImage==previous_image&&a.CalDCOCImage==previous_dcoc&&a.CalDPDAPart1Image==previous_dpd1&&a.CalDPDAPart2Image==previous_dpd2&&a.PreCalStoreBuffer==previous_precal&&a.E2pCtrl.e2pCurMode==previous_mode&&a.E2pCtrl.e2pSource==previous_source&&a.E2pAccessMode==previous_access&&a.bDCOCReloaded+2*a.bDPDReloaded==previous_flags&&(!a.EEPROMImage||!memcmp(snapshot,a.EEPROMImage,snapshot_size));
  owned_mask=is_owned(a.CalDCOCImage)+2*is_owned(a.CalDPDAPart1Image)+4*is_owned(a.CalDPDAPart2Image);
  views=(a.CalDCOCImage&&(uintptr_t)a.CalDCOCImage==(uintptr_t)a.EEPROMImage+DCOC_OFFSET)+2*(a.CalDPDAPart1Image&&(uintptr_t)a.CalDPDAPart1Image==(uintptr_t)a.EEPROMImage+DPDPART1_OFFSET)+4*(a.CalDPDAPart2Image&&(uintptr_t)a.CalDPDAPart2Image==(uintptr_t)a.EEPROMImage+DPDPART2_OFFSET);
- printf("{\"status\":%d,\"access\":%d,\"mode\":%d,\"source\":%d,\"flags\":%d,\"bits\":%u,\"views\":%d,\"owned\":%d,\"live\":%d,\"cal_allocs\":%d,\"allocs\":%d,\"frees\":%d,\"flash_reads\":%d,\"unchanged\":%d,\"close_clear\":%d}\n",status,a.E2pAccessMode,a.E2pCtrl.e2pCurMode,a.E2pCtrl.e2pSource,a.bDCOCReloaded+2*a.bDPDReloaded,a.EEPROMImage?((unsigned)a.EEPROMImage[0x52]|((unsigned)a.EEPROMImage[0x53]<<8)):0,views,owned_mask,live_allocs,cal_allocs,allocs,frees_count,flash_reads,unchanged,close_clear);
+ printf("{\"status\":%d,\"access\":%d,\"mode\":%d,\"source\":%d,\"flags\":%d,\"bits\":%u,\"views\":%d,\"owned\":%d,\"live\":%d,\"cal_allocs\":%d,\"allocs\":%d,\"frees\":%d,\"flash_reads\":%d,\"unchanged\":%d,\"close_clear\":%d,\"precal_present\":%d,\"precal_owned\":%d}\n",status,a.E2pAccessMode,a.E2pCtrl.e2pCurMode,a.E2pCtrl.e2pSource,a.bDCOCReloaded+2*a.bDPDReloaded,a.EEPROMImage?((unsigned)a.EEPROMImage[0x52]|((unsigned)a.EEPROMImage[0x53]<<8)):0,views,owned_mask,live_allocs,cal_allocs,allocs,frees_count,flash_reads,unchanged,close_clear,a.PreCalStoreBuffer!=NULL,is_owned(a.PreCalStoreBuffer));
  for(i=0;i<32;i++)if(owned[i])free(owned[i]);return 0;
 }
 '''
@@ -222,6 +239,30 @@ class WifiBufferLifetimeTests(unittest.TestCase):
                 self.assertEqual([row[k] for k in ('status', 'close_clear', 'unchanged', 'owned', 'live')], [1, 1, 1, 0, 1])
         row = self.row('bin-close-open-image-allocation-error')
         self.assertEqual([row[k] for k in ('status', 'close_clear', 'unchanged', 'owned', 'live')], [1, 1, 1, 0, 0])
+
+    def test_real_precal_flash_span_requires_all_16384_bytes(self):
+        for case,status,present in [('precal-flash-real-small',0,0),('precal-flash-real-short',0,0),
+                                    ('precal-flash-real-exact',1,1)]:
+            with self.subTest(case=case):
+                row=self.row(case)
+                self.assertEqual([row[k]for k in('status','precal_present','precal_owned','live')],
+                                 [status,present,0,1])
+
+    def test_reinitialization_keeps_live_fourth_buffer_in_its_ownership_context(self):
+        for case,access,precal_owned,live in [('precal-flash-alias-reinit',2,0,1),
+                                             ('precal-flash-alias-bin-init',2,0,1),
+                                             ('precal-bin-owned-flash-reinit',4,1,5)]:
+            with self.subTest(case=case):
+                row=self.row(case)
+                self.assertEqual([row[k]for k in('status','unchanged','access','precal_present','precal_owned','live')],
+                                 [1,1,access,1,precal_owned,live])
+
+    def test_close_clears_fourth_view_and_frees_fourth_owned_allocation_once(self):
+        for case in ('precal-flash-alias-close','precal-bin-owned-close'):
+            with self.subTest(case=case):
+                row=self.row(case)
+                self.assertEqual([row[k]for k in('status','close_clear','precal_present','precal_owned','live')],
+                                 [0,1,0,0,0])
 
 
 if __name__ == '__main__':

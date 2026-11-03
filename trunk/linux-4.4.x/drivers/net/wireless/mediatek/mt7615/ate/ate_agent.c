@@ -5489,62 +5489,60 @@ INT32 SetATE(
 #endif /*PRE_CAL_MT7622_SUPPORT*/
 #ifdef PRE_CAL_TRX_SET1_SUPPORT
 	else if (!strcmp(Arg, "RX2GSELFTEST") && (mode & ATE_START)) {
-		Ret = ATEOp->RxSelfTest(pAd, "0");
-		Ret = 0;
+		Ret = !ATEOp || !ATEOp->RxSelfTest || !ATEOp->RxSelfTest(pAd, "0");
 	} else if (!strcmp(Arg, "RX5GSELFTEST") && (mode & ATE_START)) {
-		Ret = ATEOp->RxSelfTest(pAd, "1");
-		Ret = 0;
+		Ret = !ATEOp || !ATEOp->RxSelfTest || !ATEOp->RxSelfTest(pAd, "1");
 	} else if (!strcmp(Arg, "RXSELFTEST") && (mode & ATE_START)) {
-		Ret = ATEOp->RxSelfTest(pAd, "2");
-		Ret = 0;
+		Ret = !ATEOp || !ATEOp->RxSelfTest || !ATEOp->RxSelfTest(pAd, "2");
 	} else if (!strcmp(Arg, "TX2GDPD") && (mode & ATE_START)) {
-		Ret = ATEOp->TxDPDTest(pAd, "0");
-		Ret = 0;
+		Ret = !ATEOp || !ATEOp->TxDPDTest || !ATEOp->TxDPDTest(pAd, "0");
 	} else if (!strcmp(Arg, "TX5GDPD") && (mode & ATE_START)) {
-		Ret = ATEOp->TxDPDTest(pAd, "1");
-		Ret = 0;
+		Ret = !ATEOp || !ATEOp->TxDPDTest || !ATEOp->TxDPDTest(pAd, "1");
 	} else if (!strcmp(Arg, "TXDPD") && (mode & ATE_START)) {
-		Ret = ATEOp->TxDPDTest(pAd, "2");
-		Ret = 0;
+		Ret = !ATEOp || !ATEOp->TxDPDTest || !ATEOp->TxDPDTest(pAd, "2");
 	}
 #endif /* PRE_CAL_TRX_SET1_SUPPORT */
 #ifdef PRE_CAL_TRX_SET2_SUPPORT
-	else if ((strcmp(Arg, "PRECAL") > 0) && (mode & ATE_START)) {
+	else if (!strncmp(Arg, "PRECAL", 6) && (mode & ATE_START)) {
 		UINT32 ChGrpId = 0;
+		UINT8 CalId = 0;
+		RTMP_STRING *group = Arg + 6;
 
-		Ret = sscanf(Arg + strlen("PRECAL") + 1, "%d", &ChGrpId);
-		if (Ret == 1)
-			MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s: ChGrpId %d\n",
-				__func__, ChGrpId));
-
-		Ret = ATEOp->PreCalTest(pAd, 0, ChGrpId);
-		Ret = 0;
-	} else if ((strcmp(Arg, "PRECALTX") > 0) && (mode & ATE_START)) {
-		UINT32 ChGrpId = 0;
-
-		Ret = sscanf(Arg + strlen("PRECALTX") + 1, "%d", &ChGrpId);
-		if (Ret == 1)
-			MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s: ChGrpId %d\n",
-				__func__, ChGrpId));
-		Ret = ATEOp->PreCalTest(pAd, 1, ChGrpId);
-		Ret = 0;
+		/* Match the longer command before selecting its checked suffix. */
+		if (!strncmp(Arg, "PRECALTX", 8)) {
+			CalId = 1;
+			group = Arg + 8;
 		}
+		if (*group != '_' && *group != '=' && *group != ':' && *group != ' ')
+			return FALSE;
+		group++;
+		if (*group < '0' || *group > '9' ||
+			kstrtou32(group, 10, &ChGrpId) || !ATEOp || !ATEOp->PreCalTest)
+			return FALSE;
+		Ret = !ATEOp->PreCalTest(pAd, CalId, ChGrpId);
+	}
 #endif /* PRE_CAL_TRX_SET2_SUPPORT */
 #if defined(CAL_BIN_FILE_SUPPORT) && defined(MT7615)
-	else if ((strcmp(Arg, "PATRIM") > 0) && (mode & ATE_START)) {
-		if (IS_MT7615(pAd)) {
-			INT32 i;
-			UINT32 Data[4] = {0};
-			RTMP_STRING *value = NULL;
+	else if (!strncmp(Arg, "PATRIM", 6) && (mode & ATE_START)) {
+		INT32 i = 0;
+		UINT32 Data[4] = {0};
+		RTMP_STRING *value;
 
-			for (i = 0, value = rstrtok(Arg + 7, "-"); value; value = rstrtok(NULL, "-"), i++) {
-				Data[i] = simple_strtol(value, 0, 16);
-				MTWF_LOG(DBG_CAT_TEST, DBG_SUBCAT_ALL, DBG_LVL_OFF,
-						("\x1b[32m%s: WF%d = 0x%08x \x1b[m\n", __func__, i, Data[i]));
-			}
-			Ret = ATEOp->PATrim(pAd, &Data[0]);
-			Ret = 0;
+		if (!IS_MT7615(pAd) || !ATEOp || !ATEOp->PATrim ||
+			(Arg[6] != '_' && Arg[6] != '=' && Arg[6] != ':' && Arg[6] != ' '))
+			return FALSE;
+		value = Arg + 7;
+		if (!*value || *value == '-' || strstr(value, "--") ||
+			value[strlen(value) - 1] == '-')
+			return FALSE;
+		for (value = rstrtok(Arg + 7, "-"); value; value = rstrtok(NULL, "-")) {
+			if (i >= ARRAY_SIZE(Data) || kstrtou32(value, 16, &Data[i]))
+				return FALSE;
+			i++;
 		}
+		if (i != ARRAY_SIZE(Data))
+			return FALSE;
+		Ret = !ATEOp->PATrim(pAd, Data);
 	}
 #endif /* CAL_BIN_FILE_SUPPORT */
 	else {

@@ -7892,27 +7892,42 @@ exit:
 INT MtATE_Pre_Cal_Proc(RTMP_ADAPTER *pAd, UINT8 CalId, UINT32 ChGrpId)
 {
 	INT32 ret = NDIS_STATUS_SUCCESS;
+	UINT image_size;
+
+	/* Validate before indexing tables or changing a live store context. */
+	if (RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_NIC_NOT_EXIST) ||
+		(pAd->E2pAccessMode != E2P_FLASH_MODE &&
+		 pAd->E2pAccessMode != E2P_BIN_MODE) ||
+		pAd->E2pCtrl.e2pCurMode != pAd->E2pAccessMode ||
+		CalId >= ARRAY_SIZE(PreCalItemList) ||
+		ChGrpId >= ARRAY_SIZE(PreCalGroupList))
+		return FALSE;
 	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF,
 			 ("%s: Cal Id = %d, ChGrpId = %d\n", __func__, CalId, ChGrpId));
-	/* Initialization */
-	pAd->PreCalWriteOffSet = 0;
-	pAd->ChGrpMap = PreCalGroupList[ChGrpId];
 
 	if (pAd->E2pAccessMode == E2P_FLASH_MODE) {
+		image_size = get_dev_eeprom_size(pAd);
+		if (!pAd->EEPROMImage || PRECALPART_OFFSET > image_size ||
+			PRE_CAL_SIZE_ONE_CARD > image_size - PRECALPART_OFFSET)
+			return FALSE;
 		pAd->PreCalStoreBuffer = pAd->EEPROMImage + PRECALPART_OFFSET;
-	} else {
+	} else if (!pAd->PreCalStoreBuffer) {
 		ret = os_alloc_mem(pAd, &pAd->PreCalStoreBuffer, PRE_CAL_SIZE_ONE_CARD);
 
-		if (ret != NDIS_STATUS_SUCCESS) {
+		if (ret != NDIS_STATUS_SUCCESS || !pAd->PreCalStoreBuffer) {
 			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				("\x1b[42m %s : Not enough memory for pre-cal stored buffer!!\x1b[m\n", __func__));
+			return FALSE;
 		}
 	}
 
-	if (ret == NDIS_STATUS_SUCCESS)
-		MtCmdGetPreCalResult(pAd, PreCalItemList[CalId], PreCalGroupList[ChGrpId]);
+	/* Keep the store buffer until normal teardown even if command setup fails;
+	 * the event path can still hold a reference to the current context. */
+	pAd->PreCalWriteOffSet = 0;
+	pAd->ChGrpMap = PreCalGroupList[ChGrpId];
+	ret = MtCmdGetPreCalResult(pAd, PreCalItemList[CalId], PreCalGroupList[ChGrpId]);
 
-	return TRUE;
+	return ret == NDIS_STATUS_SUCCESS;
 }
 #endif/* PRE_CAL_TRX_SET2_SUPPORT */
 

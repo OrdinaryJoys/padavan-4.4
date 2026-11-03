@@ -431,6 +431,11 @@ NDIS_STATUS rtmp_nv_init(RTMP_ADAPTER *pAd)
 	EEPROM_CONTROL *pE2pCtrl = &pAd->E2pCtrl;
 	struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
 
+#ifdef PRE_CAL_TRX_SET2_SUPPORT
+	/* Preserve live store contexts until their normal driver teardown. */
+	if (pAd->PreCalStoreBuffer)
+		return NDIS_STATUS_FAILURE;
+#endif
 	cap->ee_inited = 0;
 	pE2pCtrl->e2pCurMode = E2P_NONE;
 	pE2pCtrl->e2pSource = 0;

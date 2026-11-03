@@ -864,8 +864,8 @@ VOID RTMPDrvClose(VOID *pAdSrc, VOID *net_dev)
 
 	if (pAd->E2pAccessMode != E2P_FLASH_MODE && pAd->PreCalStoreBuffer != NULL) {
 		os_free_mem(pAd->PreCalStoreBuffer);
-		pAd->PreCalStoreBuffer = NULL;
 	}
+	pAd->PreCalStoreBuffer = NULL;
 
 	if (pAd->PreCalReStoreBuffer != NULL) {
 		os_free_mem(pAd->PreCalReStoreBuffer);

@@ -52,7 +52,7 @@ class WifiBinIOTests(unittest.TestCase):
                     self.assertTrue(all(type(v)is(str if k in ('case','diagnostic','trace')else int)for k,v in row.items()))
                     self.assertEqual(row['doubleclose'],0)
                     if profile=='current':self.assertEqual(row['fsdepth'],0)
-        self.assertEqual((len(h.CASE_NAMES),len(h.BASELINE_CASES),len(h.DISABLED_CASES)),(84,39,2))
+        self.assertEqual((len(h.CASE_NAMES),len(h.BASELINE_CASES),len(h.DISABLED_CASES)),(105,45,3))
 
     def test_failed_file_reload_preserves_old_ram_and_metadata(self):
         for case in ('load-zero','load-short','load-read-error','load-close-error','load-open-no-cache',
@@ -240,6 +240,54 @@ class WifiBinIOTests(unittest.TestCase):
                 self.assertEqual([row[k]for k in('status','profile','callbacks','unchanged','live_allocs')],
                                  [status,profile,profile,1,0])
 
+    def test_precal_bounds_modes_and_indices_decline_without_side_effects(self):
+        for case in ('precal-flash-short','precal-flash-offset-overflow','precal-flash-null-image',
+                     'precal-flash-nic-missing','precal-flash-mode-mismatch','precal-unsupported-mode',
+                     'precal-invalid-cal','precal-invalid-group'):
+            with self.subTest(case=case):
+                row=self.row(case)
+                self.assertEqual([row[k]for k in('status','unchanged','allocs','precal_commands','precal_present')],
+                                 [0,1,0,0,0])
+
+    def test_precal_flash_views_cover_the_whole_span_and_propagate_commands(self):
+        for case,status,group in [('precal-flash-ok',1,0xed),('precal-flash-last-group',1,0x1ff),
+                                  ('precal-flash-command-error',0,0xed)]:
+            with self.subTest(case=case):
+                row=self.row(case)
+                self.assertEqual([row[k]for k in('status','precal_present','precal_view','precal_owned','allocs','precal_commands')],
+                                 [status,1,1,0,0,1])
+                self.assertEqual([row[k]for k in('precal_offset','precal_group','precal_item','precal_command_group')],
+                                 [0,group,0x1f,group])
+        self.assertEqual(self.row('precal-flash-short','baseline')['status'],1)
+
+    def test_precal_bin_reuses_owned_storage_and_reports_allocation_or_command_failure(self):
+        for case,status,allocations,commands,present in [
+                ('precal-bin-ok',1,1,1,1),('precal-bin-repeat',1,1,2,1),
+                ('precal-bin-allocation-error',0,1,0,0),('precal-bin-command-error',0,1,1,1),
+                ('precal-bin-reuse-command-error',0,1,1,1)]:
+            with self.subTest(case=case):
+                row=self.row(case)
+                self.assertEqual([row[k]for k in('status','precal_allocs','precal_commands','precal_present','precal_owned','live_allocs')],
+                                 [status,allocations,commands,present,present,present])
+                if case=='precal-bin-allocation-error':self.assertEqual(row['unchanged'],1)
+        old=self.row('precal-bin-repeat','baseline')
+        self.assertEqual((old['precal_allocs'],old['live_allocs']),(2,2))
+        self.assertEqual(self.row('precal-bin-allocation-error','baseline')['status'],1)
+        self.assertEqual(self.row('precal-bin-command-error','baseline')['status'],1)
+
+    def test_bin_transition_preserves_fourth_pointer_ownership(self):
+        for case,status in [('set-load-precal-alias',0),('init-precal-alias',1),('efuse-precal-alias',1)]:
+            with self.subTest(case=case):
+                row=self.row(case)
+                self.assertEqual([row[k]for k in('status','unchanged','precal_view','precal_owned','allocs','opens','hooks')],
+                                 [status,1,1,0,0,0,0])
+        for case,status in [('set-load-precal-owned',1),('init-precal-owned',0)]:
+            with self.subTest(case=case):
+                row=self.row(case)
+                self.assertEqual([row[k]for k in('status','profile','precal_present','precal_owned','precal_view','precal_allocs','cal_owned','live_allocs')],
+                                 [status,4,1,1,0,1,7,4])
+                self.assertEqual((row['precal_offset'],row['precal_group']),(9,0xbeef))
+
     def test_removed_exact_io_and_error_propagation_changes_are_detected(self):
         code=self.codes['current']
         controls=(
@@ -268,10 +316,13 @@ class WifiBinIOTests(unittest.TestCase):
             for case in names:self.assertEqual(self.row(case,binary),self.row(case,profile))
 
     def test_source_manifest_full_functions_baseline_and_stub_contracts(self):
-        self.assertEqual((len(h.FUNCTION_SOURCES),len(h.BASELINE_FUNCTIONS)),(14,12))
+        self.assertEqual((len(h.FUNCTION_SOURCES),len(h.BASELINE_FUNCTIONS)),(15,13))
         for name,item in h.actual_functions(self.texts).items():self.assertEqual(self.codes['current'].count(item['body']),1)
         for name,body in h.BASELINE_FUNCTIONS.items():self.assertEqual(hashlib.sha256(body.encode()).hexdigest(),h.BASELINE_FUNCTIONS_SHA256[name])
         for name,body in h.DISABLED_STUBS.items():self.assertEqual(hashlib.sha256(body.encode()).hexdigest(),h.DISABLED_STUB_SHA256[name])
+        old=subprocess.check_output(['git','-C',str(ROOT),'show',h.BASELINE_COMMIT+':'+h.SOURCE_PATHS['ate']],text=True)
+        self.assertEqual(h.function(old,'MtATE_Pre_Cal_Proc'),h.BASELINE_FUNCTIONS['MtATE_Pre_Cal_Proc'])
+        self.assertIn(h.precal_declarations(self.texts['ate']),self.codes['current'])
         for text,opts in (({},{}),(self.texts,{'baseline':1}),(self.texts,{'baseline':True,'disabled_oracle':True})):
             with self.assertRaises(ValueError):h.generate_source(text,**opts)
         with mock.patch.dict(h.BASELINE_FUNCTIONS,{'rtmp_ee_load_from_bin':'wrong'}),self.assertRaises(ValueError):h.generate_source(self.texts)
