@@ -685,26 +685,35 @@ static int spi_map_buf(struct spi_master *master, struct device *dev,
 		       enum dma_data_direction dir)
 {
 	const bool vmalloced_buf = is_vmalloc_addr(buf);
-	int desc_len;
-	int sgs;
+	size_t desc_len, sg_count;
+	unsigned int sgs, i;
 	struct page *vm_page;
+	struct scatterlist *sg;
 	void *sg_buf;
 	size_t min;
-	int i, ret;
+	int ret;
 
-	if (vmalloced_buf) {
-		desc_len = PAGE_SIZE;
-		sgs = DIV_ROUND_UP(len + offset_in_page(buf), desc_len);
-	} else {
-		desc_len = master->max_dma_len;
-		sgs = DIV_ROUND_UP(len, desc_len);
-	}
+	if (!len)
+		return 0;
+	desc_len = vmalloced_buf ? PAGE_SIZE : master->max_dma_len;
+	if (!desc_len)
+		return -EINVAL;
+	/* Division/remainder avoid both truncating a size_t DMA limit and
+	 * wrapping len + offset or the usual additive round-up expression. */
+	sg_count = len / desc_len + (len % desc_len != 0);
+	if (vmalloced_buf && offset_in_page(buf) &&
+	    (!(len % desc_len) ||
+	     offset_in_page(buf) > desc_len - len % desc_len))
+		sg_count++;
+	if (sg_count > UINT_MAX)
+		return -E2BIG;
+	sgs = sg_count;
 
 	ret = sg_alloc_table(sgt, sgs, GFP_KERNEL);
 	if (ret != 0)
 		return ret;
 
-	for (i = 0; i < sgs; i++) {
+	for_each_sg(sgt->sgl, sg, sgs, i) {
 
 		if (vmalloced_buf) {
 			/*
@@ -720,12 +729,12 @@ static int spi_map_buf(struct spi_master *master, struct device *dev,
 				sg_free_table(sgt);
 				return -ENOMEM;
 			}
-			sg_set_page(&sgt->sgl[i], vm_page,
+			sg_set_page(sg, vm_page,
 				    min, offset_in_page(buf));
 		} else {
 			min = min_t(size_t, len, desc_len);
 			sg_buf = buf;
-			sg_set_buf(&sgt->sgl[i], sg_buf, min);
+			sg_set_buf(sg, sg_buf, min);
 		}
 
 
@@ -761,8 +770,16 @@ static int __spi_map_msg(struct spi_master *master, struct spi_message *msg)
 	struct spi_transfer *xfer;
 	int ret;
 
+	master->cur_msg_mapped = false;
 	if (!master->can_dma)
 		return 0;
+
+	/* The SG heads are core-owned.  Initialize every transfer before any
+	 * mapping so a partial failure can unwind the complete message. */
+	list_for_each_entry(xfer, &msg->transfers, transfer_list) {
+		memset(&xfer->tx_sg, 0, sizeof(xfer->tx_sg));
+		memset(&xfer->rx_sg, 0, sizeof(xfer->rx_sg));
+	}
 
 	if (master->dma_tx)
 		tx_dev = master->dma_tx->device->dev;
@@ -775,7 +792,7 @@ static int __spi_map_msg(struct spi_master *master, struct spi_message *msg)
 		rx_dev = master->dev.parent;
 
 	list_for_each_entry(xfer, &msg->transfers, transfer_list) {
-		if (!master->can_dma(master, msg->spi, xfer))
+		if (!xfer->len || !master->can_dma(master, msg->spi, xfer))
 			continue;
 
 		if (xfer->tx_buf != NULL) {
@@ -783,24 +800,30 @@ static int __spi_map_msg(struct spi_master *master, struct spi_message *msg)
 					  (void *)xfer->tx_buf, xfer->len,
 					  DMA_TO_DEVICE);
 			if (ret != 0)
-				return ret;
+				goto unmap;
 		}
 
 		if (xfer->rx_buf != NULL) {
 			ret = spi_map_buf(master, rx_dev, &xfer->rx_sg,
 					  xfer->rx_buf, xfer->len,
 					  DMA_FROM_DEVICE);
-			if (ret != 0) {
-				spi_unmap_buf(master, tx_dev, &xfer->tx_sg,
-					      DMA_TO_DEVICE);
-				return ret;
-			}
+			if (ret != 0)
+				goto unmap;
 		}
 	}
 
 	master->cur_msg_mapped = true;
 
 	return 0;
+
+unmap:
+	/* No transfer has been handed to hardware yet.  Release earlier
+	 * transfers as well as a TX mapping whose paired RX failed. */
+	list_for_each_entry(xfer, &msg->transfers, transfer_list) {
+		spi_unmap_buf(master, rx_dev, &xfer->rx_sg, DMA_FROM_DEVICE);
+		spi_unmap_buf(master, tx_dev, &xfer->tx_sg, DMA_TO_DEVICE);
+	}
+	return ret;
 }
 
 static int __spi_unmap_msg(struct spi_master *master, struct spi_message *msg)
@@ -808,7 +831,7 @@ static int __spi_unmap_msg(struct spi_master *master, struct spi_message *msg)
 	struct spi_transfer *xfer;
 	struct device *tx_dev, *rx_dev;
 
-	if (!master->cur_msg_mapped || !master->can_dma)
+	if (!master->cur_msg_mapped)
 		return 0;
 
 	if (master->dma_tx)
@@ -822,12 +845,10 @@ static int __spi_unmap_msg(struct spi_master *master, struct spi_message *msg)
 		rx_dev = master->dev.parent;
 
 	list_for_each_entry(xfer, &msg->transfers, transfer_list) {
-		if (!master->can_dma(master, msg->spi, xfer))
-			continue;
-
 		spi_unmap_buf(master, rx_dev, &xfer->rx_sg, DMA_FROM_DEVICE);
 		spi_unmap_buf(master, tx_dev, &xfer->tx_sg, DMA_TO_DEVICE);
 	}
+	master->cur_msg_mapped = false;
 
 	return 0;
 }
@@ -1057,7 +1078,7 @@ static void __spi_pump_messages(struct spi_master *master, bool in_kthread)
 	spin_lock_irqsave(&master->queue_lock, flags);
 
 	/* Make sure we are not already running a message */
-	if (master->cur_msg) {
+	if (master->cur_msg || master->queue_callbacks) {
 		spin_unlock_irqrestore(&master->queue_lock, flags);
 		return;
 	}
@@ -1206,6 +1227,9 @@ static int spi_init_queue(struct spi_master *master)
 
 	master->running = false;
 	master->busy = false;
+	master->queue_dead = false;
+	master->queue_users = 0;
+	master->queue_callbacks = 0;
 
 	init_kthread_worker(&master->kworker);
 	master->kworker_task = kthread_run(kthread_worker_fn,
@@ -1273,6 +1297,7 @@ void spi_finalize_current_message(struct spi_master *master)
 
 	spin_lock_irqsave(&master->queue_lock, flags);
 	mesg = master->cur_msg;
+	master->queue_callbacks++;
 	spin_unlock_irqrestore(&master->queue_lock, flags);
 
 	spi_unmap_msg(master, mesg);
@@ -1288,7 +1313,6 @@ void spi_finalize_current_message(struct spi_master *master)
 	spin_lock_irqsave(&master->queue_lock, flags);
 	master->cur_msg = NULL;
 	master->cur_msg_prepared = false;
-	queue_kthread_work(&master->kworker, &master->pump_messages);
 	spin_unlock_irqrestore(&master->queue_lock, flags);
 
 	trace_spi_message_done(mesg);
@@ -1296,6 +1320,13 @@ void spi_finalize_current_message(struct spi_master *master)
 	mesg->state = NULL;
 	if (mesg->complete)
 		mesg->complete(mesg->context);
+
+	/* A callback may requeue, but the next transfer must not start until
+	 * it has returned. Removal must also retain master state until here. */
+	spin_lock_irqsave(&master->queue_lock, flags);
+	master->queue_callbacks--;
+	queue_kthread_work(&master->kworker, &master->pump_messages);
+	spin_unlock_irqrestore(&master->queue_lock, flags);
 }
 EXPORT_SYMBOL_GPL(spi_finalize_current_message);
 
@@ -1304,6 +1335,11 @@ static int spi_start_queue(struct spi_master *master)
 	unsigned long flags;
 
 	spin_lock_irqsave(&master->queue_lock, flags);
+
+	if (master->queue_dead) {
+		spin_unlock_irqrestore(&master->queue_lock, flags);
+		return -ESHUTDOWN;
+	}
 
 	if (master->running || master->busy) {
 		spin_unlock_irqrestore(&master->queue_lock, flags);
@@ -1335,13 +1371,15 @@ static int spi_stop_queue(struct spi_master *master)
 	 */
 	/* A synchronous pump may be rolling back with busy already cleared. */
 	while ((!list_empty(&master->queue) || master->busy ||
-		master->cur_msg) && limit--) {
+		master->cur_msg || master->idling || master->queue_users ||
+		master->queue_callbacks) && limit--) {
 		spin_unlock_irqrestore(&master->queue_lock, flags);
 		usleep_range(10000, 11000);
 		spin_lock_irqsave(&master->queue_lock, flags);
 	}
 
-	if (!list_empty(&master->queue) || master->busy || master->cur_msg)
+	if (!list_empty(&master->queue) || master->busy || master->cur_msg ||
+	    master->idling || master->queue_users || master->queue_callbacks)
 		ret = -EBUSY;
 	else
 		master->running = false;
@@ -1388,7 +1426,7 @@ static int __spi_queued_transfer(struct spi_device *spi,
 
 	spin_lock_irqsave(&master->queue_lock, flags);
 
-	if (!master->running) {
+	if (!master->running || master->queue_dead) {
 		spin_unlock_irqrestore(&master->queue_lock, flags);
 		return -ESHUTDOWN;
 	}
@@ -1413,6 +1451,32 @@ static int __spi_queued_transfer(struct spi_device *spi,
 static int spi_queued_transfer(struct spi_device *spi, struct spi_message *msg)
 {
 	return __spi_queued_transfer(spi, msg, true);
+}
+
+static int spi_queue_enter(struct spi_master *master)
+{
+	unsigned long flags;
+
+	/* Protocol drivers must stop submitting before their device is released.
+	 * Until then, retain every accepted queued API frame, including a sync
+	 * caller delayed before its pump and an async caller unlocking the bus. */
+	spin_lock_irqsave(&master->queue_lock, flags);
+	if (master->queue_dead) {
+		spin_unlock_irqrestore(&master->queue_lock, flags);
+		return -ESHUTDOWN;
+	}
+	master->queue_users++;
+	spin_unlock_irqrestore(&master->queue_lock, flags);
+	return 0;
+}
+
+static void spi_queue_leave(struct spi_master *master)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&master->queue_lock, flags);
+	master->queue_users--;
+	spin_unlock_irqrestore(&master->queue_lock, flags);
 }
 
 static int spi_master_initialize_queue(struct spi_master *master)
@@ -1936,10 +2000,17 @@ static int __unregister(struct device *dev, void *null)
 void spi_unregister_master(struct spi_master *master)
 {
 	int dummy;
+	unsigned long flags;
 
 	if (master->queued) {
-		if (spi_destroy_queue(master))
-			dev_err(&master->dev, "queue remove failed\n");
+		/* Keep the pump running for already-owned messages while closing
+		 * all new admissions. A timeout is not permission to free an active
+		 * controller. If hardware never completes, removal must stay here. */
+		spin_lock_irqsave(&master->queue_lock, flags);
+		master->queue_dead = true;
+		spin_unlock_irqrestore(&master->queue_lock, flags);
+		while (spi_destroy_queue(master))
+			msleep(20);
 	}
 
 	mutex_lock(&board_lock);
@@ -2284,10 +2355,17 @@ int spi_async(struct spi_device *spi, struct spi_message *message)
 	struct spi_master *master = spi->master;
 	int ret;
 	unsigned long flags;
+	bool queued = master->queued;
+
+	if (queued) {
+		ret = spi_queue_enter(master);
+		if (ret)
+			return ret;
+	}
 
 	ret = __spi_validate(spi, message);
 	if (ret != 0)
-		return ret;
+		goto out;
 
 	spin_lock_irqsave(&master->bus_lock_spinlock, flags);
 
@@ -2298,6 +2376,9 @@ int spi_async(struct spi_device *spi, struct spi_message *message)
 
 	spin_unlock_irqrestore(&master->bus_lock_spinlock, flags);
 
+out:
+	if (queued)
+		spi_queue_leave(master);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(spi_async);
@@ -2338,10 +2419,17 @@ int spi_async_locked(struct spi_device *spi, struct spi_message *message)
 	struct spi_master *master = spi->master;
 	int ret;
 	unsigned long flags;
+	bool queued = master->queued;
+
+	if (queued) {
+		ret = spi_queue_enter(master);
+		if (ret)
+			return ret;
+	}
 
 	ret = __spi_validate(spi, message);
 	if (ret != 0)
-		return ret;
+		goto out;
 
 	spin_lock_irqsave(&master->bus_lock_spinlock, flags);
 
@@ -2349,6 +2437,9 @@ int spi_async_locked(struct spi_device *spi, struct spi_message *message)
 
 	spin_unlock_irqrestore(&master->bus_lock_spinlock, flags);
 
+out:
+	if (queued)
+		spi_queue_leave(master);
 	return ret;
 
 }
@@ -2374,10 +2465,17 @@ static int __spi_sync(struct spi_device *spi, struct spi_message *message,
 	int status;
 	struct spi_master *master = spi->master;
 	unsigned long flags;
+	bool queued = master->queued;
+
+	if (queued) {
+		status = spi_queue_enter(master);
+		if (status)
+			return status;
+	}
 
 	status = __spi_validate(spi, message);
 	if (status != 0)
-		return status;
+		goto out;
 
 	message->complete = spi_complete;
 	message->context = &done;
@@ -2425,6 +2523,9 @@ static int __spi_sync(struct spi_device *spi, struct spi_message *message,
 		status = message->status;
 	}
 	message->context = NULL;
+out:
+	if (queued)
+		spi_queue_leave(master);
 	return status;
 }
 

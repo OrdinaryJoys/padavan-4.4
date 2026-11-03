@@ -155,8 +155,8 @@ int firmware_upgrade_inhibited(void);
 int firmware_upgrade_signal_inhibited(void);
 void firmware_upgrade_signal_fault(void);
 int reset_to_defaults(void);
-void erase_storage(void);
-void erase_nvram(void);
+int erase_storage(void);
+int erase_nvram(void);
 
 /* init.c */
 void init_main_loop(void);

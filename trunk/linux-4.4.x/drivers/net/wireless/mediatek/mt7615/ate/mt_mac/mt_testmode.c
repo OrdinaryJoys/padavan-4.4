@@ -7009,7 +7009,8 @@ static INT32 pci_ate_leave(RTMP_ADAPTER *pAd)
 {
 	struct _ATE_CTRL *ATECtrl = &pAd->ATECtrl;
 	MTWF_LOG(DBG_CAT_TEST,  DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s\n", __func__));
-	NICReadEEPROMParameters(pAd, NULL);
+	if (!NICReadEEPROMParameters(pAd, NULL))
+		return NDIS_STATUS_FAILURE;
 	NICInitAsicFromEEPROM(pAd);
 
 	if (ATECtrl->pate_pkt) {

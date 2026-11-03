@@ -528,7 +528,8 @@ INT32 WfEPROMSysInit(RTMP_ADAPTER *pAd)
 	RtmpChipOpsEepromHook(pAd, pAd->infType, E2P_NONE);
 	/* We should read EEPROM for all cases */
 	/* TODO: shiang-7603, revise this! */
-	NICReadEEPROMParameters(pAd, (RTMP_STRING *)mac);
+	if (!NICReadEEPROMParameters(pAd, (RTMP_STRING *)mac))
+		return NDIS_STATUS_FAILURE;
 	HcRadioInit(pAd, pAd->RfIcType, pAd->CommonCfg.dbdc_mode);
 	/* +++Add by shiang for debug */
 	RfIC = HcGetRadioRfIC(pAd);

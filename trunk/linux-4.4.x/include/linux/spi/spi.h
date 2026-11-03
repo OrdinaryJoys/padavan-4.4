@@ -328,6 +328,9 @@ static inline void spi_unregister_driver(struct spi_driver *sdrv)
  * @xfer_completion: used by core transfer_one_message()
  * @busy: message pump is busy
  * @running: message pump is running
+ * @queue_dead: queued-master removal has permanently closed admissions
+ * @queue_users: queued API frames which may still access master state
+ * @queue_callbacks: completion callbacks which have not returned
  * @rt: whether this queue is set to run as a realtime task
  * @auto_runtime_pm: the core should ensure a runtime PM reference is held
  *                   while the hardware is prepared, using the parent
@@ -492,6 +495,9 @@ struct spi_master {
 	bool				idling;
 	bool				busy;
 	bool				running;
+	bool				queue_dead;
+	unsigned int			queue_users;
+	unsigned int			queue_callbacks;
 	bool				rt;
 	bool				auto_runtime_pm;
 	bool                            cur_msg_prepared;

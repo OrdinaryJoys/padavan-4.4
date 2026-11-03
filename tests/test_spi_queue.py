@@ -73,15 +73,19 @@ class SpiQueueTests(unittest.TestCase):
 
     def test_exact_manifest_embeds_actual_bodies_and_runtime_pm_flag_fragment(self):
         actual = harness.actual_functions(self.texts)
-        self.assertEqual(len(actual), 17)
-        self.assertEqual(set(actual), set(harness.BASELINE_FUNCTIONS))
+        self.assertEqual(len(actual), 19)
+        self.assertEqual(set(actual), set(harness.BASELINE_FUNCTIONS) |
+                         {'spi_queue_enter', 'spi_queue_leave'})
         generated = harness.generate_source(self.texts)
         for name, entry in actual.items():
             with self.subTest(function=name):
                 self.assertEqual(entry['source_key'], next(
                     key for key, names in harness.FUNCTIONS.items() if name in names))
                 self.assertIn(entry['body'], generated)
-                if name not in ('__spi_pump_messages', 'spi_stop_queue'):
+                if name not in ('__spi_pump_messages', 'spi_stop_queue',
+                                'spi_finalize_current_message', '__spi_queued_transfer',
+                                '__spi_sync', 'spi_queue_enter', 'spi_queue_leave',
+                                '__spi_unmap_msg'):
                     self.assertEqual(entry['body'], harness.BASELINE_FUNCTIONS[name])
         self.assertEqual(hashlib.sha256(harness.production_fragments(
             self.texts).encode()).hexdigest(), harness.PRODUCTION_FRAGMENT_SHA256)
@@ -115,7 +119,7 @@ class SpiQueueTests(unittest.TestCase):
         self.check(('normal-dma', 'normal-dma-dummy'))
         row = self.run_case('normal-dma-dummy')
         self.assertEqual((row['can_dma_calls'], row['dma_unmaps'],
-                          row['dummy_restored'], row['dummy_frees']), (1, 2, 2, 2))
+                          row['dummy_restored'], row['dummy_frees']), (0, 2, 2, 2))
 
     def test_hardware_errors_do_not_unmap_current_message_using_prior_dma_flag(self):
         self.check(('pm-fail-prior-dma', 'prepare-fail-prior-dma',
@@ -125,7 +129,7 @@ class SpiQueueTests(unittest.TestCase):
             self.assertEqual((row['result'], row['result2'], row['returned'],
                               row['completed']), (0, -5, 2, 2))
             self.assertEqual((row['can_dma_calls'], row['dma_unmaps'],
-                              row['cur_msg_mapped']), (1, 2, 0))
+                              row['cur_msg_mapped']), (0, 2, 0))
 
     def test_missing_mapping_reset_exposes_unmapped_transfer_after_hardware_error(self):
         binary = self.mutate_pump('stale-dma-flag',
@@ -135,7 +139,7 @@ class SpiQueueTests(unittest.TestCase):
                 row = self.run_case(name, binary)
                 self.assertEqual((row['cur_msg_mapped'], row['can_dma_calls'],
                                   row['unmapped_dma_visits'],
-                                  row['unsafe_dma_callback']), (1, 1, 2, 1))
+                                  row['unsafe_dma_callback']), (0, 0, 2, 0))
                 # An unmapped SG has orig_nents=0: the model distinguishes
                 # reaching the DMA helper from actually releasing an SG.
                 self.assertEqual(row['dma_unmaps'], 0)
@@ -143,13 +147,13 @@ class SpiQueueTests(unittest.TestCase):
     def test_true_unmap_guard_and_dummy_restore_mutations_are_observable(self):
         texts = copy.copy(self.texts)
         before = harness.actual_functions(texts)['__spi_unmap_msg']['body']
-        needle = '\tif (!master->cur_msg_mapped || !master->can_dma)\n\t\treturn 0;'
+        needle = '\tif (!master->cur_msg_mapped)\n\t\treturn 0;'
         self.assertEqual(before.count(needle), 1)
         texts['core'] = texts['core'].replace(before, before.replace(needle, ''), 1)
         binary = self.compile(texts, 'unmap-without-mapped-guard')
         row = self.run_case('pm-fail-prior-dma', binary)
         self.assertEqual((row['cur_msg_mapped'], row['can_dma_calls'],
-                          row['unmapped_dma_visits']), (0, 1, 2))
+                          row['unmapped_dma_visits']), (0, 0, 2))
         texts = copy.copy(self.texts)
         before = harness.extract(texts['core'], 'spi_unmap_msg')
         after = before.replace('xfer->tx_buf = NULL;', '(void)0;').replace(
@@ -194,8 +198,10 @@ class SpiQueueTests(unittest.TestCase):
     def test_stop_wait_and_final_idle_decision_both_require_current_message_check(self):
         original = harness.extract(self.texts['core'], 'spi_stop_queue')
         loop = ('while ((!list_empty(&master->queue) || master->busy ||\n'
-                '\t\tmaster->cur_msg) && limit--)')
-        final = 'if (!list_empty(&master->queue) || master->busy || master->cur_msg)'
+                '\t\tmaster->cur_msg || master->idling || master->queue_users ||\n'
+                '\t\tmaster->queue_callbacks) && limit--)')
+        final = ('if (!list_empty(&master->queue) || master->busy || master->cur_msg ||\n'
+                 '\t    master->idling || master->queue_users || master->queue_callbacks)')
         self.assertEqual(original.count(loop), 1)
         self.assertEqual(original.count(final), 1)
         mutations = {
@@ -249,8 +255,12 @@ class SpiQueueTests(unittest.TestCase):
             if show.returncode:
                 self.skipTest('Pinned historical commit is absent from shallow checkout')
             old[key] = show.stdout
-        self.assertEqual({n: e['body'] for n, e in harness.actual_functions(old).items()},
-                         harness.BASELINE_FUNCTIONS)
+        old_manifest = {key:tuple(name for name in names
+                                 if name in harness.BASELINE_FUNCTIONS)
+                        for key,names in harness.FUNCTIONS.items()}
+        with mock.patch.object(harness, 'FUNCTIONS', old_manifest):
+            self.assertEqual({n: e['body'] for n, e in harness.actual_functions(old).items()},
+                             harness.BASELINE_FUNCTIONS)
         self.assertEqual(harness.production_fragments(old), harness.BASELINE_FRAGMENTS)
 
     def test_missing_finalize_mutation_retains_current_message_and_pending_wait(self):

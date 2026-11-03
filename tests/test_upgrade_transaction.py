@@ -86,6 +86,50 @@ class UpgradeTransactionTests(unittest.TestCase):
                    'gpio-event-busy-clears-latch')
     def test_gpio_idle_paths_release_nested_leases(self):
         self.cases('gpio-long-idle','gpio-reset-idle','gpio-release-idle')
+    def test_combined_reset_checks_storage_before_nvram_and_reboot(self):
+        self.cases('gpio-reset-storage-failure','gpio-long-reset-storage-failure',
+                   'gpio-long-reset-idle','gpio-long-reset-busy')
+    def test_nvram_set_and_commit_errors_never_request_restart(self):
+        self.cases('gpio-reset-set-failure','gpio-reset-commit-failure',
+                   'gpio-long-reset-set-failure','gpio-long-reset-commit-failure',
+                   'cli-reset-set-failure','cli-reset-commit-failure')
+        for case in ('cli-reset-set-failure','gpio-reset-set-failure','gpio-long-reset-set-failure'):
+            self.assertNotIn('nvram-commit',dict(h.CASES)[case]['trace'])
+    def test_discarded_nvram_commit_status_mutant_requests_restart(self):
+        raw=h.generate_source(self.texts,str(self.component_root),os.geteuid())
+        body=h.extract(self.texts['rc'],'erase_nvram')
+        self.assertEqual(body.count('return nvram_commit();'),1)
+        wrong=body.replace('return nvram_commit();','nvram_commit();\n\treturn 0;')
+        binary=self.compile('discard-nvram-commit',raw.replace(body,wrong,1))
+        for case in ('cli-reset-commit-failure','gpio-reset-commit-failure','gpio-long-reset-commit-failure'):
+            result,out,err=self.execute(binary,case)
+            self.assertEqual(result,0,err);row=json.loads(out)
+            self.assertIn('PID1-TERM',row['trace']);self.assertNotEqual(row,dict(h.CASES)[case])
+    def test_all_nonzero_system_results_abort_the_combined_reset(self):
+        raw=h.generate_source(self.texts,str(self.component_root),os.geteuid())
+        self.assertEqual(raw.count('storage_erase_result=256;'),2)
+        for status in (-1,15):
+            binary=self.compile('storage-system-'+str(status),raw.replace('storage_erase_result=256;',
+                                                                         'storage_erase_result='+str(status)+';'))
+            for name in ('gpio-reset-storage-failure','gpio-long-reset-storage-failure'):
+                result,out,err=self.execute(binary,name)
+                self.assertEqual(result,0,err);self.assertEqual(json.loads(out),dict(h.CASES)[name])
+    def test_old_button_functions_ignore_storage_failure_and_reset_nvram(self):
+        texts=dict(self.texts)
+        expected={'btn_event_long':'190e48b0358327d986d8fc64c0e10e45838723acc6073ce3459e81bc97637088',
+                  'btn_reset_action':'49571f05b0ea15aa958671a147c6ade717f79418d8fee0713acff7e8a75198ac'}
+        for name,digest in expected.items():
+            data=(ROOT/'tests/fixtures/reset-storage'/('6e-'+name+'.c')).read_bytes()
+            self.assertEqual(hashlib.sha256(data).hexdigest(),digest)
+            current=h.extract(texts['buttons'],name)
+            texts['buttons']=texts['buttons'].replace(current,data.decode().rstrip(),1)
+        binary=self.compile('old-storage-reset',h.generate_source(texts,str(self.component_root),os.geteuid()))
+        for name in ('gpio-reset-storage-failure','gpio-long-reset-storage-failure'):
+            result,out,err=self.execute(binary,name)
+            self.assertEqual(result,0,err);row=json.loads(out)
+            self.assertIn('nvram-set',row['trace']);self.assertIn('PID1-TERM',row['trace'])
+            self.assertLess(row['trace'].index('nvram-set'),row['trace'].index('erase-storage'))
+            self.assertNotEqual(row,dict(h.CASES)[name])
     def test_actual_cli_entrypoints_refuse_before_erase_or_signal(self):
         self.cases('cli-reboot-busy','cli-halt-busy','cli-reset-busy','cli-reset-idle')
     def test_actual_pid1_signal_latches_event_reaper_and_fatal_mask(self):
@@ -123,7 +167,7 @@ class UpgradeTransactionTests(unittest.TestCase):
         code=h.generate_source(self.texts,str(self.component_root),os.geteuid())
         for name,record in h.actual_functions(self.texts).items():
             with self.subTest(function=name):self.assertEqual(code.count(record['body']),1)
-        self.assertEqual(len(h.CASES),50);self.assertEqual(len(h.FLASH_CASES),6)
+        self.assertEqual(len(h.CASES),60);self.assertEqual(len(h.FLASH_CASES),6)
     def test_main_loop_guards_are_structurally_before_console_and_deferred_effects(self):
         # Source-structure coverage only, not execution of full PID1 or hardware.
         loop=h.extract(self.texts['init'],'init_main_loop')

@@ -246,8 +246,11 @@ static INT32 MT_ATEStop(RTMP_ADAPTER *pAd)
 	if (if_ops->clean_trx_q)
 		if_ops->clean_trx_q(pAd);
 
-	if (if_ops->ate_leave)
-		if_ops->ate_leave(pAd);
+	if (if_ops->ate_leave) {
+		Ret = if_ops->ate_leave(pAd);
+		if (Ret != NDIS_STATUS_SUCCESS)
+			return Ret;
+	}
 
 	AsicSetRxFilter(pAd);
 	RTMPEnableRxTx(pAd);
@@ -1268,7 +1271,8 @@ static INT32 pci_ate_leave(RTMP_ADAPTER *pAd)
 #endif /* RT_BIG_ENDIAN */
 
 	MTWF_LOG(DBG_CAT_TEST,  DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s -->,\n", __func__));
-	NICReadEEPROMParameters(pAd, NULL);
+	if (!NICReadEEPROMParameters(pAd, NULL))
+		return NDIS_STATUS_FAILURE;
 	NICInitAsicFromEEPROM(pAd);
 
 	if (ATECtrl->allocated == 1) {

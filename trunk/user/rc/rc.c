@@ -464,17 +464,20 @@ write_storage_to_mtd(void)
 	return doSystem("/sbin/mtd_storage.sh %s", "save");
 }
 
-void
+int
 erase_storage(void)
 {
-	doSystem("/sbin/mtd_storage.sh %s", "erase");
+	return doSystem("/sbin/mtd_storage.sh %s", "erase");
 }
 
-void
+int
 erase_nvram(void)
 {
-	nvram_set_int("restore_defaults", 1);
-	nvram_commit();
+	if (nvram_set_int("restore_defaults", 1) != 0)
+		return -1;
+	/* A failed commit may have partially touched flash. Report failure and
+	 * leave restart to an explicit operator decision, not an assumed reset. */
+	return nvram_commit();
 }
 
 #define FW_UPGRADE_PRIVATE "/var/private"
@@ -515,8 +518,11 @@ reset_to_defaults(void)
 	int result, lease = upgrade_action_enter();
 	if (lease < 0)
 		return -1;
-	erase_nvram();
-	result = sys_exit();
+	result = erase_nvram();
+	if (result == 0)
+		result = sys_exit();
+	else
+		logmessage("reset", "NVRAM reset failed (status %d); restart refused", result);
 	upgrade_action_leave(lease);
 	return result;
 }

@@ -25,7 +25,7 @@ SOURCE_PATHS = {
     'http_fixture': 'tests/test_httpd_regressions.py',
 }
 FUNCTIONS = {
-    'rc': ('firmware_upgrade_signal_inhibited', 'firmware_upgrade_signal_fault', 'reset_to_defaults'),
+    'rc': ('firmware_upgrade_signal_inhibited', 'firmware_upgrade_signal_fault', 'reset_to_defaults', 'erase_storage', 'erase_nvram'),
     'init': ('sys_exit', 'sys_stop', 'catch_sig_fatal', 'catch_sig_event', 'catch_sig_reap', 'init_signals'),
     'httpd': ('http_upgrade_action_acquire', 'http_upgrade_action_handoff',
               'http_upgrade_action_release', 'parse_content_length',
@@ -194,7 +194,7 @@ PREFIX = r'''
 #include <sys/reboot.h>
 static const char *events[MAX_EVENTS];
 static char event_text[MAX_EVENTS][96];
-static int event_count, effect_count, transaction_fd=-1, wanted_action;
+static int event_count, effect_count, transaction_fd=-1, wanted_action,storage_erase_result,nvram_set_result,nvram_commit_result;
 static int prepare_result, prepare_calls, cleanup_calls, apply_output, upgrade_output;
 static int format_service,format_mode,fatal_route,reap_calls;
 static int fatal_mask_calls,event_mask_calls,reap_mask_calls,masks_valid=1;
@@ -203,6 +203,7 @@ static volatile sig_atomic_t sig_term_received,sig_usr1_received,sig_alrm_receiv
 static jmp_buf fatal_end;
 int sys_exit(void);
 int sys_stop(void);
+int erase_nvram(void);
 static void catch_sig_fatal(int);
 static void catch_sig_event(int);
 static void catch_sig_reap(int);
@@ -231,10 +232,11 @@ static void fixture_dprintf(const char*format,...){(void)format;event("reap-diag
 static void notify_shutdown(void){event("notify-shutdown");}
 static int fixture_unlink(const char *name){(void)name;effect("unlink-upload");return 0;}
 static unsigned int fixture_sleep(unsigned int seconds){(void)seconds;return 0;}
-static int doSystem(const char *format,...){(void)format;effect("command");return 0;}
+static int doSystem(const char *format,...){if(!strcmp(format,"/sbin/mtd_storage.sh %s")){va_list ap;const char*op;va_start(ap,format);op=va_arg(ap,const char*);assert(!strcmp(op,"erase"));va_end(ap);effect("erase-storage");return storage_erase_result;}effect("command");return 0;}
+static void logmessage(const char*tag,const char*format,...){(void)format;assert(!strcmp(tag,"gpio_btn")||!strcmp(tag,"reset"));event("reset-log");}
 static int eval(const char *command,...){(void)command;effect("eval");return 0;}
-static int nvram_commit(void){effect("nvram-commit");return 0;}
-static int nvram_set_int(const char *name,int value){(void)name;(void)value;effect("nvram-set");return 0;}
+static int nvram_commit(void){effect("nvram-commit");return nvram_commit_result;}
+static int nvram_set_int(const char *name,int value){(void)name;(void)value;effect("nvram-set");return nvram_set_result;}
 static int nvram_get_int(const char *name){(void)name;return wanted_action;}
 static int get_login_safe(void){return 1;}
 static int get_login_valid(void){return 0;}
@@ -290,8 +292,6 @@ static int search_gpio_led(void){return 1;}
 static int get_state_led_pwr(void){return 1;}
 static void gpio_led_set(int pin,int value){(void)pin;(void)value;effect("LED");}
 #define LED_CONTROL(pin,value) gpio_led_set(pin,value)
-static void erase_nvram(void){effect("erase-nvram");}
-static void erase_storage(void){effect("erase-storage");}
 static void ez_action_toggle_wifi2(void){effect("wifi2");}
 static void ez_action_toggle_wifi5(void){effect("wifi5");}
 static void ez_action_change_wifi2(void){effect("wifi2");}
@@ -364,6 +364,16 @@ int main(int argc,char**argv){const char*c;int fd,other,saved;volatile int marke
  else if(!strcmp(c,"gpio-reset-busy")){marker(1);marked=1;btn_reset_action();}
  else if(!strcmp(c,"gpio-long-idle")){wanted_action=7;btn_event_long(BTN_WPS);}
  else if(!strcmp(c,"gpio-reset-idle")){btn_reset_action();}
+ else if(!strcmp(c,"gpio-reset-storage-failure")){storage_erase_result=256;btn_reset_action();}
+ else if(!strcmp(c,"gpio-long-reset-storage-failure")){storage_erase_result=256;wanted_action=15;btn_event_long(BTN_WPS);}
+ else if(!strcmp(c,"gpio-long-reset-idle")){wanted_action=15;btn_event_long(BTN_WPS);}
+ else if(!strcmp(c,"gpio-long-reset-busy")){marker(1);marked=1;wanted_action=15;btn_event_long(BTN_WPS);}
+ else if(!strcmp(c,"gpio-reset-set-failure")){nvram_set_result=-1;btn_reset_action();}
+ else if(!strcmp(c,"gpio-reset-commit-failure")){nvram_commit_result=-1;btn_reset_action();}
+ else if(!strcmp(c,"gpio-long-reset-set-failure")){nvram_set_result=-1;wanted_action=15;btn_event_long(BTN_WPS);}
+ else if(!strcmp(c,"gpio-long-reset-commit-failure")){nvram_commit_result=-1;wanted_action=15;btn_event_long(BTN_WPS);}
+ else if(!strcmp(c,"cli-reset-set-failure")){nvram_set_result=-1;number("cli-result",reset_to_defaults());}
+ else if(!strcmp(c,"cli-reset-commit-failure")){nvram_commit_result=-1;number("cli-result",reset_to_defaults());}
  else if(!strcmp(c,"safe-release-reopens-action")){fd=upgrade_transaction_enter();assert(fd>=0);marker(1);other=upgrade_action_enter();number("active-action-refused",other<0);upgrade_action_leave(other);marker(0);upgrade_action_leave(fd);sys_reboot();}
  else if(!strcmp(c,"cross-process-sh-exclusion")){int pipes[2],status;char value;pid_t pid;fd=upgrade_action_enter();assert(fd>=0&&pipe(pipes)==0);pid=fork();assert(pid>=0);if(!pid){int taken;close(pipes[0]);upgrade_action_leave(fd);taken=upgrade_transaction_enter();value=taken<0?'1':'0';upgrade_action_leave(taken);assert(write(pipes[1],&value,1)==1);close(pipes[1]);_exit(0);}close(pipes[1]);assert(read(pipes[0],&value,1)==1);close(pipes[0]);assert(waitpid(pid,&status,0)==pid&&WIFEXITED(status)&&WEXITSTATUS(status)==0);number("child-exclusive-refused",value=='1');upgrade_action_leave(fd);}
  else if(!strcmp(c,"apply-group-percent-literal")){format_mode=format_service=1;wanted_mode=" Add ";apply_cgi("apply.cgi",NULL);}
@@ -419,14 +429,24 @@ EXPECTED = {
  'gpio-long-busy': ['marker-retained:1'],
  'gpio-reset-busy': ['marker-retained:1'],
  'gpio-long-idle': ['LED','effect-exclusive:blocked','PID1-TERM','effect-exclusive:blocked'],
- 'gpio-reset-idle': ['erase-nvram','effect-exclusive:blocked','erase-storage','effect-exclusive:blocked','PID1-TERM','effect-exclusive:blocked'],
+ 'gpio-reset-idle': ['erase-storage','effect-exclusive:blocked','nvram-set','effect-exclusive:blocked','nvram-commit','effect-exclusive:blocked','PID1-TERM','effect-exclusive:blocked'],
+ 'gpio-reset-storage-failure': ['erase-storage','effect-exclusive:blocked','reset-log'],
+ 'gpio-long-reset-storage-failure': ['LED','effect-exclusive:blocked','erase-storage','effect-exclusive:blocked','reset-log'],
+ 'gpio-long-reset-idle': ['LED','effect-exclusive:blocked','erase-storage','effect-exclusive:blocked','nvram-set','effect-exclusive:blocked','nvram-commit','effect-exclusive:blocked','PID1-TERM','effect-exclusive:blocked'],
+ 'gpio-long-reset-busy': ['marker-retained:1'],
+ 'gpio-reset-set-failure': ['erase-storage','effect-exclusive:blocked','nvram-set','effect-exclusive:blocked','reset-log'],
+ 'gpio-reset-commit-failure': ['erase-storage','effect-exclusive:blocked','nvram-set','effect-exclusive:blocked','nvram-commit','effect-exclusive:blocked','reset-log'],
+ 'gpio-long-reset-set-failure': ['LED','effect-exclusive:blocked','erase-storage','effect-exclusive:blocked','nvram-set','effect-exclusive:blocked','reset-log'],
+ 'gpio-long-reset-commit-failure': ['LED','effect-exclusive:blocked','erase-storage','effect-exclusive:blocked','nvram-set','effect-exclusive:blocked','nvram-commit','effect-exclusive:blocked','reset-log'],
+ 'cli-reset-set-failure': ['nvram-set','effect-exclusive:blocked','reset-log','cli-result:-1'],
+ 'cli-reset-commit-failure': ['nvram-set','effect-exclusive:blocked','nvram-commit','effect-exclusive:blocked','reset-log','cli-result:-1'],
  'safe-release-reopens-action': ['active-action-refused:1','PID1-TERM','effect-exclusive:blocked'],
  'cross-process-sh-exclusion': ['child-exclusive-refused:1'],
  'apply-group-percent-literal': ['group-literal:1','apply-group','effect-exclusive:blocked','validate-cgi','effect-exclusive:blocked','redirect'],
  'cli-reboot-busy': ['cli-refused:1','marker-retained:1'],
  'cli-halt-busy': ['cli-refused:1','marker-retained:1'],
  'cli-reset-busy': ['cli-refused:1','marker-retained:1'],
- 'cli-reset-idle': ['erase-nvram','effect-exclusive:blocked','PID1-TERM','effect-exclusive:blocked','cli-result:0'],
+ 'cli-reset-idle': ['nvram-set','effect-exclusive:blocked','nvram-commit','effect-exclusive:blocked','PID1-TERM','effect-exclusive:blocked','cli-result:0'],
  'phase-active-TERM': ['fault-latch:0','term-latch:0'],
  'phase-active-QUIT': ['fault-latch:0','term-latch:0'],
  'phase-active-SEGV': ['fault-quarantine','fault-latch:1','term-latch:1'],
@@ -438,8 +458,8 @@ EXPECTED = {
  'phase-reap-idle': ['reap-diagnostic','wait-calls:2'],
  'gpio-release-busy': ['marker-retained:1'],
  'gpio-event-busy-clears-latch': ['button-count:0','event-cleared:1','marker-retained:1'],
- 'gpio-release-idle': ['LED','effect-exclusive:blocked','erase-nvram','effect-exclusive:blocked','erase-storage','effect-exclusive:blocked','PID1-TERM','effect-exclusive:blocked'],
+ 'gpio-release-idle': ['LED','effect-exclusive:blocked','erase-storage','effect-exclusive:blocked','nvram-set','effect-exclusive:blocked','nvram-commit','effect-exclusive:blocked','PID1-TERM','effect-exclusive:blocked'],
  'init-signal-masks': ['fatal-mask-calls:11','event-mask-calls:4','reap-mask-calls:1','masks-valid:1'],
 }
-_EFFECTS = {'direct-reboot-idle':1,'apply-reset-idle':3,'gpio-long-idle':2,'gpio-reset-idle':3,'safe-release-reopens-action':1,'apply-group-percent-literal':2,'cli-reset-idle':2,'phase-idle-TERM':1,'gpio-release-idle':4}
+_EFFECTS = {'direct-reboot-idle':1,'apply-reset-idle':3,'gpio-long-idle':2,'gpio-reset-idle':4,'safe-release-reopens-action':1,'apply-group-percent-literal':2,'cli-reset-idle':3,'phase-idle-TERM':1,'gpio-release-idle':5,'gpio-reset-storage-failure':1,'gpio-long-reset-storage-failure':2,'gpio-long-reset-idle':5,'gpio-reset-set-failure':2,'gpio-reset-commit-failure':3,'gpio-long-reset-set-failure':3,'gpio-long-reset-commit-failure':4,'cli-reset-set-failure':1,'cli-reset-commit-failure':2}
 CASES = tuple((name, {'case':name, 'trace':trace+['final-exclusive:free','effects:'+str(_EFFECTS.get(name,0))]}) for name,trace in EXPECTED.items())

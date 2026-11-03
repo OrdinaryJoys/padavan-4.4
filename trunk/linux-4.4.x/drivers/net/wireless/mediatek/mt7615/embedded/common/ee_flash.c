@@ -169,8 +169,11 @@ static NDIS_STATUS rtmp_ee_flash_reset(RTMP_ADAPTER *pAd, UCHAR *start)
 	RTMP_OS_FS_INFO osFsInfo;
 	RTMP_OS_FD srcf;
 	INT retval;
+	NDIS_STATUS status = NDIS_STATUS_FAILURE;
+	UINT copy_size;
 	EEPROM_CONTROL *pE2pCtrl = &pAd->E2pCtrl;
 	struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
+
 #ifdef RT_SOC_SUPPORT
 #ifdef MULTIPLE_CARD_SUPPORT
 	RTMP_STRING BinFilePath[128];
@@ -200,6 +203,8 @@ static NDIS_STATUS rtmp_ee_flash_reset(RTMP_ADAPTER *pAd, UCHAR *start)
 		}
 	}
 
+	if (!start || get_dev_eeprom_size(pAd) < EEPROM_SIZE)
+		return NDIS_STATUS_FAILURE;
 	pE2pCtrl->e2pSource = E2P_SRC_FROM_BIN;
 	RtmpOSFSInfoChange(&osFsInfo, TRUE);
 
@@ -210,40 +215,45 @@ static NDIS_STATUS rtmp_ee_flash_reset(RTMP_ADAPTER *pAd, UCHAR *start)
 			MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 					 ("--> Error opening file %s\n", src));
 
-			if (cap->EEPROM_DEFAULT_BIN != NULL) {
-				NdisMoveMemory(start, cap->EEPROM_DEFAULT_BIN,
-							   cap->EEPROM_DEFAULT_BIN_SIZE > MAX_EEPROM_BUFFER_SIZE ? MAX_EEPROM_BUFFER_SIZE : cap->EEPROM_DEFAULT_BIN_SIZE);
+			copy_size = cap->EEPROM_DEFAULT_BIN_SIZE > MAX_EEPROM_BUFFER_SIZE ?
+				MAX_EEPROM_BUFFER_SIZE : cap->EEPROM_DEFAULT_BIN_SIZE;
+			if (cap->EEPROM_DEFAULT_BIN != NULL && copy_size >= EEPROM_SIZE &&
+				copy_size <= get_dev_eeprom_size(pAd)) {
+				NdisMoveMemory(start, cap->EEPROM_DEFAULT_BIN, copy_size);
 				MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 						 ("Load EEPROM Buffer from default BIN.\n"));
 				pE2pCtrl->BinSource = "Default bin";
-				return NDIS_STATUS_SUCCESS;
-			} else
-				return NDIS_STATUS_FAILURE;
+				status = NDIS_STATUS_SUCCESS;
+			}
+			goto out_restore;
 		} else {
 			/* The object must have a read method*/
 			NdisZeroMemory(start, EEPROM_SIZE);
 			retval = RtmpOSFileRead(srcf, start, EEPROM_SIZE);
 
-			if (retval < 0) {
+			if (retval != EEPROM_SIZE) {
 				MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 						 ("--> Read %s error %d\n", src, -retval));
 			} else {
 				MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 						 ("--> rtmp_ee_flash_reset copy %s to eeprom buffer\n", src));
 				pE2pCtrl->BinSource = src;
+				status = NDIS_STATUS_SUCCESS;
 			}
 
 			retval = RtmpOSFileClose(srcf);
 
 			if (retval) {
+				status = NDIS_STATUS_FAILURE;
 				MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 						 ("--> Error %d closing %s\n", -retval, src));
 			}
 		}
 	}
 
+out_restore:
 	RtmpOSFSInfoChange(&osFsInfo, FALSE);
-	return NDIS_STATUS_SUCCESS;
+	return status;
 }
 
 #ifdef LINUX
@@ -376,13 +386,24 @@ static NDIS_STATUS rtmp_ee_flash_init(PRTMP_ADAPTER pAd, PUCHAR start)
 			*(UINT16 *)(&pAd->EEPROMImage[0x08]) = le2cpu16(Addr45);
 			MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("The EEPROM in Flash is wrong, use default\n"));
 		}
-		/*write back  all to flash*/
-		rtmp_ee_flash_write_all(pAd);
-
+		/* Validate the loaded buffer before replacing physical calibration. */
 		if (validFlashEepromID(pAd) == FALSE) {
-			MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("rtmp_ee_flash_init(): invalid eeprom\n"));
+			MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+				("rtmp_ee_flash_init(): invalid eeprom\n"));
 			return NDIS_STATUS_FAILURE;
 		}
+		/*write back  all to flash*/
+#ifdef CONFIG_WIFI_MTD
+		if (mt_mtd_write_nm_wifi("Factory", get_dev_eeprom_offset(pAd),
+			get_dev_eeprom_size(pAd), pAd->EEPROMImage)) {
+			MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+				("Factory EEPROM default writeback failed\n"));
+			return NDIS_STATUS_FAILURE;
+		}
+#else
+		rtmp_ee_flash_write_all(pAd);
+#endif
+
 	}
 
 	return NDIS_STATUS_SUCCESS;
@@ -391,10 +412,30 @@ static NDIS_STATUS rtmp_ee_flash_init(PRTMP_ADAPTER pAd, PUCHAR start)
 
 NDIS_STATUS rtmp_nv_init(RTMP_ADAPTER *pAd)
 {
+	NDIS_STATUS init_status;
+#ifdef CONFIG_WIFI_MTD
+	INT read_status;
+#endif
 #ifdef MULTIPLE_CARD_SUPPORT
 	UCHAR *eepromBuf;
 #endif /* MULTIPLE_CARD_SUPPORT */
 	EEPROM_CONTROL *pE2pCtrl = &pAd->E2pCtrl;
+	struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
+
+	cap->ee_inited = 0;
+	pE2pCtrl->e2pCurMode = E2P_NONE;
+	pE2pCtrl->e2pSource = 0;
+#ifdef PRE_CAL_MT7622_SUPPORT
+	pAd->CalTXLPFGImage = NULL;
+	pAd->CalTXDCIQImage = NULL;
+	pAd->CalTXDPDImage = NULL;
+#endif
+#ifdef PRE_CAL_TRX_SET1_SUPPORT
+	pAd->CalDCOCImage = NULL;
+	pAd->CalDPDAPart1Image = NULL;
+	pAd->CalDPDAPart2Image = NULL;
+	pAd->bDPDReloaded = FALSE;
+#endif
 	MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("--> rtmp_nv_init\n"));
 	/*
 		pAd->EEPROMImage:
@@ -404,11 +445,23 @@ NDIS_STATUS rtmp_nv_init(RTMP_ADAPTER *pAd)
 	 */
 	if (pAd->EEPROMImage)
 		os_free_mem(pAd->EEPROMImage);
+	pAd->EEPROMImage = NULL;
 
 	os_alloc_mem(pAd, &pAd->EEPROMImage, get_dev_eeprom_size(pAd));
 	if (pAd->EEPROMImage) {
 		NdisZeroMemory(pAd->EEPROMImage, get_dev_eeprom_size(pAd));
+#ifdef CONFIG_WIFI_MTD
+		/* An IO failure is not an invalid EEPROM to replace with defaults. */
+		read_status = mt_mtd_read_nm_wifi("Factory", get_dev_eeprom_offset(pAd),
+			get_dev_eeprom_size(pAd), pAd->EEPROMImage);
+		if (read_status) {
+			MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+				("Factory EEPROM read failed: %d\n", read_status));
+			goto fail;
+		}
+#else
 		RtmpFlashRead(pAd->hdev_ctrl, pAd->EEPROMImage, get_dev_eeprom_offset(pAd), get_dev_eeprom_size(pAd));
+#endif
 
 #ifdef PRE_CAL_MT7622_SUPPORT
 		if (IS_MT7622(pAd)) {
@@ -427,12 +480,34 @@ NDIS_STATUS rtmp_nv_init(RTMP_ADAPTER *pAd)
 #endif /* PRE_CAL_TRX_SET1_SUPPORT */
 		pE2pCtrl->e2pCurMode = E2P_FLASH_MODE;
 		pE2pCtrl->e2pSource = E2P_SRC_FROM_FLASH;
-		return rtmp_ee_flash_init(pAd, pAd->EEPROMImage);
+		init_status = rtmp_ee_flash_init(pAd, pAd->EEPROMImage);
+		if (init_status != NDIS_STATUS_SUCCESS)
+			goto fail;
+		return init_status;
 	} else {
 		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				("Allocate %d-byte-of EEPROMImage failed.\n", get_dev_eeprom_size(pAd)));
 		return NDIS_STATUS_FAILURE;
 	}
+
+fail:
+	cap->ee_inited = 0;
+	pE2pCtrl->e2pCurMode = E2P_NONE;
+	pE2pCtrl->e2pSource = 0;
+#ifdef PRE_CAL_MT7622_SUPPORT
+	pAd->CalTXLPFGImage = NULL;
+	pAd->CalTXDCIQImage = NULL;
+	pAd->CalTXDPDImage = NULL;
+#endif
+#ifdef PRE_CAL_TRX_SET1_SUPPORT
+	pAd->CalDCOCImage = NULL;
+	pAd->CalDPDAPart1Image = NULL;
+	pAd->CalDPDAPart2Image = NULL;
+	pAd->bDPDReloaded = FALSE;
+#endif
+	os_free_mem(pAd->EEPROMImage);
+	pAd->EEPROMImage = NULL;
+	return NDIS_STATUS_FAILURE;
 }
 
 #endif /* RTMP_FLASH_SUPPORT */

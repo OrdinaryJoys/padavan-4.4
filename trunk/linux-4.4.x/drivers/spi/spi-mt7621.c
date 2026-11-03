@@ -71,13 +71,16 @@ static u32 mt7621_spi_get_clk_div(u32 hclk_freq, u32 freq)
 {
 	u32 div;
 
-	div = (hclk_freq + freq - 1) / freq;
+	/* Avoid overflowing the u32 sum used by DIV_ROUND_UP. */
+	if (!freq)
+		return RS_CLK_SEL_M;
+	div = hclk_freq / freq + (hclk_freq % freq != 0);
 
 	if (div > (RS_CLK_SEL_M + 2))
 		return RS_CLK_SEL_M;
 
 	if (div < 2)
-		return 2;
+		return 0;
 
 	return div - 2;
 }
@@ -272,7 +275,8 @@ static int mt7621_spi_setup(struct spi_device *spi)
 		(spi->max_speed_hz > (ms->hclk_freq / 2)))
 		spi->max_speed_hz = (ms->hclk_freq / 2);
 
-	if (spi->max_speed_hz < (ms->hclk_freq / (RS_CLK_SEL_M + 2))) {
+	if (spi->max_speed_hz < (ms->hclk_freq / (RS_CLK_SEL_M + 2) +
+		(ms->hclk_freq % (RS_CLK_SEL_M + 2) != 0))) {
 		dev_info(&spi->dev, "setup: requested speed is too low %d Hz\n",
 			spi->max_speed_hz);
 		return -EINVAL;
@@ -330,7 +334,8 @@ static int mt7621_spi_probe(struct platform_device *pdev)
 	master->dev.of_node = pdev->dev.of_node;
 	master->num_chipselect = 2;
 
-	master->min_speed_hz = hclk_freq / (RS_CLK_SEL_M + 2);
+	master->min_speed_hz = hclk_freq / (RS_CLK_SEL_M + 2) +
+		(hclk_freq % (RS_CLK_SEL_M + 2) != 0);
 
 	dev_set_drvdata(&pdev->dev, master);
 

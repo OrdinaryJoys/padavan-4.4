@@ -280,10 +280,12 @@ mtd_unlock(const char *mtd)
 	struct erase_info_user mtdLockInfo;
 	char *next = NULL;
 	char *str = NULL;
-	int fd;
+	int fd, result = 0;
 
 	if (strchr(mtd, ':')) {
 		str = strdup(mtd);
+		if (!str)
+			return -1;
 		mtd = str;
 	}
 
@@ -297,7 +299,8 @@ mtd_unlock(const char *mtd)
 		fd = mtd_check_open(mtd);
 		if(fd < 0) {
 			fprintf(stderr, "Could not open mtd device: %s\n", mtd);
-			exit(1);
+			result = -1;
+			break;
 		}
 
 		if (quiet < 2)
@@ -305,21 +308,27 @@ mtd_unlock(const char *mtd)
 
 		mtdLockInfo.start = 0;
 		mtdLockInfo.length = mtdsize;
-		ioctl(fd, MEMUNLOCK, &mtdLockInfo);
-		close(fd);
+		if (mtdsize <= 0 ||
+		    (ioctl(fd, MEMUNLOCK, &mtdLockInfo) != 0 &&
+		     errno != EOPNOTSUPP && errno != ENOTTY))
+			result = -1;
+		if (close(fd) != 0)
+			result = -1;
+		if (result)
+			break;
 		mtd = next;
 	} while (next);
 
 	if (str)
 		free(str);
 
-	return 0;
+	return result;
 }
 
 static int
 mtd_erase(const char *mtd)
 {
-	int fd;
+	int fd, result = -1;
 	struct erase_info_user mtdEraseInfo;
 
 	if (quiet < 2)
@@ -328,8 +337,12 @@ mtd_erase(const char *mtd)
 	fd = mtd_check_open(mtd);
 	if(fd < 0) {
 		fprintf(stderr, "Could not open mtd device: %s\n", mtd);
-		exit(1);
+		return -1;
 	}
+	/* Never loop forever on a zero step or erase beyond a malformed range. */
+	if (mtdsize <= 0 || erasesize <= 0 || erasesize > mtdsize ||
+	    mtdsize % erasesize)
+		goto out;
 
 	mtdEraseInfo.length = erasesize;
 
@@ -340,14 +353,21 @@ mtd_erase(const char *mtd)
 			if (!quiet)
 				fprintf(stderr, "\nSkipping bad block at 0x%x   ", mtdEraseInfo.start);
 		} else {
-			ioctl(fd, MEMUNLOCK, &mtdEraseInfo);
-			if(ioctl(fd, MEMERASE, &mtdEraseInfo))
+			if (ioctl(fd, MEMUNLOCK, &mtdEraseInfo) != 0 &&
+			    errno != EOPNOTSUPP && errno != ENOTTY)
+				goto out;
+			if(ioctl(fd, MEMERASE, &mtdEraseInfo)) {
 				fprintf(stderr, "Failed to erase block on %s at 0x%x\n", mtd, mtdEraseInfo.start);
+				goto out;
+			}
 		}
 	}
 
-	close(fd);
-	return 0;
+	result = 0;
+out:
+	if (close(fd) != 0)
+		result = -1;
+	return result;
 
 }
 
@@ -1046,8 +1066,8 @@ int main (int argc, char **argv)
 	i = 0;
 	unlocked = 0;
 	while (erase[i] != NULL) {
-		mtd_unlock(erase[i]);
-		mtd_erase(erase[i]);
+		if (mtd_unlock(erase[i]) != 0 || mtd_erase(erase[i]) != 0)
+			return 1;
 		if (strcmp(erase[i], device) == 0)
 			unlocked = 1;
 		i++;
@@ -1055,8 +1075,8 @@ int main (int argc, char **argv)
 
 	switch (cmd) {
 		case CMD_UNLOCK:
-			if (!unlocked)
-				mtd_unlock(device);
+			if (!unlocked && mtd_unlock(device) != 0)
+				return 1;
 			break;
 		case CMD_VERIFY:
 			return 1;
@@ -1065,19 +1085,18 @@ int main (int argc, char **argv)
 				return 1;
 			break;
 		case CMD_ERASE:
-			if (!unlocked)
-				mtd_unlock(device);
-			mtd_erase(device);
+			if ((!unlocked && mtd_unlock(device) != 0) || mtd_erase(device) != 0)
+				return 1;
 			break;
 		case CMD_WRITE:
-			if (!unlocked)
-				mtd_unlock(device);
+			if (!unlocked && mtd_unlock(device) != 0)
+				return 1;
 			if (mtd_write(imagefd, device, fis_layout, part_offset) != 0)
 				return 1;
 			break;
 		case CMD_JFFS2WRITE:
-			if (!unlocked)
-				mtd_unlock(device);
+			if (!unlocked && mtd_unlock(device) != 0)
+				return 1;
 			mtd_write_jffs2(device, imagefile, jffs2dir);
 			break;
 		case CMD_FIXTRX:

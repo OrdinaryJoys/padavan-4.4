@@ -127,10 +127,11 @@ printf("{\"result\":%d,\"logged_error\":%d,\"calls\":%d,\"format_matches\":%d}\n
         result=subprocess.run([str(exe)],capture_output=True,text=True)
         self.assertNotEqual(result.returncode,0)
         self.assertIn('left shift',result.stderr)
-        # Actual unchanged divider establishes why an invalid provider rate must
-        # be rejected at probe. This is a native UB control, not a device trace.
-        source=self.texts['controller'];start=source.index('static u32 mt7621_spi_get_clk_div');end=source.index('static void mt7621_spi_prepare',start)
-        exe=self.compile(self.texts,'old-zero-div-ubsan',raw=prefix+source[start:end]+'\nint main(void){volatile u32 z=0;return mt7621_spi_get_clk_div(z,z);}\n',extra=('-Wno-unused-variable',))
+        # Fixed historical divider keeps this old UB control independent of the
+        # current defensive zero-rate guard. No device clock is accessed.
+        import controller_clock_harness as clock
+        self.assertEqual(hashlib.sha256(clock.BASELINE_BODY.encode()).hexdigest(),clock.BASELINE_SHA256)
+        exe=self.compile(self.texts,'old-zero-div-ubsan',raw=prefix+clock.BASELINE_BODY+'\nint main(void){volatile u32 z=0;return mt7621_spi_get_clk_div(z,z);}\n',extra=('-Wno-unused-variable',))
         result=subprocess.run([str(exe)],capture_output=True,text=True)
         self.assertNotEqual(result.returncode,0)
         self.assertIn('division by zero',result.stderr)

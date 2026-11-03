@@ -288,7 +288,8 @@ INT NICReadEEPROMParameters(RTMP_ADAPTER *pAd, RTMP_STRING *mac_addr)
 		/* do nothing */
 #else
 		/* If we are run in Multicard mode */
-		ops->eeinit(pAd);
+		if (ops->eeinit(pAd) != NDIS_STATUS_SUCCESS)
+			return FALSE;
 		checkAntCapSanity(pAd);
 #endif /*WCX_SUPPORT */
 #ifdef RF_LOCKDOWN
