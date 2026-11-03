@@ -413,9 +413,11 @@ static void tx_free_event_handler(RTMP_ADAPTER*p,void*q){(void)p;(void)q;dispatc
 '''
 SUFFIX = r'''
 int main(int argc,char**argv){RTMP_ADAPTER a;OS_COOKIE cookie;struct _RTMP_CHIP_OP ops;RTMP_DMACB cells[8];RXD_STRUC d[8];RX_BLK blk;RTMP_RX_RING*r;void*before;void*p=NULL;UINT32 n=0,pending=0,w;UINT32 ringno=1;BOOLEAN again=0;int result=0,owner,dma_safe=1,i;UCHAR wire[64],expected[65536];UINT32 capacity=64,j,offset=0;int content_ok=1;const char*name;
- if(argc!=2)return 90;name=argv[1];CASE_ADMISSION
+ if(argc!=2) { return 90; }
+ name=argv[1];CASE_ADMISSION
  memset(&a,0,sizeof(a));memset(cells,0,sizeof(cells));memset(d,0,sizeof(d));memset(&blk,0,sizeof(blk));memset(&cookie,0,sizeof(cookie));memset(wire,0,sizeof(wire));ops.rx_event_handler=AndesMTRxEventHandler;a.ops=&ops;a.hdev_ctrl=&a;a.OS_Cookie=&cookie;a.flags=3;a.MCUCtrl.flags=1;
- if(strstr(name,"ring0"))ringno=0;r=&a.PciHif.RxRing[ringno];r->Cell=cells;r->RxRingSize=4;r->RxBufferSize=64;r->RxDmaIdx=3;
+ if(strstr(name,"ring0")) { ringno=0; }
+ r=&a.PciHif.RxRing[ringno];r->Cell=cells;r->RxRingSize=4;r->RxBufferSize=64;r->RxDmaIdx=3;
  for(i=0;i<8;i++){d[i].SDL0=32;d[i].LS0=1;d[i].DDONE=1;cells[i].AllocVa=&d[i];cells[i].AllocPa=(uintptr_t)&d[i];cells[i].DmaBuf.AllocSize=64;
 #ifdef CONFIG_WIFI_BUILD_SKB
 cells[i].pNdisPacket=memory(64+(ringno?0:SKB_BUF_HEADROOM_RSV+SKB_BUF_TAILROOM_RSV));cells[i].DmaBuf.AllocVa=(UCHAR*)cells[i].pNdisPacket+(ringno?0:SKB_BUF_HEADROOM_RSV);
@@ -468,8 +470,12 @@ cells[i].DmaBuf.AllocPa=(uintptr_t)cells[i].DmaBuf.AllocVa;}
 
  }else if(!strncmp(name,"outer-",6)||!strncmp(name,"chip-",5)){
   UINT32 actual=32,declared=12;
-  if(!strcmp(name,"outer-actual-zero"))actual=0;if(!strcmp(name,"outer-actual-three"))actual=3;if(!strcmp(name,"outer-actual-eleven"))actual=11;
-  if(!strcmp(name,"outer-declared-zero"))declared=0;if(!strcmp(name,"outer-declared-eleven"))declared=11;if(!strcmp(name,"outer-declared-long"))declared=33;
+  if(!strcmp(name,"outer-actual-zero")) { actual=0; }
+  if(!strcmp(name,"outer-actual-three")) { actual=3; }
+  if(!strcmp(name,"outer-actual-eleven")) { actual=11; }
+  if(!strcmp(name,"outer-declared-zero")) { declared=0; }
+  if(!strcmp(name,"outer-declared-eleven")) { declared=11; }
+  if(!strcmp(name,"outer-declared-long")) { declared=33; }
   if(!strcmp(name,"outer-exact"))actual=12;
   memcpy(wire,&declared,4);
   if(!strncmp(name,"chip-",5)){actual=28;memcpy(wire+16,&declared,4);if(!strcmp(name,"chip-short"))actual=15;if(!strcmp(name,"chip-empty"))actual=16;chip_rx_event_handler(&a,wire,actual);}
@@ -510,7 +516,8 @@ cells[i].DmaBuf.AllocPa=(uintptr_t)cells[i].DmaBuf.AllocVa;}
 {"frame-null",24,0,0,0,0,0},
 {"frame-reserved",24,3,0,0,0,0}};const struct frame_case*f=NULL;FRAME_CONTROL fc;
   for(j=0;j<sizeof(cases)/sizeof(cases[0]);j++)if(!strcmp(cases[j].name,name)){f=&cases[j];break;}
-  if(!f)return 92;memset(&fc,0,sizeof(fc));fc.Type=f->type;fc.SubType=f->subtype;fc.ToDs=f->flags&1;fc.FrDs=(f->flags>>1)&1;fc.Order=(f->flags>>2)&1;
+  if(!f) { return 92; }
+  memset(&fc,0,sizeof(fc));fc.Type=f->type;fc.SubType=f->subtype;fc.ToDs=f->flags&1;fc.FrDs=(f->flags>>1)&1;fc.Order=(f->flags>>2)&1;
   memcpy(wire,&fc,sizeof(fc));wire[16]=f->ba;if(f->translated&&(f->flags&8)){wire[12]=0x81;wire[13]=0;}
   n=f->bytes;p=memory(n);memcpy(p,wire,n);result=rx_frame_header_valid(!strcmp(name,"frame-null")?NULL:p,n,f->translated);
  }else if(!strncmp(name,"process-",8)){
@@ -534,7 +541,8 @@ cells[i].DmaBuf.AllocPa=(uintptr_t)cells[i].DmaBuf.AllocVa;}
  owner=before==cells[0].pNdisPacket;
  for(i=0;i<(int)r->RxRingSize;i++)if(!d[i].DDONE&&(!cells[i].pNdisPacket||!cells[i].DmaBuf.AllocVa||d[i].SDL0>cells[i].DmaBuf.AllocSize))dma_safe=0;
  printf("{\"case\":\"%s\",\"status\":%d,\"length\":%u,\"allocs\":%d,\"copies\":%d,\"dispatch\":%d,\"releases\":%d,\"owner_kept\":%d,\"dma_safe\":%d,\"read_index\":%u,\"scans\":%d,\"discard\":%d,\"frag_frees\":%d,\"heap_frees\":%d,\"content_ok\":%d}\n",name,result,n,allocs,copies,dispatch,releases,owner,dma_safe,r->RxSwReadIdx,scans,r->rx_discard,frag_frees,heap_frees,content_ok);
- for(i=0;i<allocation_count;i++)free(allocations[i]);return 0;
+ for(i=0;i<allocation_count;i++) { free(allocations[i]); }
+ return 0;
 }
 '''
 

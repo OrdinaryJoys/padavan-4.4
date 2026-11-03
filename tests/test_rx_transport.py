@@ -3,7 +3,7 @@ import json,shutil,subprocess,tempfile,unittest
 from pathlib import Path
 import rx_transport_harness as h
 ROOT=Path(__file__).resolve().parents[1]
-FLAGS=('-std=gnu99','-O1','-Wall','-Wextra','-Werror','-Wno-unused-function','-Wno-unused-parameter','-Wno-unused-variable','-Wno-unused-but-set-variable','-Wno-misleading-indentation')
+FLAGS=('-std=gnu99','-O1','-Wall','-Wextra','-Werror','-Wno-unused-function','-Wno-unused-parameter','-Wno-unused-variable','-Wno-unused-but-set-variable')
 class RxTransportTests(unittest.TestCase):
  @classmethod
  def setUpClass(cls):
