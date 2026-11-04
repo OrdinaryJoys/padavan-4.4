@@ -451,9 +451,9 @@ func_erase()
 
 func_reset()
 {
-	rm -f $slk
-	rm -rf $dir_storage
-	mkdir -p -m 755 $dir_storage
+	rm -f "$slk" &&
+		rm -rf "$dir_storage" &&
+		mkdir -p -m 755 "$dir_storage"
 }
 
 func_fill()
@@ -984,8 +984,7 @@ erase)
 	;;
 reset)
 	func_stop_apps
-	func_reset
-	if func_fill && func_tarb && func_ready_publish; then
+	if func_reset && func_fill && func_tarb && func_ready_publish; then
 		:
 	else
 		result=1

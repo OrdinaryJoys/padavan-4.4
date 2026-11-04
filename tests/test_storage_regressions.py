@@ -399,6 +399,41 @@ CODE""")
         self.assertNotEqual(self.run_script('save').returncode,0)
         self.assertFalse(self.flash_calls.exists())
 
+    def test_reset_lock_unlink_failure_preserves_tree_without_save_authority(self):
+        lock=self.tmp/'.storage_locked';lock.write_text('synthetic lock')
+        self.hash.write_text('old hash');self.tbz.write_bytes(b'old backup')
+        self.device.write_bytes(b'old flash')
+        before={str(p.relative_to(self.storage)):p.read_bytes() for p in self.storage.rglob('*')}
+        self.stub('rm','if [ "$1" = -f ] && [ "$2" = "'+str(lock)+'" ]; then exit 1; fi\nexec /bin/rm "$@"')
+        self.assertNotEqual(self.run_script('reset').returncode,0)
+        self.assertEqual(lock.read_text(),'synthetic lock')
+        self.assertEqual({str(p.relative_to(self.storage)):p.read_bytes() for p in self.storage.rglob('*')},before)
+        self.assertFalse(self.ready.exists())
+        # Remove only this synthetic lock so the save denial proves that the
+        # failed reset did not publish positive authorization for the old tree.
+        lock.unlink()
+        self.assertNotEqual(self.run_script('save').returncode,0)
+        self.assertFalse(self.flash_calls.exists())
+        self.assertEqual(self.hash.read_text(),'old hash')
+        self.assertEqual(self.tbz.read_bytes(),b'old backup')
+        self.assertEqual(self.device.read_bytes(),b'old flash')
+
+    def test_reset_tree_delete_failure_preserves_tree_without_save_authority(self):
+        lock=self.tmp/'.storage_locked';lock.write_text('synthetic lock')
+        self.hash.write_text('old hash');self.tbz.write_bytes(b'old backup')
+        self.device.write_bytes(b'old flash')
+        before={str(p.relative_to(self.storage)):p.read_bytes() for p in self.storage.rglob('*')}
+        self.stub('rm','if [ "$1" = -rf ] && [ "$2" = "'+str(self.storage)+'" ]; then exit 1; fi\nexec /bin/rm "$@"')
+        self.assertNotEqual(self.run_script('reset').returncode,0)
+        self.assertFalse(lock.exists())
+        self.assertEqual({str(p.relative_to(self.storage)):p.read_bytes() for p in self.storage.rglob('*')},before)
+        self.assertFalse(self.ready.exists())
+        self.assertNotEqual(self.run_script('save').returncode,0)
+        self.assertFalse(self.flash_calls.exists())
+        self.assertEqual(self.hash.read_text(),'old hash')
+        self.assertEqual(self.tbz.read_bytes(),b'old backup')
+        self.assertEqual(self.device.read_bytes(),b'old flash')
+
     def test_archive_producers_have_live_limits_and_preserve_old_hash_and_backup(self):
         limits=(ROOT/'trunk/user/busybox/busybox-1.24.x/shell/shell_common.c').read_text()
         self.assertRegex(limits,r'\{ RLIMIT_FSIZE,\s+9,\s+\'f\'')
