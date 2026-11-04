@@ -243,7 +243,7 @@ UCHAR ApAutoChannelAtBootUp(RTMP_ADAPTER *pAd, struct wifi_dev *wdev)
 #ifdef TR181_SUPPORT
 	struct hdev_obj *hdev = (struct hdev_obj *)wdev->pHObj;
 #endif
-	UCHAR vht_bw = wlan_config_get_vht_bw(wdev);
+	UCHAR vht_bw;
 
 	if (!wdev) {
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
@@ -252,6 +252,7 @@ UCHAR ApAutoChannelAtBootUp(RTMP_ADAPTER *pAd, struct wifi_dev *wdev)
 		return FALSE;
 	}
 
+	vht_bw = wlan_config_get_vht_bw(wdev);
 	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s----------------->\n", __func__));
 	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s: AutoChannelBootup = %d, pAd: %p, ifname: %s, channel: %d\n",
 			 __func__, pAd->ApCfg.bAutoChannelAtBootup, pAd, pAd->net_dev->name, wdev->channel));
@@ -281,7 +282,8 @@ UCHAR ApAutoChannelAtBootUp(RTMP_ADAPTER *pAd, struct wifi_dev *wdev)
 	pAutoChCtrl = HcGetAutoChCtrlbyBandIdx(pAd, BandIdx);
 
 	/* Now Enable RxTx*/
-	RTMPEnableRxTx(pAd);
+	if (!RTMPEnableRxTx(pAd))
+		return FALSE;
 
 	if ((wdev->channel == 0)
 #ifdef DFS_VENDOR10_CUSTOM_FEATURE
@@ -3698,12 +3700,13 @@ VOID APOverlappingBSSScan(RTMP_ADAPTER *pAd, struct wifi_dev *wdev)
 	if (RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_START_UP) == 0) {
 		MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("Card still not enable Tx/Rx, enable it now!\n"));
 		RTMP_IRQ_ENABLE(pAd);
-		/* rtmp_rx_done_handle() API will check this flag to decide accept incoming packet or not. */
-		/* Set the flag be ready to receive Beacon frame for autochannel select. */
-		RTMP_SET_FLAG(pAd, fRTMP_ADAPTER_START_UP);
 	}
 
-	RTMPEnableRxTx(pAd);
+	if (!RTMPEnableRxTx(pAd))
+		return;
+
+	/* Publish readiness only after DMA enable was accepted. */
+	RTMP_SET_FLAG(pAd, fRTMP_ADAPTER_START_UP);
 	MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("Ready to do passive scanning for Channel[%d] to Channel[%d]!\n",
 			 pChCtrl->ChList[chStartIdx].Channel, pChCtrl->ChList[chEndIdx].Channel));
 	/* Now start to do the passive scanning. */
@@ -4120,7 +4123,8 @@ INT rtmp_ap_init(RTMP_ADAPTER *pAd)
 	if (IS_HIF_TYPE(pAd, HIF_MT)) {
 		/* Now Enable MacRxTx*/
 		RTMP_IRQ_ENABLE(pAd);
-		RTMPEnableRxTx(pAd);
+		if (!RTMPEnableRxTx(pAd))
+			return NDIS_STATUS_FAILURE;
 		RTMP_SET_FLAG(pAd, fRTMP_ADAPTER_START_UP);
 	}
 

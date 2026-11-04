@@ -2348,15 +2348,18 @@ static BOOLEAN hif_wait_WPDMA_idle(struct _RTMP_ADAPTER *pAd, INT round, INT wai
 	WPDMA_GLO_CFG_STRUC GloCfg;
 	/* TODO: shiang-MT7615 */
 	do {
+		if (RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_NIC_NOT_EXIST))
+			return FALSE;
+
 		HIF_IO_READ32(pAd, MT_WPDMA_GLO_CFG, &GloCfg.word);
+		/* A disappearing device must not turn a zero read into idle success. */
+		if (RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_NIC_NOT_EXIST))
+			return FALSE;
 
 		if ((GloCfg.MT7615_field.TxDMABusy == 0)  && (GloCfg.MT7615_field.RxDMABusy == 0)) {
 			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("==>  DMAIdle, GloCfg=0x%x\n", GloCfg.word));
 			return TRUE;
 		}
-
-		if (RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_NIC_NOT_EXIST))
-			return FALSE;
 
 		RtmpusecDelay(wait_us);
 	} while ((i++) < round);

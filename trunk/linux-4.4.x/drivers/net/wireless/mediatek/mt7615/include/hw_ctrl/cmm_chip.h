@@ -269,7 +269,7 @@ typedef struct _RTMP_CHIP_OP {
 	/* MCU */
 	void (*MCUCtrlInit)(struct _RTMP_ADAPTER *ad);
 	void (*MCUCtrlExit)(struct _RTMP_ADAPTER *ad);
-	VOID (*FwInit)(struct _RTMP_ADAPTER *pAd);
+	NDIS_STATUS (*FwInit)(struct _RTMP_ADAPTER *pAd);
 	VOID (*FwExit)(struct _RTMP_ADAPTER *pAd);
 	VOID (*fwdl_datapath_setup)(struct _RTMP_ADAPTER *pAd, BOOLEAN init);
 	int (*DisableTxRx)(struct _RTMP_ADAPTER *ad, UCHAR Level);
@@ -1086,7 +1086,7 @@ BOOLEAN chip_check_rf_lock_down(struct _RTMP_ADAPTER *pAd);
 
 INT32 chip_cmd_tx(struct _RTMP_ADAPTER *pAd, struct cmd_msg *msg);
 VOID chip_spectrum_start(struct _RTMP_ADAPTER *ad, UINT8 *info);
-VOID chip_fw_init(struct _RTMP_ADAPTER *ad);
+NDIS_STATUS chip_fw_init(struct _RTMP_ADAPTER *ad);
 VOID chip_parse_rxv_packet(struct _RTMP_ADAPTER *ad, UINT32 Type, struct _RX_BLK *RxBlk, UCHAR *Data);
 INT32 chip_txs_handler(struct _RTMP_ADAPTER *ad, struct _RX_BLK *rx_blk, VOID *rx_packet);
 VOID chip_rx_event_handler(struct _RTMP_ADAPTER *ad, VOID *rx_packet, UINT32 rx_length);

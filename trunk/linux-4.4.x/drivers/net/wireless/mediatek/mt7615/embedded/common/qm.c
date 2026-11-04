@@ -1831,23 +1831,38 @@ static INT qm_notify_unregister(struct _RTMP_ADAPTER *ad)
 INT qm_init(RTMP_ADAPTER *pAd)
 {
 	RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
-	struct qm_ops **qm_ops = &pAd->qm_ops;
+	struct qm_ops *ops = NULL;
 #ifdef CONFIG_TX_DELAY
 	struct tx_delay_control *tx_delay_ctl = &pAd->tr_ctl.tx_delay_ctl;
 #endif
 	INT ret;
 
+	if (pAd->qm_ops)
+		return NDIS_STATUS_FAILURE;
+
 	if (cap->qm == GENERIC_QM) {
-		*qm_ops = &ge_qm_ops;
+		ops = &ge_qm_ops;
 	} else if (cap->qm == FAST_PATH_QM) {
-		*qm_ops = &fp_qm_ops;
+		ops = &fp_qm_ops;
 	} else if (cap->qm == GENERIC_FAIR_QM) {
-		*qm_ops = &ge_fair_qm_ops;
+		ops = &ge_fair_qm_ops;
 	} else if (cap->qm == FAST_PATH_FAIR_QM) {
-		*qm_ops = &fp_fair_qm_ops;
+		ops = &fp_fair_qm_ops;
 	}
 
-	ret = (*qm_ops)->init(pAd);
+	if (!ops)
+		return NDIS_STATUS_FAILURE;
+	ret = ops->init(pAd);
+	if (ret != NDIS_STATUS_SUCCESS)
+		return ret;
+	/* Publish only the complete algorithm before registering its observer. */
+	pAd->qm_ops = ops;
+	ret = qm_notify_register(pAd);
+	if (ret != NDIS_STATUS_SUCCESS) {
+		ops->exit(pAd);
+		pAd->qm_ops = NULL;
+		return NDIS_STATUS_FAILURE;
+	}
 
 	pAd->fp_que_max_size = DATA_QUE_MAX_NUMS;
 #ifdef CONFIG_TX_DELAY
@@ -1878,18 +1893,26 @@ INT qm_init(RTMP_ADAPTER *pAd)
 		tx_delay_ctl->que_agg_en = FALSE;
 	}
 #endif
-	/*register qm related notify chain*/
-	qm_notify_register(pAd);
-	return ret;
+	return NDIS_STATUS_SUCCESS;
 }
 
 INT qm_exit(RTMP_ADAPTER *pAd)
 {
 	struct qm_ops *ops = pAd->qm_ops;
 	INT ret;
-
-	/*unregister qm related notify chain*/
+#ifdef CONFIG_TX_DELAY
+	struct tx_delay_control *tx_delay_ctl = &pAd->tr_ctl.tx_delay_ctl;
+	RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
+	BOOLEAN cancelled;
+#endif
+	if (!ops)
+		return NDIS_STATUS_SUCCESS;
 	qm_notify_unregister(pAd);
+#ifdef CONFIG_TX_DELAY
+	if (cap->tx_delay_support && !IS_ASIC_CAP(pAd, fASIC_CAP_MCU_OFFLOAD))
+		RTMPReleaseTimer(&tx_delay_ctl->que_agg_timer, &cancelled);
+#endif
 	ret = ops->exit(pAd);
+	pAd->qm_ops = NULL;
 	return ret;
 }

@@ -317,7 +317,9 @@ int mt_wifi_open(VOID *dev)
 	 *	AP Channel auto-selection will be run in mt_wifi_init(),
 	 *	so we must reqister IRQ hander here.
 	 */
-	RtmpOSIRQRequest(net_dev);
+	retval = RtmpOSIRQRequest(net_dev);
+	if (retval != 0)
+		return retval;
 	/* Init IRQ parameters stored in pAd */
 	/*	rtmp_irq_init(pAd); */
 	RTMP_DRIVER_IRQ_INIT(pAd);

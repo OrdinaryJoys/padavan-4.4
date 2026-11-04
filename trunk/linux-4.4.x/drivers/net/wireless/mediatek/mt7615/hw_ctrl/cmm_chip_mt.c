@@ -421,8 +421,9 @@ VOID PDMAResetAndRecovery(RTMP_ADAPTER *pAd)
 	}
 #endif
 	/* AsicEnableBssSync(pAd, pAd->CommonCfg.BeaconPeriod);//Carter check this. */
-	/* Enable PDMA */
-	RT28XXDMAEnable(pAd);
+	/* A failed rearm must keep interrupts and software dequeue disabled. */
+	if (!RT28XXDMAEnable(pAd))
+		return;
 	RTMP_ASIC_INTERRUPT_ENABLE(pAd);
 	/* Enable SW Dequeue */
 	RTMP_CLEAR_FLAG(pAd, fRTMP_ADAPTER_DISABLE_DEQUEUEPACKET);

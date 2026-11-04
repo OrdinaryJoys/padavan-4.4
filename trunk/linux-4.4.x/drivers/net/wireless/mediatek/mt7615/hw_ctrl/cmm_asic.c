@@ -1586,7 +1586,7 @@ BOOLEAN AsicResetWPDMA(RTMP_ADAPTER *pAd)
 #ifdef MT_MAC
 
 	if (IS_HIF_TYPE(pAd, HIF_MT))
-		MtAsicResetWPDMA(pAd);
+		return MtAsicResetWPDMA(pAd);
 
 #endif
 	AsicNotSupportFunc(pAd, __func__);

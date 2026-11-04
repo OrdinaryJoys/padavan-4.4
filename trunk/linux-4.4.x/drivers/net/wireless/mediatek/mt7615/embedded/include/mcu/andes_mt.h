@@ -80,7 +80,7 @@ INT32 AndesMTPciKickOutCmdMsg(struct _RTMP_ADAPTER *pAd, struct cmd_msg *msg);
 INT32 AndesMTPciKickOutCmdMsgFwDlRing(struct _RTMP_ADAPTER *pAd, struct cmd_msg *msg);
 INT32 AndesRestartCheck(struct _RTMP_ADAPTER *pAd);
 #endif /* defined(MT7615) || defined(MT7622) */
-VOID AndesMTPciFwInit(struct _RTMP_ADAPTER *pAd);
+NDIS_STATUS AndesMTPciFwInit(struct _RTMP_ADAPTER *pAd);
 VOID AndesMTPciFwExit(struct _RTMP_ADAPTER *pAd);
 #endif /* defined(RTMP_PCI_SUPPORT) || defined(RTMP_RBUS_SUPPORT) */
 

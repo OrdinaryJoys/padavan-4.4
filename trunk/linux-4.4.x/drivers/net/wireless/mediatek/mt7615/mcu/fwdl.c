@@ -44,11 +44,9 @@ INT NICLoadFirmware(RTMP_ADAPTER *ad)
 	return ret;
 }
 
-VOID NICRestartFirmware(RTMP_ADAPTER *ad)
+INT NICRestartFirmware(RTMP_ADAPTER *ad)
 {
-	int ret = NDIS_STATUS_SUCCESS;
-
-	ret = mt_restart_fw(ad);
+	return mt_restart_fw(ad);
 }
 
 

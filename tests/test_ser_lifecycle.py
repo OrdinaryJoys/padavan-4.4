@@ -65,15 +65,25 @@ class SerLifecycleTests(unittest.TestCase):
     def test_close_joins_an_inflight_recovery_before_releasing_owner(self):
         self.cases(('stop-during-recovery',))
 
+    def test_dma_stop_idle_or_rearm_failures_never_free_live_owners_or_ack_success(self):
+        self.cases(('ser-stop-failure','ser-stop-failure-repeat','ser-idle-failure',
+                    'ser-arm-failure','ser-arm-failure-repeat','ser-qm-failure','ser-tm-failure'))
+
     def test_whole_functions_and_actual_close_order_are_bound(self):
-        self.assertEqual(len(h.CASE_NAMES),15)
+        self.assertEqual(len(h.CASE_NAMES),22)
         self.assertEqual(set(h.CASE_NAMES),set(h.EXPECTED_ROWS))
         self.assertEqual(len(h.function_manifest(self.texts)),7)
         for name,key in h.FUNCTION_SOURCES.items():self.assertEqual(self.generated.count(h.function(self.texts[key],name)),1)
         close=h.function(self.texts['close'],'RTMPDrvClose')
         self.assertLess(close.index('RTMP_OS_IRQ_RELEASE'),close.index('HwCtrlSerExit(pAd);'))
+        self.assertLess(close.index('HwCtrlExit(pAd);'),close.index('NICRestartFirmware(pAd)'))
+        self.assertLess(close.index('HwCtrlExit(pAd);'),close.index('RTMP_OS_IRQ_RELEASE'))
         self.assertLess(close.index('HwCtrlSerExit(pAd);'),close.index('tr_ctl_exit(pAd);'))
         self.assertLess(close.index('HwCtrlSerExit(pAd);'),close.index('tm_exit(pAd);'))
+        self.assertLess(close.index('qm_exit(pAd);'),close.index('tr_ctl_exit(pAd);'))
+        self.assertLess(close.index('tr_ctl_exit(pAd);'),close.index('WfSysPosExit(pAd)'))
+        self.assertLess(close.index('WscThreadExit(pAd);'),close.index('WfSysPosExit(pAd)'))
+        self.assertLess(close.index('RTMP_AllTimerListRelease(pAd);'),close.index('WfSysPosExit(pAd)'))
         self.assertRegex(close,r'if \(!pAd->ErrRecoveryCtl.queues_retired\) \{[\s\S]*?tm_exit\(pAd\);[\s\S]*?qm_exit\(pAd\);[\s\S]*?queues_retired = TRUE;\s*\}')
         producer=h.function(self.texts['command'],'RTMP_MAC_RECOVERY')
         self.assertLess(producer.index('NdisAcquireSpinLock'),producer.index('RTCMDUp('))

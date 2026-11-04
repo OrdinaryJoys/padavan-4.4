@@ -24,19 +24,21 @@ NDIS_STATUS RtmpMgmtTaskInit(RTMP_ADAPTER *pAd)
 	NDIS_STATUS status;
 	/* Creat Command Thread */
 	pTask = &pAd->cmdQTask;
-	RtmpCmdQInit(pAd);
-	RTMP_OS_TASK_INIT(pTask, "RtmpCmdQTask", pAd);
-	status = RtmpOSTaskAttach(pTask, RTPCICmdThread, (ULONG)pTask);
-
-	if (status == NDIS_STATUS_FAILURE) {
-		MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_ERROR, ("Unable to start RTPCICmdThread!\n"));
+	if (RTMP_OS_TASK_LEGALITY(pTask))
 		return NDIS_STATUS_FAILURE;
+	RtmpCmdQInit(pAd);
+	status = RTMP_OS_TASK_INIT(pTask, "RtmpCmdQTask", pAd);
+	if (status == NDIS_STATUS_SUCCESS)
+		status = RtmpOSTaskAttach(pTask, RTPCICmdThread, (ULONG)pTask);
+
+	if (status != NDIS_STATUS_SUCCESS) {
+		MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_ERROR, ("Unable to start RTPCICmdThread!\n"));
+		RtmpCmdQExit(pAd);
+		NdisFreeSpinLock(&pAd->CmdQLock);
+		pAd->CmdQ.CmdQState = RTMP_TASK_STAT_UNKNOWN;
+		return status;
 	}
 
-#ifdef WSC_INCLUDED
-	/* start the crediential write task first. */
-	WscThreadInit(pAd);
-#endif /* WSC_INCLUDED */
 	return NDIS_STATUS_SUCCESS;
 }
 
@@ -59,7 +61,8 @@ VOID RtmpMgmtTaskExit(RTMP_ADAPTER *pAd)
 		pAd->CmdQ.CmdQState = RTMP_TASK_STAT_UNKNOWN;
 	}
 #ifdef WSC_INCLUDED
-	WscThreadExit(pAd);
+	/* Configuration/timer owners are retired separately by rtmp_cfg_exit. */
+	WscThreadStop(pAd);
 #endif /* WSC_INCLUDED */
 }
 

@@ -536,17 +536,21 @@ void ba_reordering_resource_release(RTMP_ADAPTER *pAd)
 	/* II. free memory of reordering mpdu table */
 	NdisAcquireSpinLock(&pAd->mpdu_blk_pool.lock);
 	os_free_mem(pAd->mpdu_blk_pool.mem);
+	pAd->mpdu_blk_pool.mem = NULL;
+	pAd->mpdu_blk_pool.freelist.next = NULL;
+	pAd->mpdu_blk_pool.freelist.qlen = 0;
 	NdisReleaseSpinLock(&pAd->mpdu_blk_pool.lock);
 }
 
 BOOLEAN ba_reordering_resource_init(RTMP_ADAPTER *pAd, int num)
 {
 	int     i;
-	PUCHAR  mem;
+	PUCHAR  mem = NULL;
 	struct reordering_mpdu *mpdu_blk;
 	struct reordering_list *freelist;
-	/* allocate spinlock */
-	NdisAllocateSpinLock(pAd, &pAd->mpdu_blk_pool.lock);
+	/* The pool lock belongs to the adapter; this transaction owns only mem. */
+	if (pAd->mpdu_blk_pool.mem)
+		return FALSE;
 	/* initialize freelist */
 	freelist = &pAd->mpdu_blk_pool.freelist;
 	freelist->next = NULL;
@@ -554,12 +558,12 @@ BOOLEAN ba_reordering_resource_init(RTMP_ADAPTER *pAd, int num)
 	MTWF_LOG(DBG_CAT_PROTO, CATPROTO_BA, DBG_LVL_TRACE, ("Allocate %d memory for BA reordering\n", (UINT32)(num * sizeof(struct reordering_mpdu))));
 	/* allocate number of mpdu_blk memory */
 	os_alloc_mem(pAd, (PUCHAR *)&mem, (num * sizeof(struct reordering_mpdu)));
-	pAd->mpdu_blk_pool.mem = mem;
 
 	if (mem == NULL) {
 		MTWF_LOG(DBG_CAT_PROTO, CATPROTO_BA, DBG_LVL_ERROR, ("Can't Allocate Memory for BA Reordering\n"));
 		return FALSE;
 	}
+	pAd->mpdu_blk_pool.mem = mem;
 
 	/* build mpdu_blk free list */
 	for (i = 0; i < num; i++) {

@@ -252,6 +252,7 @@ typedef struct _HW_CTRL_T {
 	INT ser_func_state;
 	UINT32 ser_status;
 	NDIS_SPIN_LOCK ser_lock;
+	BOOLEAN ser_initialized;
 	UINT32 ser_times[SER_TIME_ID_END];
 #endif /* ERR_RECOVERY */
 #ifdef DBG_STARVATION

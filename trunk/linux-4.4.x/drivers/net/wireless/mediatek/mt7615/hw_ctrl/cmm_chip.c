@@ -81,12 +81,14 @@ BOOLEAN chip_eeprom_read_with_range(struct _RTMP_ADAPTER *ad, USHORT start, USHO
 		return FALSE;
 }
 
-VOID chip_fw_init(struct _RTMP_ADAPTER *ad)
+NDIS_STATUS chip_fw_init(struct _RTMP_ADAPTER *ad)
 {
 	struct _RTMP_CHIP_OP *ops = hc_get_chip_ops(ad->hdev_ctrl);
 
 	if (ops->FwInit && (IS_HIF_TYPE(ad, HIF_MT)))
-		ops->FwInit(ad);
+		return ops->FwInit(ad);
+
+	return NDIS_STATUS_FAILURE;
 }
 
 VOID chip_parse_rxv_packet(struct _RTMP_ADAPTER *ad, UINT32 Type, struct _RX_BLK *RxBlk, UCHAR *Data)

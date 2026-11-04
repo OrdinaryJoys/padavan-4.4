@@ -51,7 +51,7 @@ INT32 MCUSysPrepare(RTMP_ADAPTER *pAd)
 
 	MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s\n", __func__));
 	MCU_CTRL_INIT(pAd);
-	chip_fw_init(pAd);
+	Ret = chip_fw_init(pAd);
 
 	return Ret;
 }
@@ -61,7 +61,9 @@ INT32 MCUSysInit(RTMP_ADAPTER *pAd)
 	INT32 Ret = 0;
 	MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s\n", __func__));
 	MCU_CTRL_INIT(pAd);
-	chip_fw_init(pAd);
+	Ret = chip_fw_init(pAd);
+	if (Ret != NDIS_STATUS_SUCCESS)
+		return Ret;
 	{
 		UINT32 Value;
 #ifdef WIFI_SPECTRUM_SUPPORT

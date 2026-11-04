@@ -20,7 +20,9 @@ BODY_ORDER=('__RtmpOSTaskKill', 'HwRecoveryFromError', 'ser_ctrl_task', 'ser_ini
 CASE_NAMES=('hif-failure','hif-failure-repeat','hif-success','recovery-halted',
  'recovery-failed-entry','producer-running','producer-halted','producer-failed',
  'producer-stopped','stop-normal','stop-repeat','stop-nonzero-exit',
- 'stop-before-owner-release','ser-reopen-reset','stop-during-recovery')
+ 'stop-before-owner-release','ser-reopen-reset','stop-during-recovery',
+ 'ser-stop-failure','ser-stop-failure-repeat','ser-idle-failure','ser-arm-failure',
+ 'ser-arm-failure-repeat','ser-qm-failure','ser-tm-failure')
 FIELDS=('result','tm_exits','qm_exits','hif_inits','qm_inits','tm_inits',
  'dma_enables','init_done','queues_retired','recovery_failed','wakeups',
  'joins','task_present','ser_state','lock_live','owner_released','invalid_operations')
@@ -39,7 +41,14 @@ EXPECTED_ROWS={
  'stop-nonzero-exit':[0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0],
  'stop-before-owner-release':[0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,1,0],
  'ser-reopen-reset':[0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,0,0],
- 'stop-during-recovery':[0,1,1,1,0,0,0,0,1,1,1,1,0,0,0,1,0]}
+ 'stop-during-recovery':[0,1,1,1,0,0,0,0,1,1,1,1,0,0,0,1,0],
+ 'ser-stop-failure':[1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0],
+ 'ser-stop-failure-repeat':[1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0],
+ 'ser-idle-failure':[1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0],
+ 'ser-arm-failure':[1, 2, 2, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0],
+ 'ser-arm-failure-repeat':[1, 2, 2, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0],
+ 'ser-qm-failure':[1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0],
+ 'ser-tm-failure':[1, 1, 2, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0]}
 PREFIX=r'''
 #include <assert.h>
 #include <pthread.h>
@@ -95,11 +104,12 @@ typedef struct OS_TASK {pthread_t thread;pthread_mutex_t mutex;pthread_cond_t co
  int killed,event,started;void *kthread_task,*priv;INT (*fn)(ULONG);char taskName[16];} OS_TASK;
 typedef OS_TASK RTMP_OS_TASK;
 typedef struct HW_CTRL_T {OS_TASK ser_task;struct lock ser_lock;int ser_func_state;
- UINT32 ser_status,ser_times[8];} HW_CTRL_T;
+ UINT32 ser_status,ser_times[8];BOOLEAN ser_initialized;} HW_CTRL_T;
 typedef struct _RTMP_ADAPTER {HW_CTRL_T HwCtrl;ERR_RECOVERY_CTRL_T ErrRecoveryCtl;
  int flags;char *net_dev;void *PktTokenCb;int bPCIclkOff;} RTMP_ADAPTER,*PRTMP_ADAPTER;
 static int tm_exits,qm_exits,hif_inits,qm_inits,tm_inits,dma_enables,init_done,wakeups,joins;
 static int hif_status,exit_code,owner_released,invalid;
+static int stop_ok=TRUE,arm_ok=TRUE,qm_status,tm_status;
 static pthread_mutex_t barrier=PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t barrier_cond=PTHREAD_COND_INITIALIZER;
 static int hold_join,join_entered,allow_join;
@@ -116,8 +126,8 @@ static void unlock(struct lock *p){assert(!pthread_mutex_unlock(&p->mutex));}
 #define RTMP_OS_TASK_DATA_GET(p) ((p)->priv)
 #define RTMP_OS_TASK_IS_KILLED(p) ((p)->killed)
 #define RTMP_OS_NETDEV_GET_DEVNAME(p) (p)
-static void task_init(OS_TASK *t,void *ad){memset(t,0,sizeof(*t));t->priv=ad;
- assert(!pthread_mutex_init(&t->mutex,NULL));assert(!pthread_cond_init(&t->cond,NULL));}
+static int task_init(OS_TASK *t,void *ad){memset(t,0,sizeof(*t));t->priv=ad;
+ assert(!pthread_mutex_init(&t->mutex,NULL));assert(!pthread_cond_init(&t->cond,NULL));return NDIS_STATUS_SUCCESS;}
 #define RTMP_OS_TASK_INIT(t,n,a) ((void)(n),task_init((t),(a)))
 static void *run_task(void *p){OS_TASK *t=p;(void)t->fn((ULONG)t);return NULL;}
 static int RtmpOSTaskAttach(OS_TASK *t,INT (*fn)(ULONG),ULONG value){assert(value==(ULONG)t);t->fn=fn;
@@ -144,8 +154,8 @@ static void RTCMDUp(OS_TASK *t){wakeups++;if(t->started){assert(!pthread_mutex_l
  assert(!pthread_cond_broadcast(&t->cond));assert(!pthread_mutex_unlock(&t->mutex));}}
 static void tm_exit(RTMP_ADAPTER *a){(void)a;tm_exits++;}
 static void qm_exit(RTMP_ADAPTER *a){(void)a;qm_exits++;}
-static void RTMPResetTxRxRingMemory(RTMP_ADAPTER *a){(void)a;}
-static void cut_through_deinit(void *p){(void)p;}
+static void RTMPResetTxRxRingMemory(RTMP_ADAPTER *a){(void)a;if(!stop_ok)invalid++;}
+static void cut_through_deinit(void *p){(void)p;if(!stop_ok)invalid++;}
 static int WfHifInit(RTMP_ADAPTER *a){(void)a;hif_inits++;
  if(hold_hif) {
   assert(!pthread_mutex_lock(&barrier));hif_entered=1;assert(!pthread_cond_broadcast(&barrier_cond));
@@ -153,9 +163,10 @@ static int WfHifInit(RTMP_ADAPTER *a){(void)a;hif_inits++;
   assert(!pthread_mutex_unlock(&barrier));
  }
  return hif_status;}
-static void qm_init(RTMP_ADAPTER *a){(void)a;qm_inits++;}
-static void tm_init(RTMP_ADAPTER *a){(void)a;tm_inits++;}
-static void RT28XXDMAEnable(RTMP_ADAPTER *a){(void)a;dma_enables++;}
+static int qm_init(RTMP_ADAPTER *a){(void)a;qm_inits++;return qm_status;}
+static int tm_init(RTMP_ADAPTER *a){(void)a;tm_inits++;return tm_status;}
+static int RT28XXDMAStop(RTMP_ADAPTER *a){(void)a;return stop_ok;}
+static int RT28XXDMAEnable(RTMP_ADAPTER *a){(void)a;dma_enables++;return arm_ok;}
 #define HIF_IO_WRITE32(a,b,c) ((void)(a),(void)(b),(void)(c))
 #define WLAN_HOOK_CALL(a,b,c) ((void)(b),(void)(c))
 static void MtAsicGetTsfTimeByDriver(RTMP_ADAPTER *a,UINT32 *h,UINT32 *l,int b){(void)a;(void)b;*h=0;*l=0;}
@@ -183,7 +194,7 @@ int main(int argc,char **argv){const char *name;RTMP_ADAPTER ad;int result=0,thr
  assert(argc==2);name=argv[1];CASE_ADMISSION memset(&ad,0,sizeof(ad));
  alloc_lock(&ad.HwCtrl.ser_lock);
  if(!strncmp(name,"stop-",5)||!strcmp(name,"ser-reopen-reset")) {
-  free_lock(&ad.HwCtrl.ser_lock);assert(ser_init(&ad)==TRUE);thread_case=1;wait_running(&ad);
+  free_lock(&ad.HwCtrl.ser_lock);assert(ser_init(&ad)==NDIS_STATUS_SUCCESS);thread_case=1;wait_running(&ad);
   if(!strcmp(name,"stop-nonzero-exit"))exit_code=-4;
   if(!strcmp(name,"stop-during-recovery")) {
    hold_hif=1;hif_status=1;ad.ErrRecoveryCtl.errRecovState=ERR_RECOV_STOP_PDMA0;
@@ -203,7 +214,7 @@ int main(int argc,char **argv){const char *name;RTMP_ADAPTER ad;int result=0,thr
   result=ser_exit(&ad);task_destroy(&ad.HwCtrl.ser_task);
   if(!strcmp(name,"ser-reopen-reset")) {
    ad.ErrRecoveryCtl.recovery_failed=ad.ErrRecoveryCtl.queues_retired=TRUE;
-   assert(ser_init(&ad)==TRUE);wait_running(&ad);assert(!ad.ErrRecoveryCtl.recovery_failed&&!ad.ErrRecoveryCtl.queues_retired);
+   assert(ser_init(&ad)==NDIS_STATUS_SUCCESS);wait_running(&ad);assert(!ad.ErrRecoveryCtl.recovery_failed&&!ad.ErrRecoveryCtl.queues_retired);
    HwCtrlSerExit(&ad);assert(ser_exit(&ad)==0);task_destroy(&ad.HwCtrl.ser_task);
   }
  } else if(!strncmp(name,"producer-",9)) {
@@ -217,8 +228,13 @@ int main(int argc,char **argv){const char *name;RTMP_ADAPTER ad;int result=0,thr
   if(!strncmp(name,"hif-failure",11))hif_status=1;
   if(!strcmp(name,"recovery-halted"))ad.flags=fRTMP_ADAPTER_HALT_IN_PROGRESS;
   if(!strcmp(name,"recovery-failed-entry"))ad.ErrRecoveryCtl.recovery_failed=TRUE;
+  if(!strncmp(name,"ser-stop-failure",16)||!strcmp(name,"ser-idle-failure"))stop_ok=FALSE;
+  if(!strncmp(name,"ser-arm-failure",15))arm_ok=FALSE;
+  if(!strcmp(name,"ser-qm-failure"))qm_status=1;
+  if(!strcmp(name,"ser-tm-failure"))tm_status=1;
   result=HwRecoveryFromError(&ad);
   if(!strcmp(name,"hif-failure-repeat"))result=HwRecoveryFromError(&ad);
+  if(strstr(name,"ser-")&&strstr(name,"-repeat"))result=HwRecoveryFromError(&ad);
  }
  printf("[%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d]\n",result,tm_exits,qm_exits,
  hif_inits,qm_inits,tm_inits,dma_enables,init_done,ad.ErrRecoveryCtl.queues_retired,ad.ErrRecoveryCtl.recovery_failed,

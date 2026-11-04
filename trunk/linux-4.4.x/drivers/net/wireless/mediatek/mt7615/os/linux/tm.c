@@ -624,36 +624,53 @@ struct tm_ops tm_tasklet_hif_ops = {
 INT tm_init(RTMP_ADAPTER *pAd)
 {
 	RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
-	struct tm_ops **tm_qm_ops = &pAd->tm_qm_ops;
-	struct tm_ops **tm_hif_ops = &pAd->tm_hif_ops;
-	INT ret = NDIS_STATUS_SUCCESS;
+	struct tm_ops *qm_ops = NULL, *hif_ops = NULL;
+	INT ret;
 
+	if (pAd->tm_qm_ops || pAd->tm_hif_ops)
+		return NDIS_STATUS_FAILURE;
 	if (cap->qm_tm == TASKLET_METHOD)
-		*tm_qm_ops = &tm_tasklet_qm_ops;
+		qm_ops = &tm_tasklet_qm_ops;
 #ifndef CONFIG_PROPRIETARY_DRIVER
 	else if (cap->qm_tm == CMWQ_METHOD)
-		*tm_qm_ops = &tm_wq_qm_ops;
-#endif /*CONFIG_PROPRIETARY_DRIVER*/
+		qm_ops = &tm_wq_qm_ops;
+#endif
 	if (cap->hif_tm == TASKLET_METHOD)
-		*tm_hif_ops = &tm_tasklet_hif_ops;
+		hif_ops = &tm_tasklet_hif_ops;
 #ifndef CONFIG_PROPRIETARY_DRIVER
 	else if (cap->hif_tm == CMWQ_METHOD)
-		*tm_hif_ops = &tm_wq_hif_ops;
-#endif /*CONFIG_PROPRIETARY_DRIVER*/
-	ret = (*tm_qm_ops)->init(pAd);
-	ret = (*tm_hif_ops)->init(pAd);
+		hif_ops = &tm_wq_hif_ops;
+#endif
+	if (!qm_ops || !hif_ops)
+		return NDIS_STATUS_FAILURE;
 
-	return ret;
+	ret = qm_ops->init(pAd);
+	if (ret != NDIS_STATUS_SUCCESS)
+		return ret;
+	ret = hif_ops->init(pAd);
+	if (ret != NDIS_STATUS_SUCCESS) {
+		qm_ops->exit(pAd);
+		return ret;
+	}
+	pAd->tm_qm_ops = qm_ops;
+	pAd->tm_hif_ops = hif_ops;
+	return NDIS_STATUS_SUCCESS;
 }
 
 INT tm_exit(RTMP_ADAPTER *pAd)
 {
-	struct tm_ops *tm_qm_ops = pAd->tm_qm_ops;
-	struct tm_ops *tm_hif_ops = pAd->tm_hif_ops;
-	INT ret = NDIS_STATUS_SUCCESS;
+	struct tm_ops *qm_ops = pAd->tm_qm_ops;
+	struct tm_ops *hif_ops = pAd->tm_hif_ops;
+	INT ret = NDIS_STATUS_SUCCESS, status;
 
-	ret = tm_qm_ops->exit(pAd);
-	ret = tm_hif_ops->exit(pAd);
-
+	if (hif_ops)
+		ret = hif_ops->exit(pAd);
+	if (qm_ops) {
+		status = qm_ops->exit(pAd);
+		if (ret == NDIS_STATUS_SUCCESS)
+			ret = status;
+	}
+	pAd->tm_qm_ops = NULL;
+	pAd->tm_hif_ops = NULL;
 	return ret;
 }

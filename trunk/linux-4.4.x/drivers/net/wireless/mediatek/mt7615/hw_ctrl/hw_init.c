@@ -248,6 +248,9 @@ INT32 WfMcuInit(RTMP_ADAPTER *pAd)
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("<--%s(), Success!\n", __func__));
 	return ret;
 err:
+#if !defined(COMPOS_WIN) && !defined(COMPOS_TESTMODE_WIN)
+	rtmp_sys_task_exit(pAd);
+#endif
 	WfMcuSysExit(pAd);
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("<--%s(), Err! status=%d\n", __func__, ret));
 	return ret;
@@ -305,6 +308,7 @@ INT32 WfPhyInit(RTMP_ADAPTER *pAd)
 INT32 WfInit(RTMP_ADAPTER *pAd)
 {
 	INT32 ret = NDIS_STATUS_SUCCESS;
+	BOOLEAN hif_ready = FALSE, mcu_ready = FALSE, eeprom_ready = FALSE;
 
 	ret = WfTopInit(pAd);
 
@@ -317,12 +321,14 @@ INT32 WfInit(RTMP_ADAPTER *pAd)
 	if (ret != NDIS_STATUS_SUCCESS)
 		goto err0;
 
+	hif_ready = TRUE;
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("Hif Init Done!\n"));
 	ret = WfMcuInit(pAd);
 
 	if (ret != NDIS_STATUS_SUCCESS)
-		goto err1;
+		goto err0;
 
+	mcu_ready = TRUE;
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("MCU Init Done!\n"));
 #ifdef RLM_CAL_CACHE_SUPPORT
 	rlmCalCacheApply(pAd, pAd->rlmCalCache);
@@ -331,7 +337,7 @@ INT32 WfInit(RTMP_ADAPTER *pAd)
 	ret = WfEPROMInit(pAd);
 
 	if (ret != NDIS_STATUS_SUCCESS)
-		goto err2;
+		goto err0;
 
 #ifdef SINGLE_SKU_V2
     /* Load SKU table to Host Driver */
@@ -341,34 +347,33 @@ INT32 WfInit(RTMP_ADAPTER *pAd)
     RTMPSetBackOffParam(pAd);
 #endif /* defined(MT_MAC) && defined(TXBF_SUPPORT) */
 #endif /* SINGLE_SKU_V2 */
+	eeprom_ready = TRUE;
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("EEPROM Init Done!\n"));
 	ret = WfMacInit(pAd);
 
 	if (ret != NDIS_STATUS_SUCCESS)
-		goto err3;
+		goto err0;
 
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("MAC Init Done!\n"));
 	ret = WfPhyInit(pAd);
 
 	if (ret != NDIS_STATUS_SUCCESS)
-		goto err3;
+		goto err0;
 
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("PHY Init Done!\n"));
 	return ret;
-#if  defined(COMPOS_WIN)  || defined(COMPOS_TESTMODE_WIN)
-err3:
-err2:
-err1:
 err0:
-#else
-err3:
-	WfEPROMSysExit(pAd);
-err2:
-	WfMcuSysExit(pAd);
-err1:
-	WfHifSysExit(pAd);
-err0:
-	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s(): initial faild!! ret=%d\n", __func__, ret));
+#if !defined(COMPOS_WIN) && !defined(COMPOS_TESTMODE_WIN)
+	/* Retire software users before the completed hardware owners unwind. */
+	rtmp_sys_task_exit(pAd);
+	if (eeprom_ready)
+		WfEPROMSysExit(pAd);
+	if (mcu_ready)
+		WfMcuSysExit(pAd);
+	if (hif_ready && WfHifSysExit(pAd) != NDIS_STATUS_SUCCESS)
+		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+			("%s: hardware unwind failed DMA idle check\n", __func__));
+	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s(): initial failed!! ret=%d\n", __func__, ret));
 #endif
 	return ret;
 }
@@ -406,7 +411,7 @@ INT32 WfSysPosExit(RTMP_ADAPTER *pAd)
 #else
 	WfEPROMSysExit(pAd);
 	WfMcuSysExit(pAd);
-	WfHifSysExit(pAd);
+	ret = WfHifSysExit(pAd);
 #endif
 	return ret;
 }

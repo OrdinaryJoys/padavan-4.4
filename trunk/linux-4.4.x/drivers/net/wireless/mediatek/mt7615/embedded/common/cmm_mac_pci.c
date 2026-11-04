@@ -492,7 +492,7 @@ VOID RTMPResetTxRxRingMemory(RTMP_ADAPTER *pAd)
 		pAd->FragFrame.pFragPacket = NULL;
 	}
 
-	NdisFreeSpinLock(&pAd->CmdQLock);
+	/* CmdQLock belongs to the management-task owner, not the ring. */
 }
 
 VOID RTMPFreeTxRxRingMemory(struct _RTMP_ADAPTER *pAd)
@@ -1625,7 +1625,7 @@ VOID RTMPFreeTxRxRingMemory(struct _RTMP_ADAPTER *pAd)
 		pAd->FragFrame.pFragPacket = NULL;
 	}
 
-	NdisFreeSpinLock(&pAd->CmdQLock);
+	/* CmdQLock belongs to the management-task owner, not the ring. */
 	MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_TRACE, ("<-- RTMPFreeTxRxRingMemory\n"));
 }
 
@@ -2053,27 +2053,37 @@ Return Value:
 Note:
 ========================================================================
 */
-VOID RT28XXDMAEnable(RTMP_ADAPTER *pAd)
+BOOLEAN RT28XXDMAEnable(RTMP_ADAPTER *pAd)
 {
 	struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
 
-	AsicWaitPDMAIdle(pAd, 200, 1000);
+	/* Never arm a device whose existing DMA activity has not gone idle. */
+	if (AsicWaitPDMAIdle(pAd, 200, 1000) != TRUE)
+		return FALSE;
+
 	RtmpusecDelay(50);
-	AsicSetWPDMA(pAd, PDMA_TX_RX, TRUE);
+	if (AsicSetWPDMA(pAd, PDMA_TX_RX, TRUE) != TRUE)
+		return FALSE;
+
 	MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_TRACE, ("<== %s(): WPDMABurstSIZE = %d\n", __func__, cap->WPDMABurstSIZE));
+	return TRUE;
 }
 
-VOID RT28XXDMAReset(RTMP_ADAPTER *pAd)
+BOOLEAN RT28XXDMAStop(RTMP_ADAPTER *pAd)
 {
-	/* disable WPDMA Tx/Rx */
-	AsicSetWPDMA(pAd, PDMA_TX_RX, FALSE);
+	if (AsicSetWPDMA(pAd, PDMA_TX_RX, FALSE) != TRUE)
+		return FALSE;
 
-	/* wait WPDMA idle then reset*/
-	if (AsicWaitPDMAIdle(pAd, 200, 1000)) {
-		AsicResetWPDMA(pAd);
-	} else {
-		MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_TRACE, ("<== %s(): WPDMA reset fail! \n", __func__));
-	}
+	/* This is the chip's PDMA idle acknowledgement, not a PCI drain proof. */
+	return AsicWaitPDMAIdle(pAd, 200, 1000) == TRUE;
+}
+
+BOOLEAN RT28XXDMAReset(RTMP_ADAPTER *pAd)
+{
+	if (!RT28XXDMAStop(pAd))
+		return FALSE;
+
+	return AsicResetWPDMA(pAd);
 }
 
 #ifdef MT_MAC

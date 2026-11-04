@@ -116,6 +116,10 @@ NDIS_STATUS RTMPAllocAdapterBlock(VOID *handle, VOID **ppAdapter)
 		NdisAllocateSpinLock(pAd, &pAd->WdevListLock);
 		NdisAllocateSpinLock(pAd, &pAd->BssInfoIdxBitMapLock);
 		NdisAllocateSpinLock(pAd, &pAd->irq_lock);
+#ifdef DOT11_N_SUPPORT
+		/* Paired with RTMPFreeAdapter, including a failed/retried open. */
+		NdisAllocateSpinLock(pAd, &pAd->mpdu_blk_pool.lock);
+#endif
 #ifdef CONFIG_FWOWN_SUPPORT
 		NdisAllocateSpinLock(pAd, &pAd->DriverOwnLock);
 #endif /* CONFIG_FWOWN_SUPPORT */
@@ -493,6 +497,17 @@ err:
 
 INT32 WfHifSysExit(RTMP_ADAPTER *pAd)
 {
+	INT32 status = NDIS_STATUS_SUCCESS;
+
+	/* A successful stop/idle/reset must precede ring/token unmapping.
+	 * The legacy outer close/remove APIs still cannot retain all owners
+	 * after a failed stop; report that failure rather than claiming safety.
+	 */
+	if (!RT28XXDMAReset(pAd)) {
+		status = NDIS_STATUS_FAILURE;
+		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+			("%s: DMA stop/idle/reset failed; outer teardown is not quiesced\n", __func__));
+	}
 	WLAN_HOOK_CALL(WLAN_HOOK_HIF_EXIT, pAd, NULL);
 #ifdef RESOURCE_PRE_ALLOC
 	RTMPResetTxRxRingMemory(pAd);
@@ -502,19 +517,17 @@ INT32 WfHifSysExit(RTMP_ADAPTER *pAd)
 
 	cut_through_deinit((PKT_TOKEN_CB **)&pAd->PktTokenCb);
 
-	RT28XXDMAReset(pAd);
 #ifdef CONFIG_FWOWN_SUPPORT
 	FwOwn(pAd);
 #endif
-	return 0;
+	return status;
 }
 
 
 INT32 WfMcuSysInit(RTMP_ADAPTER *pAd)
 {
 	MCU_CTRL_INIT(pAd);
-	chip_fw_init(pAd);
-	return NDIS_STATUS_SUCCESS;
+	return chip_fw_init(pAd);
 }
 
 INT32 WfMcuSysExit(RTMP_ADAPTER *pAd)
@@ -1332,6 +1345,8 @@ VOID UserCfgInit(RTMP_ADAPTER *pAd)
 				pWscControl->WscFragSize = 128;
 				initList(&pWscControl->WscPeerList);
 				NdisAllocateSpinLock(pAd, &pWscControl->WscPeerListSemLock);
+				pWscControl->WscPeerListInitialized = TRUE;
+				pAd->WscConfigInitialized = TRUE;
 				pWscControl->PinAttackCount = 0;
 				pWscControl->bSetupLock = FALSE;
 #ifdef WSC_V2_SUPPORT
@@ -2414,10 +2429,12 @@ end:
 		Before Enable RX, make sure you have enabled Interrupt.
 	========================================================================
 */
-VOID RTMPEnableRxTx(RTMP_ADAPTER *pAd)
+BOOLEAN RTMPEnableRxTx(RTMP_ADAPTER *pAd)
 {
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("==> RTMPEnableRxTx\n"));
-	RT28XXDMAEnable(pAd);
+	if (!RT28XXDMAEnable(pAd))
+		return FALSE;
+
 	AsicSetRxFilter(pAd);
 
 	if (pAd->CommonCfg.bTXRX_RXV_ON)
@@ -2426,6 +2443,7 @@ VOID RTMPEnableRxTx(RTMP_ADAPTER *pAd)
 		AsicSetMacTxRx(pAd, ASIC_MAC_TXRX, TRUE);
 
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("<== RTMPEnableRxTx\n"));
+	return TRUE;
 }
 
 

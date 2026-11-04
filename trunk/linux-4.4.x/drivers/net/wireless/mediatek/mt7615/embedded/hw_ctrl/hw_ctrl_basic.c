@@ -309,23 +309,31 @@ INT ser_init(RTMP_ADAPTER *pAd)
 	HW_CTRL_T *hw_ctrl = &pAd->HwCtrl;
 	RTMP_OS_TASK *task = &hw_ctrl->ser_task;
 
+	if (RTMP_OS_TASK_LEGALITY(task) || hw_ctrl->ser_initialized)
+		return NDIS_STATUS_FAILURE;
+
 	NdisAllocateSpinLock(pAd, &hw_ctrl->ser_lock);
+	hw_ctrl->ser_initialized = TRUE;
 	pAd->ErrRecoveryCtl.errRecovState = ERR_RECOV_STOP_IDLE;
 	pAd->ErrRecoveryCtl.status = 0;
 	pAd->ErrRecoveryCtl.queues_retired = FALSE;
 	pAd->ErrRecoveryCtl.recovery_failed = FALSE;
 	hw_ctrl->ser_status = 0;
 	hw_ctrl->ser_func_state = RTMP_TASK_STAT_INITED;
-	RTMP_OS_TASK_INIT(task, "ser_task", pAd);
-	Status = RtmpOSTaskAttach(task, ser_ctrl_task, (ULONG)task);
+	Status = RTMP_OS_TASK_INIT(task, "ser_task", pAd);
+	if (Status == NDIS_STATUS_SUCCESS)
+		Status = RtmpOSTaskAttach(task, ser_ctrl_task, (ULONG)task);
 
-	if (Status == NDIS_STATUS_FAILURE) {
+	if (Status != NDIS_STATUS_SUCCESS) {
 		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				 ("%s: unable to start %s\n", RTMP_OS_NETDEV_GET_DEVNAME(pAd->net_dev), __func__));
-		return NDIS_STATUS_FAILURE;
+		hw_ctrl->ser_func_state = RTMP_TASK_STAT_UNKNOWN;
+		NdisFreeSpinLock(&hw_ctrl->ser_lock);
+		hw_ctrl->ser_initialized = FALSE;
+		return Status;
 	}
 
-	return TRUE;
+	return NDIS_STATUS_SUCCESS;
 }
 
 
@@ -353,6 +361,8 @@ INT ser_exit(RTMP_ADAPTER *pAd)
 {
 	INT32 ret;
 	HW_CTRL_T *hw_ctrl = &pAd->HwCtrl;
+	if (!hw_ctrl->ser_initialized)
+		return NDIS_STATUS_SUCCESS;
 	/*kill task*/
 #ifdef KTHREAD_SUPPORT
 	HwCtrlSerExit(pAd);
@@ -361,6 +371,8 @@ INT ser_exit(RTMP_ADAPTER *pAd)
 	ret = RtmpOSTaskKill(&hw_ctrl->ser_task);
 #endif
 	NdisFreeSpinLock(&hw_ctrl->ser_lock);
+	hw_ctrl->ser_initialized = FALSE;
+	hw_ctrl->ser_func_state = RTMP_TASK_STAT_UNKNOWN;
 	return ret;
 }
 #endif /* ERR_RECOVERY */
@@ -418,6 +430,13 @@ UINT32 HwCtrlInit(RTMP_ADAPTER *pAd)
 	HwCmdQ *cmdq = &pHwCtrl->HwCtrlQ;
 	RTMP_OS_TASK *pTask = &pHwCtrl->HwCtrlTask;
 
+	if (RTMP_OS_TASK_LEGALITY(pTask) || cmdq->CmdQState != RTMP_TASK_STAT_UNKNOWN)
+		return NDIS_STATUS_FAILURE;
+#ifdef ERR_RECOVERY
+	if (RTMP_OS_TASK_LEGALITY(&pHwCtrl->ser_task) || pHwCtrl->ser_initialized)
+		return NDIS_STATUS_FAILURE;
+#endif
+
 #ifdef DBG_STARVATION
 	hwctrl_starv_block_init(&pAd->starv_log_ctrl, pHwCtrl);
 #endif /*DBG_STARVATION*/
@@ -430,16 +449,26 @@ UINT32 HwCtrlInit(RTMP_ADAPTER *pAd)
 	NdisReleaseSpinLock(&pHwCtrl->HwCtrlQLock);
 	pHwCtrl->TotalCnt = 0;
 	pTask = &pHwCtrl->HwCtrlTask;
-	RTMP_OS_TASK_INIT(pTask, "HwCtrlTask", pAd);
-	Status = RtmpOSTaskAttach(pTask, HwCtrlThread, (ULONG)pTask);
+	Status = RTMP_OS_TASK_INIT(pTask, "HwCtrlTask", pAd);
+	if (Status == NDIS_STATUS_SUCCESS)
+		Status = RtmpOSTaskAttach(pTask, HwCtrlThread, (ULONG)pTask);
 
-	if (Status == NDIS_STATUS_FAILURE) {
+	if (Status != NDIS_STATUS_SUCCESS) {
 		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s: unable to start %s\n", RTMP_OS_NETDEV_GET_DEVNAME(pAd->net_dev), __func__));
-		return NDIS_STATUS_FAILURE;
+		cmdq->CmdQState = RTMP_TASK_STAT_UNKNOWN;
+		NdisFreeSpinLock(&pHwCtrl->HwCtrlQLock);
+#ifdef DBG_STARVATION
+		unregister_starv_block(&pHwCtrl->block);
+#endif
+		return Status;
 	}
 
 #ifdef ERR_RECOVERY
 	Status = ser_init(pAd);
+	if (Status != NDIS_STATUS_SUCCESS) {
+		HwCtrlExit(pAd);
+		return Status;
+	}
 #endif /* ERR_RECOVERY */
 	return NDIS_STATUS_SUCCESS;
 }
@@ -450,6 +479,9 @@ VOID HwCtrlExit(RTMP_ADAPTER *pAd)
 	INT32 ret;
 	HW_CTRL_T *pHwCtrl = &pAd->HwCtrl;
 	HWCTRL_OP *hwctrl_ops = &pHwCtrl->hwctrl_ops;
+	if (!RTMP_OS_TASK_LEGALITY(&pHwCtrl->HwCtrlTask) &&
+		pHwCtrl->HwCtrlQ.CmdQState == RTMP_TASK_STAT_UNKNOWN)
+		return;
 #ifdef ERR_RECOVERY
 	HwCtrlSerExit(pAd);
 #endif
@@ -458,6 +490,7 @@ VOID HwCtrlExit(RTMP_ADAPTER *pAd)
 	/*kill task*/
 	ret = RtmpOSTaskKill(&pHwCtrl->HwCtrlTask);
 	NdisFreeSpinLock(&pHwCtrl->HwCtrlQLock);
+	pHwCtrl->HwCtrlQ.CmdQState = RTMP_TASK_STAT_UNKNOWN;
 	hwctrl_ops->wifi_sys_open = NULL;
 	hwctrl_ops->wifi_sys_close = NULL;
 	hwctrl_ops->wifi_sys_link_up = NULL;

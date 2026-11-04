@@ -201,7 +201,7 @@ struct fwdl_ctrl {
 INT NICLoadRomPatch(struct _RTMP_ADAPTER *ad);
 INT NICLoadFirmware(struct _RTMP_ADAPTER *pAd);
 INT FwdlHookInit(struct _RTMP_ADAPTER *pAd);
-VOID NICRestartFirmware(struct _RTMP_ADAPTER *pAd);
+INT NICRestartFirmware(struct _RTMP_ADAPTER *pAd);
 NDIS_STATUS mt_load_patch(struct _RTMP_ADAPTER *pAd);
 NDIS_STATUS mt_load_fw(struct _RTMP_ADAPTER *pAd);
 NDIS_STATUS mt_fwdl_hook_init(struct _RTMP_ADAPTER *pAd);

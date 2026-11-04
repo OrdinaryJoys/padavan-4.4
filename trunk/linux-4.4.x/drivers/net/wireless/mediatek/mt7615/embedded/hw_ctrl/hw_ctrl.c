@@ -919,6 +919,11 @@ NTSTATUS HwRecoveryFromError(RTMP_ADAPTER *pAd)
 		if ((Status & ERROR_DETECT_RESET_DONE) == ERROR_DETECT_RESET_DONE) {
 			MtAsicGetTsfTimeByDriver(pAd, &Highpart, &Lowpart, HW_BSSID_0);
 			pSerTimes[SER_TIME_ID_T2] = Lowpart;
+			/* A firmware RESET_DONE event is not our local idle check. */
+			if (!RT28XXDMAStop(pAd)) {
+				pErrRecoveryCtrl->recovery_failed = TRUE;
+				return NDIS_STATUS_FAILURE;
+			}
 			tm_exit(pAd);
 			qm_exit(pAd);
 				pErrRecoveryCtrl->queues_retired = TRUE;
@@ -933,10 +938,22 @@ NTSTATUS HwRecoveryFromError(RTMP_ADAPTER *pAd)
 						("SER HIF reinitialization failed; queues remain retired\n"));
 					return NDIS_STATUS_FAILURE;
 				}
-			qm_init(pAd);
-			tm_init(pAd);
-				pErrRecoveryCtrl->queues_retired = FALSE;
-			RT28XXDMAEnable(pAd);
+			if (qm_init(pAd) != NDIS_STATUS_SUCCESS) {
+				pErrRecoveryCtrl->recovery_failed = TRUE;
+				return NDIS_STATUS_FAILURE;
+			}
+			if (tm_init(pAd) != NDIS_STATUS_SUCCESS) {
+				qm_exit(pAd);
+				pErrRecoveryCtrl->recovery_failed = TRUE;
+				return NDIS_STATUS_FAILURE;
+			}
+			if (!RT28XXDMAEnable(pAd)) {
+				tm_exit(pAd);
+				qm_exit(pAd);
+				pErrRecoveryCtrl->recovery_failed = TRUE;
+				return NDIS_STATUS_FAILURE;
+			}
+			pErrRecoveryCtrl->queues_retired = FALSE;
 			HIF_IO_WRITE32(pAd, MT_WPDMA_MEM_RNG_ERR, 0);
 			ErrRecoveryReinitPdma(pErrRecoveryCtrl);
 			/* send PDMA0 reinit done to N9 through interrupt. */

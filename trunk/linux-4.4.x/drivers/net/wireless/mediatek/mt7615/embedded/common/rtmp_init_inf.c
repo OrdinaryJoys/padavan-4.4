@@ -88,6 +88,9 @@ RTMP_BUILD_DRV_OPS_FUNCTION_BODY
 
 INT rtmp_cfg_exit(RTMP_ADAPTER *pAd)
 {
+#ifdef WSC_INCLUDED
+	WscThreadExit(pAd);
+#endif
 	UserCfgExit(pAd);
 	return TRUE;
 }
@@ -149,28 +152,55 @@ INT rtmp_mgmt_init(RTMP_ADAPTER *pAd)
 }
 
 
+VOID rtmp_sys_task_exit(RTMP_ADAPTER *pAd)
+{
+#ifdef ERR_RECOVERY
+	HwCtrlSerExit(pAd);
+#endif
+	HwCtrlExit(pAd);
+	RtmpMgmtTaskExit(pAd);
+#ifdef ERR_RECOVERY
+	if (!pAd->ErrRecoveryCtl.queues_retired) {
+#endif
+		tm_exit(pAd);
+		qm_exit(pAd);
+#ifdef ERR_RECOVERY
+		pAd->ErrRecoveryCtl.queues_retired = TRUE;
+	}
+#endif
+	tr_ctl_exit(pAd);
+#ifdef WSC_INCLUDED
+	WscThreadExit(pAd);
+#endif
+	/* Every callback is retired before its HIF/MCU dependencies are freed. */
+	RTMP_AllTimerListRelease(pAd);
+}
+
 static INT rtmp_sys_exit(RTMP_ADAPTER *pAd)
 {
+	/* Only called after rtmp_sys_init has transferred every software stage. */
+	rtmp_sys_task_exit(pAd);
+	HwCtrlExit(pAd);
+	RtmpMgmtTaskExit(pAd);
+#ifdef MT_MAC
+	ExitTxSTypeTable(pAd);
+#endif
 #ifdef SMART_ANTENNA
 	RtmpSAExit(pAd);
-#endif /* SMART_ANTENNA */
-	MeasureReqTabExit(pAd);
-	TpcReqTabExit(pAd);
-#ifdef DOT11_N_SUPPORT
-
-	if (pAd->mpdu_blk_pool.mem) {
-		os_free_mem(pAd->mpdu_blk_pool.mem); /* free BA pool*/
-		pAd->mpdu_blk_pool.mem = NULL;
-	}
-
-#endif /* DOT11_N_SUPPORT */
-	rtmp_cfg_exit(pAd);
-	HwCtrlExit(pAd);
-	RTMP_CLEAR_FLAG(pAd, fRTMP_ADAPTER_INTERRUPT_REGISTER_TO_OS);
-	RtmpMgmtTaskExit(pAd);
-#ifdef RTMP_TIMER_TASK_SUPPORT
-	NdisFreeSpinLock(&pAd->TimerQLock);
 #endif
+	TpcReqTabExit(pAd);
+	MeasureReqTabExit(pAd);
+#ifdef DOT11_N_SUPPORT
+	if (pAd->mpdu_blk_pool.mem) {
+		os_free_mem(pAd->mpdu_blk_pool.mem);
+		pAd->mpdu_blk_pool.mem = NULL;
+		pAd->mpdu_blk_pool.freelist.next = NULL;
+		pAd->mpdu_blk_pool.freelist.qlen = 0;
+	}
+#endif
+	rtmp_cfg_exit(pAd);
+	RTMP_CLEAR_FLAG(pAd, fRTMP_ADAPTER_INTERRUPT_REGISTER_TO_OS);
+	NdisFreeSpinLock(&pAd->CmdQLock);
 	return TRUE;
 }
 
@@ -178,102 +208,164 @@ static INT rtmp_sys_exit(RTMP_ADAPTER *pAd)
 static INT rtmp_sys_init(RTMP_ADAPTER *pAd, RTMP_STRING *pHostName)
 {
 	NDIS_STATUS status;
+	BOOLEAN mgmt = FALSE, hw = FALSE, cfg = FALSE;
+	BOOLEAN ba = FALSE, measure = FALSE, tpc = FALSE;
+	BOOLEAN txs = FALSE, tr = FALSE, qm = FALSE;
+#ifdef SMART_ANTENNA
+	BOOLEAN sa = FALSE;
+#endif
+
+	/* Reject a second transaction before resetting any existing owner. */
+	if (RTMP_OS_TASK_LEGALITY(&pAd->cmdQTask) ||
+		RTMP_OS_TASK_LEGALITY(&pAd->HwCtrl.HwCtrlTask) ||
+#ifdef WSC_INCLUDED
+		RTMP_OS_TASK_LEGALITY(&pAd->wscTask) || pAd->WscWorkerInitialized ||
+		pAd->WscConfigInitialized || pAd->pHmacData || pAd->pWscElme ||
+#endif
+#ifdef ERR_RECOVERY
+		RTMP_OS_TASK_LEGALITY(&pAd->HwCtrl.ser_task) || pAd->HwCtrl.ser_initialized ||
+#endif
+		pAd->CommonCfg.pMeasureReqTab || pAd->CommonCfg.pTpcReqTab ||
+#ifdef DOT11_N_SUPPORT
+		pAd->mpdu_blk_pool.mem ||
+#endif
+		pAd->tr_ctl.tr_flow_ctl.TxFlowBlockState ||
+		pAd->tr_ctl.tr_flow_ctl.TxBlockLock ||
+		pAd->tr_ctl.tr_flow_ctl.TxBlockDevList ||
+		pAd->qm_ops || pAd->tm_qm_ops || pAd->tm_hif_ops)
+		return FALSE;
 
 	wifi_sys_reset(&pAd->WifiSysInfo);
 #ifdef DBG_STARVATION
 	starv_log_init(&pAd->starv_log_ctrl);
-#endif /*DBG_STARVATION*/
-
+#endif
 	status = RtmpMgmtTaskInit(pAd);
-
 	if (status != NDIS_STATUS_SUCCESS)
-		goto err0;
+		goto fail;
+	mgmt = TRUE;
 
 	status = HwCtrlInit(pAd);
-
 	if (status != NDIS_STATUS_SUCCESS)
-		goto err1;
+		goto fail;
+	hw = TRUE;
 
-	/* Initialize pAd->StaCfg[], pAd->ApCfg, pAd->CommonCfg to manufacture default*/
+	/* UserCfgInit acquires resources before parsing may return FALSE. */
+	cfg = TRUE;
 	if (rtmp_cfg_init(pAd, pHostName) != TRUE)
-		goto err2;
-
-#ifdef DOT11_N_SUPPORT
-
-	/* Allocate BA Reordering memory*/
-	if (ba_reordering_resource_init(pAd, MAX_REORDERING_MPDU_NUM) != TRUE)
-		goto err2;
-
-#endif /* DOT11_N_SUPPORT */
-#ifdef BLOCK_NET_IF
-	initblockQueueTab(pAd);
-#endif /* BLOCK_NET_IF */
-	status = MeasureReqTabInit(pAd);
-
-	if (status != NDIS_STATUS_SUCCESS) {
-		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("MeasureReqTabInit failed, Status[=0x%08x]\n", status));
-		goto err2;
-	}
-
-	status = TpcReqTabInit(pAd);
-
-	if (status != NDIS_STATUS_SUCCESS) {
-		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("TpcReqTabInit failed, Status[=0x%08x]\n", status));
-		goto err2;
-	}
-
-#ifdef SMART_ANTENNA
-	RtmpSAInit(pAd);
-#endif /* SMART_ANTENNA */
-#ifdef MT_MAC
-	/* TxS Setting */
-	InitTxSTypeTable(pAd);
-
-	if (IS_HIF_TYPE(pAd, HIF_MT))
-		InitTxSCommonCallBack(pAd);
-
+		goto fail;
+#ifdef WSC_INCLUDED
+	/* The writer may run as soon as Attach wakes it: publish cfg first. */
+	status = WscThreadInit(pAd);
+	if (status != NDIS_STATUS_SUCCESS)
+		goto fail;
 #endif
 
-	status = tr_ctl_init(pAd);
+#ifdef DOT11_N_SUPPORT
+	if (ba_reordering_resource_init(pAd, MAX_REORDERING_MPDU_NUM) != TRUE)
+		goto fail;
+	ba = TRUE;
+#endif
+#ifdef BLOCK_NET_IF
+	initblockQueueTab(pAd);
+#endif
+	status = MeasureReqTabInit(pAd);
+	if (status != NDIS_STATUS_SUCCESS) {
+		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("MeasureReqTabInit failed, Status[=0x%08x]\n", status));
+		goto fail;
+	}
+	measure = TRUE;
 
+	status = TpcReqTabInit(pAd);
+	if (status != NDIS_STATUS_SUCCESS) {
+		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("TpcReqTabInit failed, Status[=0x%08x]\n", status));
+		goto fail;
+	}
+	tpc = TRUE;
+#ifdef SMART_ANTENNA
+	RtmpSAInit(pAd);
+	sa = TRUE;
+#endif
+#ifdef MT_MAC
+	InitTxSTypeTable(pAd);
+	txs = TRUE;
+	if (IS_HIF_TYPE(pAd, HIF_MT))
+		InitTxSCommonCallBack(pAd);
+#endif
+	status = tr_ctl_init(pAd);
+	if (status != NDIS_STATUS_SUCCESS)
+		goto fail;
+	tr = TRUE;
 #ifdef FQ_SCH_SUPPORT
 	if (pAd->fq_ctrl.enable & FQ_NEED_ON)
 		pAd->fq_ctrl.enable = FQ_ARRAY_SCH|FQ_NO_PKT_STA_KEEP_IN_LIST|FQ_EN;
 #endif
-
-	/* QM init */
 	status = qm_init(pAd);
+	if (status != NDIS_STATUS_SUCCESS)
+		goto fail;
+	qm = TRUE;
 
-	/* TM init */
+	/* tm_init rolls back its first sub-stage if its second stage fails. */
 	status = tm_init(pAd);
-
-	if (status)
-		goto err2;
-
+	if (status != NDIS_STATUS_SUCCESS)
+		goto fail;
 	return TRUE;
-err2:
-	rtmp_cfg_exit(pAd);
-err1:
-	HwCtrlExit(pAd);
-err0:
+
+fail:
+	/* Retire software producers while the objects they observe still exist. */
+	if (hw)
+		HwCtrlExit(pAd);
+	if (mgmt)
+		RtmpMgmtTaskExit(pAd);
+	if (qm)
+		qm_exit(pAd);
+	if (tr)
+		tr_ctl_exit(pAd);
+#ifdef MT_MAC
+	if (txs)
+		ExitTxSTypeTable(pAd);
+#endif
+#ifdef SMART_ANTENNA
+	if (sa)
+		RtmpSAExit(pAd);
+#endif
+	if (tpc)
+		TpcReqTabExit(pAd);
+	if (measure)
+		MeasureReqTabExit(pAd);
+#ifdef DOT11_N_SUPPORT
+	if (ba) {
+		os_free_mem(pAd->mpdu_blk_pool.mem);
+		pAd->mpdu_blk_pool.mem = NULL;
+		pAd->mpdu_blk_pool.freelist.next = NULL;
+		pAd->mpdu_blk_pool.freelist.qlen = 0;
+	}
+#endif
+	if (cfg)
+		rtmp_cfg_exit(pAd);
+	if (mgmt)
+		NdisFreeSpinLock(&pAd->CmdQLock);
 	RTMP_CLEAR_FLAG(pAd, fRTMP_ADAPTER_INTERRUPT_REGISTER_TO_OS);
-	RtmpMgmtTaskExit(pAd);
 	return FALSE;
 }
 
 /*
 *
 */
-static void mt_sys_ready(struct _RTMP_ADAPTER *ad)
+static BOOLEAN mt_sys_ready(struct _RTMP_ADAPTER *ad)
 {
 	/* TODO: shiang-MT7615, why we need do this and check if chip is MT7603/28/36/MT7615 here?? */
 	if (IS_HIF_TYPE(ad, HIF_MT)) {
 		/* Now Enable RxTx*/
 		RTMP_IRQ_ENABLE(ad);
-		RTMPEnableRxTx(ad);
+		if (!RTMPEnableRxTx(ad)) {
+			RTMP_ASIC_INTERRUPT_DISABLE(ad);
+			RTMP_CLEAR_FLAG(ad, fRTMP_ADAPTER_START_UP);
+			return FALSE;
+		}
 	}
 
 	RTMP_SET_FLAG(ad, fRTMP_ADAPTER_START_UP);
+	return TRUE;
 }
 
 /*
@@ -332,6 +424,9 @@ int mt_wifi_init(VOID *pAdSrc, RTMP_STRING *pDefaultMac, RTMP_STRING *pHostName)
 	UCHAR BandIdx;
 	CHANNEL_CTRL *pChCtrl;
 	CHANNEL_CTRL *pChCtrl_hwband1;
+#ifdef CONFIG_AP_SUPPORT
+	BOOLEAN ap_initialized = FALSE;
+#endif
 
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("\x1b[1;33m [mt_wifi_init] Test - pObj->ioctl_if = %d, pObj->ioctl_if_type = %d \x1b[m \n", pObj->ioctl_if, pObj->ioctl_if_type));
 #ifdef CONFIG_AP_SUPPORT
@@ -383,7 +478,7 @@ int mt_wifi_init(VOID *pAdSrc, RTMP_STRING *pDefaultMac, RTMP_STRING *pHostName)
 
 	/*for software system initialize*/
 	if (rtmp_sys_init(pAd, pHostName) != TRUE)
-		goto err2;
+		goto err0;
 
 	Status = WfInit(pAd);
 
@@ -455,11 +550,15 @@ int mt_wifi_init(VOID *pAdSrc, RTMP_STRING *pDefaultMac, RTMP_STRING *pHostName)
 #endif /*MAC_INIT_OFFLOAD*/
 #ifdef CONFIG_AP_SUPPORT
 	RT_CONFIG_IF_OPMODE_ON_AP(pAd->OpMode) {
-		rtmp_ap_init(pAd);
+		/* AP base state exists even if its final DMA enable fails. */
+		ap_initialized = TRUE;
+		if (rtmp_ap_init(pAd) != NDIS_STATUS_SUCCESS)
+			goto err3;
 	}
 #endif
 	/*SW prepare done, enable system ready*/
-	mt_sys_ready(pAd);
+	if (!mt_sys_ready(pAd))
+		goto err3;
 #ifdef DYNAMIC_VGA_SUPPORT
 
 	if (pAd->CommonCfg.lna_vga_ctl.bDyncVgaEnable)
@@ -538,10 +637,20 @@ int mt_wifi_init(VOID *pAdSrc, RTMP_STRING *pDefaultMac, RTMP_STRING *pHostName)
 #endif
 	return TRUE;
 err3:
+	RTMP_SET_FLAG(pAd, fRTMP_ADAPTER_HALT_IN_PROGRESS);
+#ifdef CONFIG_AP_SUPPORT
+	if (ap_initialized)
+		APShutdown(pAd);
+#endif
 	MlmeHalt(pAd);
-	RTMP_AllTimerListRelease(pAd);
+	rtmp_sys_task_exit(pAd);
+	if (WfSysPosExit(pAd) != NDIS_STATUS_SUCCESS)
+		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+			("%s: armed initialization unwind failed DMA idle check\n", __func__));
 err2:
 	rtmp_sys_exit(pAd);
+err0:
+	RTMP_CLEAR_FLAG(pAd, fRTMP_ADAPTER_START_UP);
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("!!! mt_wifi_init  fail !!!\n"));
 	return FALSE;
 }
@@ -704,8 +813,12 @@ VOID RTMPDrvClose(VOID *pAdSrc, VOID *net_dev)
 #endif /*CONFIG_ATE*/
 	/* Stop Mlme state machine*/
 	MlmeHalt(pAd);
-	/* Close net tasklets*/
-		NICRestartFirmware(pAd);
+	/* Flush/join hardware command and SER workers while MCU/IRQ still live. */
+	HwCtrlExit(pAd);
+	/* A firmware restart acknowledgement is not a DMA drain barrier. */
+	if (NICRestartFirmware(pAd) != NDIS_STATUS_SUCCESS)
+		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+			("%s: firmware restart failed during close\n", __func__));
 
 
 	/*  Disable Interrupt */
@@ -785,8 +898,6 @@ VOID RTMPDrvClose(VOID *pAdSrc, VOID *net_dev)
     RTMPResetSkuParam(pAd);
     RTMPResetBackOffParam(pAd);
 #endif
-	tr_ctl_exit(pAd);
-
 #ifdef ERR_RECOVERY
 	if (!pAd->ErrRecoveryCtl.queues_retired) {
 #endif
@@ -799,15 +910,22 @@ VOID RTMPDrvClose(VOID *pAdSrc, VOID *net_dev)
 		pAd->ErrRecoveryCtl.queues_retired = TRUE;
 	}
 #endif
+	tr_ctl_exit(pAd);
+#ifdef WSC_INCLUDED
+	WscThreadExit(pAd);
+#endif
+	RTMP_AllTimerListRelease(pAd);
 	/*remove hw related system info*/
-	WfSysPosExit(pAd);
+	if (WfSysPosExit(pAd) != NDIS_STATUS_SUCCESS)
+		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+			("%s: DMA teardown failed; outer close/remove remains unsafe\n", __func__));
 	RTMP_CLEAR_FLAG(pAd, fRTMP_ADAPTER_HALT_IN_PROGRESS);
 #ifdef WLAN_SKB_RECYCLE
 	skb_queue_purge(&pAd->rx0_recycle);
 #endif /* WLAN_SKB_RECYCLE */
 	/* Free BA reorder resource*/
 	ba_reordering_resource_release(pAd);
-	UserCfgExit(pAd); /* must after ba_reordering_resource_release */
+	rtmp_cfg_exit(pAd); /* must follow BA release; includes owned WSC configuration */
 #ifdef CUSTOMER_VENDOR_IE_SUPPORT
 	for (j = BSS0; j < pAd->ApCfg.BssidNum; j++) {
 		ap_vendor_ie = &pAd->ApCfg.MBSSID[j].ap_vendor_ie;

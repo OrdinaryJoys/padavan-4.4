@@ -9532,51 +9532,63 @@ static INT wsc_write_dat_file_thread(
 /*
 * This kernel thread init in the probe fucntion, so we should kill it when do remove module.
 */
-BOOLEAN WscThreadExit(RTMP_ADAPTER *pAd)
+static VOID wsc_release_initialized_timer(RALINK_TIMER_STRUCT *timer, BOOLEAN *cancelled)
 {
-	INT ret;
-	BOOLEAN Cancelled;
-	/*
-	*	This kernel thread init in the probe fucntion, so kill it when do remove module.
-	*/
-	ret = RtmpOSTaskKill(&pAd->wscTask);
+	/* A retired/never-built timer may retain no usable timer_lock. */
+	if (timer->Valid)
+		RTMPReleaseTimer(timer, cancelled);
+}
 
-	if (ret == NDIS_STATUS_FAILURE)
-		MTWF_LOG(DBG_CAT_SEC, CATSEC_WPS, DBG_LVL_ERROR, ("kill wsc task failed!\n"));
-
+VOID WscThreadStop(RTMP_ADAPTER *pAd)
+{
+	if (!pAd->WscWorkerInitialized && !RTMP_OS_TASK_LEGALITY(&pAd->wscTask))
+		return;
+	RtmpOSTaskKill(&pAd->wscTask);
 	if (pAd->pHmacData) {
 		os_free_mem(pAd->pHmacData);
 		pAd->pHmacData = NULL;
 	}
-
 	if (pAd->pWscElme) {
 		os_free_mem(pAd->pWscElme);
 		pAd->pWscElme = NULL;
 	}
+	if (pAd->WscWorkerInitialized) {
+		NdisFreeSpinLock(&pAd->WscElmeLock);
+		pAd->WscWorkerInitialized = FALSE;
+	}
+}
 
-	NdisFreeSpinLock(&pAd->WscElmeLock);
+BOOLEAN WscThreadExit(RTMP_ADAPTER *pAd)
+{
+	BOOLEAN Cancelled;
+
+	WscThreadStop(pAd);
+	if (!pAd->WscConfigInitialized)
+		return TRUE;
 #ifdef CONFIG_AP_SUPPORT
 
-	if ((pAd->OpMode == OPMODE_AP)
-	   ) {
+	if (pAd->OpMode == OPMODE_AP) {
 		INT ap_idx;
 		UCHAR MaxBssidNum = MAX_MBSSID_NUM(pAd);
 
 		for (ap_idx = 0; ap_idx < MaxBssidNum; ap_idx++) {
 			PWSC_CTRL	pWpsCtrl = &pAd->ApCfg.MBSSID[ap_idx].wdev.WscControl;
 
+			if (!pWpsCtrl->WscPeerListInitialized)
+				continue;
+
 			WscStop(pAd, FALSE, pWpsCtrl);
-			RTMPReleaseTimer(&pWpsCtrl->EapolTimer, &Cancelled);
-			RTMPReleaseTimer(&pWpsCtrl->Wsc2MinsTimer, &Cancelled);
-			RTMPReleaseTimer(&pWpsCtrl->WscUPnPNodeInfo.UPnPMsgTimer, &Cancelled);
-			RTMPReleaseTimer(&pWpsCtrl->M2DTimer, &Cancelled);
+			wsc_release_initialized_timer(&pWpsCtrl->EapolTimer, &Cancelled);
+			wsc_release_initialized_timer(&pWpsCtrl->Wsc2MinsTimer, &Cancelled);
+			wsc_release_initialized_timer(&pWpsCtrl->WscUPnPNodeInfo.UPnPMsgTimer, &Cancelled);
+			wsc_release_initialized_timer(&pWpsCtrl->M2DTimer, &Cancelled);
 #ifdef WSC_LED_SUPPORT
-			RTMPReleaseTimer(&pWpsCtrl->WscLEDTimer, &Cancelled);
-			RTMPReleaseTimer(&pWpsCtrl->WscSkipTurnOffLEDTimer, &Cancelled);
+			wsc_release_initialized_timer(&pWpsCtrl->WscLEDTimer, &Cancelled);
+			wsc_release_initialized_timer(&pWpsCtrl->WscSkipTurnOffLEDTimer, &Cancelled);
 #endif
-			RTMPReleaseTimer(&pWpsCtrl->WscUpdatePortCfgTimer, &Cancelled);
+			wsc_release_initialized_timer(&pWpsCtrl->WscUpdatePortCfgTimer, &Cancelled);
 #ifdef WSC_V2_SUPPORT
-			RTMPReleaseTimer(&pWpsCtrl->WscSetupLockTimer, &Cancelled);
+			wsc_release_initialized_timer(&pWpsCtrl->WscSetupLockTimer, &Cancelled);
 #endif
 			pWpsCtrl->WscRxBufLen = 0;
 
@@ -9595,10 +9607,8 @@ BOOLEAN WscThreadExit(RTMP_ADAPTER *pAd)
 #ifdef WSC_V2_SUPPORT
 
 			if (pWpsCtrl->WscSetupLockTimerRunning) {
-				BOOLEAN Cancelled;
-
+				/* Release above already cancelled/joined a valid timer. */
 				pWpsCtrl->WscSetupLockTimerRunning = FALSE;
-				RTMPCancelTimer(&pWpsCtrl->WscSetupLockTimer, &Cancelled);
 			}
 
 			if (pWpsCtrl->WscV2Info.ExtraTlv.pTlvData) {
@@ -9609,6 +9619,7 @@ BOOLEAN WscThreadExit(RTMP_ADAPTER *pAd)
 #endif /* WSC_V2_SUPPORT */
 			WscClearPeerList(&pWpsCtrl->WscPeerList);
 			NdisFreeSpinLock(&pWpsCtrl->WscPeerListSemLock);
+			pWpsCtrl->WscPeerListInitialized = FALSE;
 		}
 
 #ifdef APCLI_SUPPORT
@@ -9618,20 +9629,23 @@ BOOLEAN WscThreadExit(RTMP_ADAPTER *pAd)
 			for (index = 0; index < MAX_APCLI_NUM; index++) {
 				PWSC_CTRL       pWpsCtrl = &pAd->ApCfg.ApCliTab[index].wdev.WscControl;
 
+				if (!pWpsCtrl->WscPeerListInitialized)
+					continue;
+
 				WscStop(pAd, TRUE, pWpsCtrl);
-				RTMPReleaseTimer(&pWpsCtrl->EapolTimer, &Cancelled);
-				RTMPReleaseTimer(&pWpsCtrl->Wsc2MinsTimer, &Cancelled);
-				RTMPReleaseTimer(&pWpsCtrl->WscUPnPNodeInfo.UPnPMsgTimer, &Cancelled);
-				RTMPReleaseTimer(&pWpsCtrl->M2DTimer, &Cancelled);
+				wsc_release_initialized_timer(&pWpsCtrl->EapolTimer, &Cancelled);
+				wsc_release_initialized_timer(&pWpsCtrl->Wsc2MinsTimer, &Cancelled);
+				wsc_release_initialized_timer(&pWpsCtrl->WscUPnPNodeInfo.UPnPMsgTimer, &Cancelled);
+				wsc_release_initialized_timer(&pWpsCtrl->M2DTimer, &Cancelled);
 #ifdef WSC_LED_SUPPORT
-				RTMPReleaseTimer(&pWpsCtrl->WscLEDTimer, &Cancelled);
-				RTMPReleaseTimer(&pWpsCtrl->WscSkipTurnOffLEDTimer, &Cancelled);
+				wsc_release_initialized_timer(&pWpsCtrl->WscLEDTimer, &Cancelled);
+				wsc_release_initialized_timer(&pWpsCtrl->WscSkipTurnOffLEDTimer, &Cancelled);
 #endif
-				RTMPReleaseTimer(&pWpsCtrl->WscPBCTimer, &Cancelled);
-				RTMPReleaseTimer(&pWpsCtrl->WscScanTimer, &Cancelled);
-				RTMPReleaseTimer(&pWpsCtrl->WscProfileRetryTimer, &Cancelled);
+				wsc_release_initialized_timer(&pWpsCtrl->WscPBCTimer, &Cancelled);
+				wsc_release_initialized_timer(&pWpsCtrl->WscScanTimer, &Cancelled);
+				wsc_release_initialized_timer(&pWpsCtrl->WscProfileRetryTimer, &Cancelled);
 #ifdef CON_WPS
-				RTMPReleaseTimer(&pWpsCtrl->ConWscApcliScanDoneCheckTimer, &Cancelled);
+				wsc_release_initialized_timer(&pWpsCtrl->ConWscApcliScanDoneCheckTimer, &Cancelled);
 #endif /* CON_WPS */
 				pWpsCtrl->WscTxBufLen = 0;
 
@@ -9647,22 +9661,27 @@ BOOLEAN WscThreadExit(RTMP_ADAPTER *pAd)
 					pWpsCtrl->pWscRxBuf = NULL;
 				}
 
-				if (pWpsCtrl->pWscRxBuf)
-					os_free_mem(pWpsCtrl->pWscRxBuf);
-
 				WscClearPeerList(&pWpsCtrl->WscPeerList);
+#ifdef WSC_V2_SUPPORT
+				if (pWpsCtrl->WscV2Info.ExtraTlv.pTlvData) {
+					os_free_mem(pWpsCtrl->WscV2Info.ExtraTlv.pTlvData);
+					pWpsCtrl->WscV2Info.ExtraTlv.pTlvData = NULL;
+				}
+#endif
 				NdisFreeSpinLock(&pWpsCtrl->WscPeerListSemLock);
+				pWpsCtrl->WscPeerListInitialized = FALSE;
 			}
 		}
 #endif /* APCLI_SUPPORT */
 #ifdef CON_WPS
-		RTMPReleaseTimer(&pAd->ApCfg.ConWpsApCliBandMonitorTimer, &Cancelled);
+		wsc_release_initialized_timer(&pAd->ApCfg.ConWpsApCliBandMonitorTimer, &Cancelled);
 #endif /* CON_WPS */
 	}
 
 #endif /* CONFIG_AP_SUPPORT */
 	/* WSC hardware push button function 0811 */
 	WSC_HDR_BTN_Stop(pAd);
+	pAd->WscConfigInitialized = FALSE;
 	return TRUE;
 }
 
@@ -9672,27 +9691,34 @@ BOOLEAN WscThreadExit(RTMP_ADAPTER *pAd)
   */
 NDIS_STATUS WscThreadInit(RTMP_ADAPTER *pAd)
 {
-	NDIS_STATUS status = NDIS_STATUS_FAILURE;
-	RTMP_OS_TASK *pTask;
+	NDIS_STATUS status;
+	RTMP_OS_TASK *task = &pAd->wscTask;
+	UCHAR *hmac = NULL;
+	MLME_QUEUE_ELEM *element = NULL;
 
-	MTWF_LOG(DBG_CAT_SEC, CATSEC_WPS, DBG_LVL_TRACE, ("-->WscThreadInit()\n"));
-	pTask = &pAd->wscTask;
-	RTMP_OS_TASK_INIT(pTask, "RtmpWscTask", pAd);
-	status = RtmpOSTaskAttach(pTask, wsc_write_dat_file_thread, (ULONG)&pAd->wscTask);
-
-	if (status == NDIS_STATUS_SUCCESS) {
-		os_alloc_mem(NULL, &pAd->pHmacData, sizeof(CHAR) * (2048));
-
-		if (pAd->pHmacData == NULL) {
-			MTWF_LOG(DBG_CAT_SEC, CATSEC_WPS, DBG_LVL_ERROR, ("Wsc HmacData memory alloc failed!\n"));
-			status = FALSE;
-		}
-
-		NdisAllocateSpinLock(pAd, &pAd->WscElmeLock);
-		os_alloc_mem(NULL, (UCHAR **)&pAd->pWscElme, sizeof(MLME_QUEUE_ELEM));
+	if (RTMP_OS_TASK_LEGALITY(task) || pAd->WscWorkerInitialized ||
+		pAd->pHmacData || pAd->pWscElme)
+		return NDIS_STATUS_FAILURE;
+	os_alloc_mem(pAd, &hmac, 2048);
+	if (!hmac)
+		return NDIS_STATUS_RESOURCES;
+	os_alloc_mem(pAd, (UCHAR **)&element, sizeof(*element));
+	if (!element) {
+		os_free_mem(hmac);
+		return NDIS_STATUS_RESOURCES;
 	}
-
-	MTWF_LOG(DBG_CAT_SEC, CATSEC_WPS, DBG_LVL_TRACE, ("<--WscThreadInit(), status=%d!\n", status));
+	NdisZeroMemory(hmac, 2048);
+	NdisZeroMemory(element, sizeof(*element));
+	NdisAllocateSpinLock(pAd, &pAd->WscElmeLock);
+	pAd->pHmacData = hmac;
+	pAd->pWscElme = element;
+	pAd->WriteWscCfgToDatFile = 0xFF;
+	pAd->WscWorkerInitialized = TRUE;
+	status = RTMP_OS_TASK_INIT(task, "RtmpWscTask", pAd);
+	if (status == NDIS_STATUS_SUCCESS)
+		status = RtmpOSTaskAttach(task, wsc_write_dat_file_thread, (ULONG)task);
+	if (status != NDIS_STATUS_SUCCESS)
+		WscThreadStop(pAd);
 	return status;
 }
 
@@ -10447,8 +10473,12 @@ VOID WscUUIDInit(
 		if (pWpsCtrl->pWscTxBuf)
 			NdisZeroMemory(pWpsCtrl->pWscTxBuf, MAX_MGMT_PKT_LEN);
 
-		initList(&pWpsCtrl->WscPeerList);
-		NdisAllocateSpinLock(pAd, &pWpsCtrl->WscPeerListSemLock);
+		if (!pWpsCtrl->WscPeerListInitialized) {
+			initList(&pWpsCtrl->WscPeerList);
+			NdisAllocateSpinLock(pAd, &pWpsCtrl->WscPeerListSemLock);
+			pWpsCtrl->WscPeerListInitialized = TRUE;
+			pAd->WscConfigInitialized = TRUE;
+		}
 		pWpsCtrl->PinAttackCount = 0;
 		pWpsCtrl->bSetupLock = FALSE;
 #ifdef WSC_V2_SUPPORT

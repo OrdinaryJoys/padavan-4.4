@@ -7852,6 +7852,11 @@ INT32 tr_ctl_init(RTMP_ADAPTER *pAd)
 #endif
 	struct tr_delay_control *tr_delay_ctl = &tr_ctl->tr_delay_ctl;
 
+	/* A new transaction must never replace a live flow-control owner. */
+	if (!num_of_tx_ring || tr_flow_ctl->TxFlowBlockState ||
+		tr_flow_ctl->TxBlockLock || tr_flow_ctl->TxBlockDevList)
+		return NDIS_STATUS_FAILURE;
+
 	/* please do not clean tr_ctl data struct.
 	   It will disable rx delay interrupt.
 	*/
@@ -7868,43 +7873,42 @@ INT32 tr_ctl_init(RTMP_ADAPTER *pAd)
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				 ("%s os_alloc_mem fail\n",
 				  __func__));
-		return FALSE;
+		goto fail;
 	}
 
 	NdisZeroMemory(pTxFlowBlockState, (num_of_tx_ring) * sizeof(UINT8));
-	tr_flow_ctl->TxFlowBlockState = pTxFlowBlockState;
 	os_alloc_mem(pAd, (UCHAR **)&pTxBlockLock, (num_of_tx_ring) * sizeof(NDIS_SPIN_LOCK));
 
 	if (pTxBlockLock == NULL) {
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				 ("%s os_alloc_mem fail\n",
 				  __func__));
-		return FALSE;
+		goto fail;
 	}
 
 	NdisZeroMemory(pTxBlockLock, (num_of_tx_ring) * sizeof(NDIS_SPIN_LOCK));
-	tr_flow_ctl->TxBlockLock = pTxBlockLock;
 	os_alloc_mem(pAd, (UCHAR **)&pTxBlockDevList, (num_of_tx_ring) * sizeof(DL_LIST));
 
 	if (pTxBlockDevList == NULL) {
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				 ("%s os_alloc_mem fail\n",
 				  __func__));
-		return FALSE;
+		goto fail;
 	}
 
 	NdisZeroMemory(pTxBlockDevList, (num_of_tx_ring) * sizeof(DL_LIST));
-	tr_flow_ctl->TxBlockDevList = pTxBlockDevList;
-
-	tr_flow_ctl->RxFlowBlockState = 0;
 
 	for (Index = 0; Index < num_of_tx_ring; Index++) {
-		tr_flow_ctl->TxFlowBlockState[Index] = 0;
-		NdisAllocateSpinLock(pAd, &tr_flow_ctl->TxBlockLock[Index]);
-		RTMP_SPIN_LOCK_IRQSAVE(&tr_flow_ctl->TxBlockLock[Index], &Flags);
-		DlListInit(&tr_flow_ctl->TxBlockDevList[Index]);
-		RTMP_SPIN_UNLOCK_IRQRESTORE(&tr_flow_ctl->TxBlockLock[Index], &Flags);
+		NdisAllocateSpinLock(pAd, &pTxBlockLock[Index]);
+		RTMP_SPIN_LOCK_IRQSAVE(&pTxBlockLock[Index], &Flags);
+		DlListInit(&pTxBlockDevList[Index]);
+		RTMP_SPIN_UNLOCK_IRQRESTORE(&pTxBlockLock[Index], &Flags);
 	}
+	/* All fallible allocations and lock/list construction have completed. */
+	tr_flow_ctl->TxFlowBlockState = pTxFlowBlockState;
+	tr_flow_ctl->TxBlockLock = pTxBlockLock;
+	tr_flow_ctl->TxBlockDevList = pTxBlockDevList;
+	tr_flow_ctl->RxFlowBlockState = 0;
 
 #ifdef CONFIG_TP_DBG
 	tp_dbg->IsrTxCnt = 0;
@@ -7952,7 +7956,15 @@ INT32 tr_ctl_init(RTMP_ADAPTER *pAd)
 #endif
 	RTMPInitTimer(pAd, &tr_delay_ctl->rx_delay_timer, GET_TIMER_FUNCTION(rx_delay_ctl_algo), tr_delay_ctl, TRUE);
 	RTMPSetTimer(&tr_delay_ctl->rx_delay_timer, 1000);
-	return 0;
+	return NDIS_STATUS_SUCCESS;
+fail:
+	if (pTxBlockDevList)
+		os_free_mem(pTxBlockDevList);
+	if (pTxBlockLock)
+		os_free_mem(pTxBlockLock);
+	if (pTxFlowBlockState)
+		os_free_mem(pTxFlowBlockState);
+	return NDIS_STATUS_RESOURCES;
 }
 
 INT32 tr_ctl_exit(RTMP_ADAPTER *pAd)
@@ -7967,6 +7979,19 @@ INT32 tr_ctl_exit(RTMP_ADAPTER *pAd)
 	struct tp_debug *tp_dbg = &tr_ctl->tp_dbg;
 #endif
 	struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
+
+	if (!tr_flow_ctl->TxFlowBlockState && !tr_flow_ctl->TxBlockLock &&
+		!tr_flow_ctl->TxBlockDevList)
+		return NDIS_STATUS_SUCCESS;
+	if (!tr_flow_ctl->TxFlowBlockState || !tr_flow_ctl->TxBlockLock ||
+		!tr_flow_ctl->TxBlockDevList)
+		return NDIS_STATUS_FAILURE;
+
+	/* Retire callbacks before releasing the objects they may observe. */
+	RTMPReleaseTimer(&tr_delay_ctl->rx_delay_timer, &cancelled);
+#ifdef CONFIG_TP_DBG
+	RTMPReleaseTimer(&tp_dbg->tp_dbg_history_timer, &cancelled);
+#endif
 
 	for (Index = 0; Index < GET_NUM_OF_TX_RING(cap); Index++) {
 		RTMP_SEM_LOCK(&tr_flow_ctl->TxBlockLock[Index]);
@@ -7989,14 +8014,11 @@ INT32 tr_ctl_exit(RTMP_ADAPTER *pAd)
 	os_free_mem(tr_flow_ctl->TxFlowBlockState);
 	os_free_mem(tr_flow_ctl->TxBlockLock);
 	os_free_mem(tr_flow_ctl->TxBlockDevList);
-
-	RTMPReleaseTimer(&tr_delay_ctl->rx_delay_timer, &cancelled);
-
-#ifdef CONFIG_TP_DBG
-	RTMPReleaseTimer(&tp_dbg->tp_dbg_history_timer, &cancelled);
-#endif
-
-	return 0;
+	tr_flow_ctl->TxFlowBlockState = NULL;
+	tr_flow_ctl->TxBlockLock = NULL;
+	tr_flow_ctl->TxBlockDevList = NULL;
+	tr_flow_ctl->RxFlowBlockState = 0;
+	return NDIS_STATUS_SUCCESS;
 }
 
 INT32 tx_flow_block(RTMP_ADAPTER *pAd, PNET_DEV NetDev, UINT8 State, BOOLEAN Block, UINT8 RingIdx)

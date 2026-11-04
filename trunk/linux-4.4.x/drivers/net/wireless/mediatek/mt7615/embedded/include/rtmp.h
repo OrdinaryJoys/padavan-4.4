@@ -6235,6 +6235,8 @@ struct _RTMP_ADAPTER {
 
 #ifdef WSC_INCLUDED
 	RTMP_OS_TASK wscTask;
+	BOOLEAN WscWorkerInitialized;
+	BOOLEAN WscConfigInitialized;
 	UCHAR WriteWscCfgToDatFile;
 	BOOLEAN WriteWscCfgToAr9DatFile;
 	NDIS_SPIN_LOCK WscElmeLock;
@@ -7899,7 +7901,7 @@ VOID RTMPCancelTimer(RALINK_TIMER_STRUCT *pTimer, BOOLEAN *pCancelled);
 VOID RTMPReleaseTimer(RALINK_TIMER_STRUCT *pTimer, BOOLEAN *pCancelled);
 VOID RTMPShowTimerList(RTMP_ADAPTER *pAd);
 
-VOID RTMPEnableRxTx(RTMP_ADAPTER *pAd);
+BOOLEAN RTMPEnableRxTx(RTMP_ADAPTER *pAd);
 VOID RTMPDisableRxTx(RTMP_ADAPTER *pAd);
 
 VOID AntCfgInit(RTMP_ADAPTER *pAd);
@@ -10458,6 +10460,7 @@ USHORT  WscGetEncryType(
 NDIS_STATUS WscThreadInit(RTMP_ADAPTER *pAd);
 
 BOOLEAN WscThreadExit(RTMP_ADAPTER *pAd);
+VOID WscThreadStop(RTMP_ADAPTER *pAd);
 
 int	 AppendWSCTLV(
 	IN  USHORT index,
@@ -11465,8 +11468,9 @@ INT Set_LongRetryLimit_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg);
 INT Set_ShortRetryLimit_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg);
 INT Set_AutoFallBack_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg);
 VOID RT28XXDMADisable(RTMP_ADAPTER *pAd);
-VOID RT28XXDMAEnable(RTMP_ADAPTER *pAd);
-VOID RT28XXDMAReset(RTMP_ADAPTER *pAd);
+BOOLEAN RT28XXDMAEnable(RTMP_ADAPTER *pAd);
+BOOLEAN RT28XXDMAStop(RTMP_ADAPTER *pAd);
+BOOLEAN RT28XXDMAReset(RTMP_ADAPTER *pAd);
 
 #ifdef RTMP_MAC_PCI
 VOID PDMAWatchDog(RTMP_ADAPTER *pAd);
@@ -11489,6 +11493,8 @@ void CfgInitHook(RTMP_ADAPTER *pAd);
 
 
 NDIS_STATUS RtmpMgmtTaskInit(RTMP_ADAPTER *pAd);
+
+VOID rtmp_sys_task_exit(RTMP_ADAPTER *pAd);
 VOID mtd_net_tasklet_exit(RTMP_ADAPTER *pAd);
 VOID RtmpMgmtTaskExit(RTMP_ADAPTER *pAd);
 

@@ -747,6 +747,7 @@ typedef	struct	_WSC_CTRL {
 	BOOLEAN				bWscFirstOne;
 	PUCHAR				pWscCurBufIdx;
 	NDIS_SPIN_LOCK		WscPeerListSemLock;
+	BOOLEAN WscPeerListInitialized;
 	LIST_HEADER			WscPeerList;
 	RALINK_TIMER_STRUCT M2DTimer;
 	BOOLEAN				bM2DTimerRunning;
