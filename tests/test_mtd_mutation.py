@@ -144,6 +144,8 @@ class MtdMutationTests(unittest.TestCase):
         script = (ROOT / 'trunk/user/scripts/mtd_storage.sh').read_text()
         found = re.search(r'func_erase\(\)\n\{[\s\S]*?\n\}', script)
         self.assertIsNotNone(found)
+        invalidate = re.search(r'func_invalidate_hash\(\)\n\{[\s\S]*?\n\}', script)
+        self.assertIsNotNone(invalidate)
         for kind, expected in (('current', 1), ('baseline', 0)):
             with tempfile.TemporaryDirectory(prefix='k2p-storage-erase-chain-') as name:
                 root = Path(name)
@@ -158,21 +160,26 @@ class MtdMutationTests(unittest.TestCase):
                 stub = root / 'mtd_write'
                 stub.write_text('#!' + str(Path(shutil.which('python3')).resolve()) + '\n'
                                 'import json,subprocess,sys\n'
+                                'import os\nfrom pathlib import Path\n'
                                 'assert sys.argv[1:]==["erase","Storage"]\n'
+                                'Path(os.environ["FIXTURE_CALLED"]).write_text("called\\n")\n'
                                 'p=subprocess.run([' + repr(str(self.binaries[kind])) + ',"erase-error-first"],capture_output=True,text=True)\n'
                                 'assert p.returncode==0,p.stderr\n'
                                 'raise SystemExit(json.loads(p.stdout)["returncode"])\n')
                 stub.chmod(0o700)
                 code = ('result=0\nmtd_part_name=Storage\nhsh="$FIXTURE_HASH"\n'
-                        'dir_storage="$FIXTURE_LIVE"\nslk="$FIXTURE_MARKER"\n' + found.group() +
+                        'dir_storage="$FIXTURE_LIVE"\nslk="$FIXTURE_MARKER"\nlogger() { :; }\n' +
+                        invalidate.group() + '\n' + found.group() +
                         '\nfunc_erase\nexit "$result"\n')
                 result = subprocess.run(['/bin/sh', '-c', code], capture_output=True, text=True,
                                         env=dict(os.environ, PATH=str(root) + os.pathsep + os.environ['PATH'],
                                                  FIXTURE_HASH=str(digest), FIXTURE_LIVE=str(live),
+                                                 FIXTURE_CALLED=str(root / 'backend-called'),
                                                  FIXTURE_MARKER=str(marker), ASAN_OPTIONS='detect_leaks=0'), timeout=5)
                 self.assertEqual(result.returncode, expected, result.stderr)
+                self.assertEqual((root / 'backend-called').read_text(), 'called\n')
                 self.assertEqual((live / 'original').exists(), kind == 'current')
-                self.assertEqual(digest.exists(), kind == 'current')
+                self.assertFalse(digest.exists())
                 self.assertEqual(marker.exists(), kind == 'baseline')
 
     def test_exact_functions_baseline_and_typed_contract_boundaries(self):
