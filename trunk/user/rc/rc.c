@@ -1273,6 +1273,21 @@ init_router(void)
 	system("/usr/bin/autostart.sh &");
 }
 
+/* Keep the persistent pre-network hook synchronous, at its original boot
+ * boundary. A timeout/output flood cannot indefinitely withhold management
+ * startup. The runner is not a sandbox or rollback of the script's effects. */
+void
+run_startup_script(void)
+{
+	int status;
+	if (access(SCRIPT_STARTUP, X_OK) != 0)
+		return;
+	status = shutdown_hook_run(SCRIPT_STARTUP, HOOK_RUNNER_NO_ARGUMENT,
+		HOOK_RUNNER_TIMEOUT_MS, HOOK_RUNNER_TERM_MS, HOOK_RUNNER_KILL_MS);
+	if (status != 0)
+		logmessage("startup", "Startup hook failed (status %d, runner error %d); continuing startup", status, errno);
+}
+
 /*
  * level {0: reboot, 1: halt, 2: power-off}
  */

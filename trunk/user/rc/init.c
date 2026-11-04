@@ -471,6 +471,7 @@ void
 init_main_loop(void)
 {
 	pid_t shell_pid = 0;
+	int early_status;
 
 	/* Services must opt in to shared writes instead of exposing every new
 	 * configuration and PID file to unprivileged local processes. */
@@ -479,10 +480,15 @@ init_main_loop(void)
 	/* Basic initialization */
 	init_time();
 #if BOARD_RAM_SIZE > 32
-	system("dev_init.sh");
+	early_status = system("dev_init.sh");
 #else
-	system("dev_init.sh -l");
+	early_status = system("dev_init.sh -l");
 #endif
+	if (early_status != 0)
+		logmessage("startup", "Early setup failed (status %d); continuing with Storage save authorization required", early_status);
+	/* Early file setup returned; execute the same persistent hook
+	 * here with a deadline before proceeding to network/service startup. */
+	run_startup_script();
 	init_nodes();
 	init_mdev();
 	init_sysctl();

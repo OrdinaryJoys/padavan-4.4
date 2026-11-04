@@ -18,6 +18,7 @@
 #endif
 static char fixture_proc[PATH_MAX] = "/proc";
 static const char *fault = "none", *expected_script;
+static int expected_level;
 static pid_t owner, owned_child;
 static int forks, waits, exits_seen, group_signals, after_reap, pipe_count;
 static int pipe_reads[2] = { -1, -1 };
@@ -181,8 +182,9 @@ static int fixture_execv(const char *path, char *const arguments[])
 {
 	const char *audit = getenv("HOOK_EXEC_AUDIT");
 	assert(!strcmp(path, "/bin/sh") && !strcmp(arguments[1], "-c") &&
-	       !strcmp(arguments[2], "exec \"$0\" \"$1\"") && !strcmp(arguments[3], expected_script) &&
-	       arguments[4] && !arguments[5]);
+	       !strcmp(arguments[2], expected_level == -1 ? "exec \"$0\"" : "exec \"$0\" \"$1\"") &&
+	       !strcmp(arguments[3], expected_script) &&
+	       (expected_level == -1 ? arguments[4] == NULL : arguments[4] && !arguments[5]));
 	if (audit) {
 		int fd = open(audit, O_WRONLY | O_CREAT | O_APPEND, 0600);
 		assert(fd >= 0 && write(fd, "E", 1) == 1 && close(fd) == 0);
@@ -236,7 +238,7 @@ int main(int argc, char **argv)
 		return fclose(report) != 0;
 	}
 	assert(argc == 10);
-	expected_script = argv[1]; fault = argv[7]; owner = getpid();
+	expected_script = argv[1]; expected_level = atoi(argv[2]); fault = argv[7]; owner = getpid();
 	snprintf(fixture_proc, sizeof(fixture_proc), "%s", argv[6]);
 	report = fopen(argv[8], "w"); assert(report);
 #ifdef __linux__

@@ -53,6 +53,7 @@
 #define SCRIPT_POST_FIREWALL		"/etc/storage/post_iptables_script.sh"
 #define SCRIPT_INTERNET_STATE		"/etc/storage/inet_state_script.sh"
 #define SCRIPT_SHUTDOWN			"/etc/storage/shutdown_script.sh"
+#define SCRIPT_STARTUP			"/etc/storage/start_script.sh"
 
 #define SCRIPT_OVPN_SERVER		"ovpns.script"
 #define SCRIPT_OVPN_CLIENT		"ovpnc.script"
@@ -147,6 +148,7 @@ void setenv_tz(void);
 void setkernel_tz(void);
 void init_router(void);
 void shutdown_router(int level);
+void run_startup_script(void);
 void handle_notifications(void);
 void LED_CONTROL(int gpio_led, int flag);
 void storage_save_time(time_t delta);

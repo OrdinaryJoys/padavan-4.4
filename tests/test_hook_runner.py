@@ -124,6 +124,34 @@ fi
                 result = self.run_case(body=f'exit {status}\n')
                 self.assertEqual((result['status'], result['error']), (status << 8, 0))
 
+    def test_startup_mode_keeps_zero_arguments_literal_argv0_environment_and_cwd(self):
+        body='''[ "$#" = 0 ] || exit 51
+[ "$0" = "$HOOK_SCRIPT_EXPECTED" ] || exit 52
+[ "$PWD" = "$HOOK_CWD_EXPECTED" ] || exit 53
+[ "$HOOK_ARG_OUT" = "$HOOK_ENV_EXPECTED" ] || exit 54
+printf once >> "$HOOK_EFFECT"
+'''
+        self.env.update(HOOK_SCRIPT_EXPECTED=str(self.script),HOOK_CWD_EXPECTED=os.getcwd(),
+                        HOOK_ENV_EXPECTED=str(self.arg_out))
+        result=self.run_case(body=body,level=-1)
+        self.assertEqual((result['status'],result['error']),(0,0),result)
+        self.assertEqual(self.effect.read_text(),'once')
+
+    def test_startup_mode_deadline_and_output_limit_remain_enforced(self):
+        result=self.run_case(body='exec 1>&- 2>&-\nsleep 100\n',level=-1,timeout=100)
+        self.assertEqual(result['timeout'],1,result)
+        result=self.run_case(body='cat "$HOOK_TEST_PAYLOAD"\n',level=-1)
+        self.assertEqual(result['output_limit'],1,result)
+
+    def test_argument_mode_and_budget_boundaries_reject_without_exec(self):
+        for options in ({'level':-2},{'level':3},{'timeout':0},{'timeout':30001},
+                        {'term':2001},{'hard':1001}):
+            with self.subTest(options=options):
+                result=self.run_case(body='touch "$HOOK_EFFECT"\n',**options)
+                self.assertEqual((result['status'],result['error']),(-1,errno.EINVAL),result)
+                self.assertEqual(result['forks'],0,result)
+                self.assertFalse(self.effect.exists())
+
     def test_signal_exit_and_child_signal_mask_are_preserved(self):
         for name in ('TERM', 'USR2'):
             with self.subTest(name=name):
@@ -301,6 +329,53 @@ fi
         makefile = source('trunk/user/rc/Makefile')
         self.assertIn('-lrt', makefile)
         self.assertIn('rc.o: hook_runner.h', makefile)
+
+    def test_actual_startup_entry_executes_original_executable_path_once_and_continues(self):
+        # Use the full real runner and real rc entry, with only its fixed path,
+        # short fixture budgets and process-group lookup adapted privately.
+        header=self.header.read_text()
+        if sys.platform=='darwin':
+            header=header.replace('#define HOOK_RUNNER_PROC_ROOT "/proc"',
+                                  '#define HOOK_RUNNER_PROC_ROOT '+json.dumps(str(self.proc)))
+        header=header.replace('#define HOOK_RUNNER_TIMEOUT_MS 30000U','#define HOOK_RUNNER_TIMEOUT_MS 2000U')
+        header=header.replace('#define HOOK_RUNNER_TERM_MS 2000U','#define HOOK_RUNNER_TERM_MS 40U')
+        header=header.replace('#define HOOK_RUNNER_KILL_MS 1000U','#define HOOK_RUNNER_KILL_MS 40U')
+        prefix='''#define _GNU_SOURCE
+#include <assert.h>
+#include <stdarg.h>
+static int logs;
+static void logmessage(const char *tag,const char *format,...){va_list ap;assert(!strcmp(tag,"startup"));logs++;va_start(ap,format);vfprintf(stderr,format,ap);va_end(ap);}
+'''
+        # The logger needs string declarations from the actual header first.
+        code='#define _GNU_SOURCE\n'+header+'\n'+prefix.replace('#define _GNU_SOURCE\n','')
+        code+='\n#define SCRIPT_STARTUP '+json.dumps(str(self.script))+'\n'
+        code+=function(source('trunk/user/rc/rc.c'),'run_startup_script')
+        code+='\nint main(void){run_startup_script();printf("%d\\n",logs);return 0;}\n'
+        cfile=self.path/'startup.c';cfile.write_text(code);binary=self.path/'startup'
+        built=subprocess.run(['clang','-std=gnu99','-Wall','-Wextra','-Werror','-Wno-unused-function',
+                              '-fsanitize=address,undefined',str(cfile),'-o',str(binary)],capture_output=True,text=True)
+        self.assertEqual(built.returncode,0,built.stderr)
+        # Keep this finite fixture alive for the parent's group handshake;
+        # macOS loses getpgid for an already exited child, unlike Linux.
+        self.script.write_text('#!/bin/sh\n[ "$#" = 0 ] || exit 51\nprintf once >> "$HOOK_EFFECT"\nsleep .05\n')
+        self.script.chmod(0o755)
+        result=subprocess.run([str(binary)],env=self.env,capture_output=True,text=True,timeout=5)
+        self.assertEqual((result.returncode,result.stdout),(0,'0\n'),result.stderr)
+        self.assertEqual(self.effect.read_text(),'once')
+        self.effect.unlink();self.script.chmod(0o644)
+        result=subprocess.run([str(binary)],env=self.env,capture_output=True,text=True,timeout=5)
+        self.assertEqual((result.returncode,result.stdout),(0,'0\n'),result.stderr)
+        self.assertFalse(self.effect.exists())
+        self.script.chmod(0o755);self.script.write_text('#!/bin/sh\nexec 1>&- 2>&-\nsleep 100\n')
+        result=subprocess.run([str(binary)],env=self.env,capture_output=True,text=True,timeout=5)
+        self.assertEqual((result.returncode,result.stdout),(0,'1\n'),result.stderr)
+        init=function(source('trunk/user/rc/init.c'),'init_main_loop')
+        self.assertEqual(init.count('run_startup_script();'),1)
+        self.assertLess(init.index('system("dev_init.sh -l")'),init.index('run_startup_script();'))
+        self.assertLess(init.index('run_startup_script();'),init.index('init_nodes();'))
+        dev=source('trunk/user/scripts/dev_init.sh')
+        self.assertNotIn('\n\t/etc/storage/start_script.sh',dev)
+        self.assertNotIn('[ -x /etc/storage/start_script.sh ]',dev)
 
     def test_ordinary_shutdown_uses_bounded_hook_and_continues_after_failure(self):
         code = r'''

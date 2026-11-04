@@ -56,8 +56,10 @@ mkdir -p -m 755 /etc/Wireless
 mkdir -p -m 750 /etc/Wireless/RT2860
 mkdir -p -m 750 /etc/Wireless/iNIC
 
-# extract storage files
-mtd_storage.sh load
+# A failed load leaves save authorization absent. Defaults below keep a RAM
+# management environment available without replacing recoverable flash data.
+storage_load_status=0
+mtd_storage.sh load || storage_load_status=$?
 
 touch /etc/resolv.conf
 
@@ -104,7 +106,6 @@ if [ -f /usr/bin/htop ]; then
 	echo "color_scheme=6" > /home/root/.config/htop/htoprc
 fi
 
-# perform start script
-if [ -x /etc/storage/start_script.sh ] ; then
-	/etc/storage/start_script.sh
-fi
+# PID1 runs the same persistent start script with a bounded synchronous runner
+# immediately after this script returns, before init_nodes/network startup.
+exit "$storage_load_status"

@@ -7,6 +7,10 @@ mtd_part_dev="/dev/mtdblock5"
 mtd_part_size=65536
 dir_storage="/etc/storage"
 slk="/tmp/.storage_locked"
+# Missing authorization is the cold-boot default.  A failed load must never
+# let a subsequently filled RAM defaults tree replace recoverable flash data.
+ready_parent="/var/private"
+save_ready="$ready_parent/storage-save-ready"
 tbz="/tmp/storage.tar.bz2"
 hsh="/tmp/hashes/storage_md5"
 op_lock="/tmp/.storage_operation"
@@ -14,6 +18,45 @@ work_dir=""
 restore_container=""
 lock_owned=0
 max_tar_size=8388608
+
+func_ready_parent()
+{
+	[ -d "$ready_parent" ] && [ ! -L "$ready_parent" ] &&
+		[ "$(stat -c %u "$ready_parent" 2>/dev/null)" = 0 ] &&
+		[ "$(stat -c %a "$ready_parent" 2>/dev/null)" = 700 ]
+}
+
+func_ready()
+{
+	local member
+	func_ready_parent || return 1
+	[ -d "$save_ready" ] && [ ! -L "$save_ready" ] &&
+		[ "$(stat -c %u "$save_ready" 2>/dev/null)" = 0 ] &&
+		[ "$(stat -c %a "$save_ready" 2>/dev/null)" = 700 ] || return 1
+	for member in "$save_ready"/* "$save_ready"/.[!.]* "$save_ready"/..?*; do
+		[ ! -e "$member" ] && [ ! -L "$member" ] || return 1
+	done
+}
+
+func_ready_clear()
+{
+	func_ready_parent || return 1
+	if [ -e "$save_ready" ] || [ -L "$save_ready" ]; then
+		func_ready && rmdir "$save_ready" || return 1
+	fi
+}
+
+func_ready_publish()
+{
+	func_ready_parent || return 1
+	# Atomic positive authorization in the private boot tmpfs.  Never repair
+	# or follow an unexpected existing object into permission to save.
+	if [ -e "$save_ready" ] || [ -L "$save_ready" ]; then
+		func_ready
+	else
+		mkdir -m 700 "$save_ready" && func_ready
+	fi
+}
 
 func_get_mtd()
 {
@@ -288,8 +331,9 @@ func_install_tar()
 
 func_load()
 {
-	if func_unpack "$mtd_part_dev" && func_install_tar && func_record_hash; then
-		rm -f "$slk"
+	if func_unpack "$mtd_part_dev" && func_install_tar && func_record_hash &&
+	   rm -f "$slk" && func_ready_publish; then
+		:
 	else
 		result=1
 		logger -t "Storage load" "Invalid or incomplete storage data: $mtd_part_dev"
@@ -300,7 +344,7 @@ func_tarb()
 {
 	# One recursive invocation includes dotfiles and empty directories, and
 	# cannot lose earlier members when an xargs argument batch is exceeded.
-	if ! (cd "$dir_storage" &&
+	if ! (ulimit -f 16384 && cd "$dir_storage" &&
 		find . -print0 | xargs -0 touch -c -h -t 201001010000.00 &&
 		tar -cf "$tmp" .); then
 		logger -t "Storage" "Cannot create complete storage tarball"
@@ -311,7 +355,7 @@ func_tarb()
 
 func_save()
 {
-	local fsz digest previous _ignored archive
+	local fsz digest previous _ignored archive blocks
 	archive="$work_dir/storage.tar.bz2"
 	md5sum "$tmp" > "$work_dir/hash.pending" || return 1
 	read -r digest _ignored < "$work_dir/hash.pending"
@@ -320,7 +364,11 @@ func_save()
 		echo "Storage hash is not changed, skip write to MTD partition. Exit."
 		return 0
 	fi
-	if ! bzip2 -c -9 "$tmp" > "$archive"; then
+	# Bound output while producing it, not after an oversized temporary file
+	# has already exhausted /tmp.  K2P Storage is a 512 KiB aligned partition.
+	blocks=$((mtd_part_size / 512))
+	[ "$blocks" -gt 0 ] || return 1
+	if ! (ulimit -f "$blocks" && bzip2 -c -9 "$tmp" > "$archive"); then
 		logger -t "Storage save" "Cannot compress complete storage tarball"
 		return 1
 	fi
@@ -369,10 +417,18 @@ func_restore()
 	[ "$available" -gt 64 ] || return 1
 	budget=$((available * 1024 - 65536))
 	/sbin/storage_validate "$tmp" "$budget" || return 1
+	func_ready_clear || return 1
 	func_stop_apps
 	if func_install_tar; then
-		rm -f "$slk" "$tbz"
-		result=0
+		if rm -f "$slk" && func_ready_publish; then
+			result=0
+			if ! rm -f "$tbz"; then
+				func_ready_clear
+				result=1
+			fi
+		else
+			result=1
+		fi
 	else
 		result=1
 	fi
@@ -895,6 +951,12 @@ EOF
 	fi
 }
 
+# Revoke before even the operation lock/discovery can fail.  dev_init creates
+# the private parent on each boot; a missing/unsafe parent cannot authorize a
+# save.  Blank flash and a damaged nonempty archive both require an explicit
+# reset or a validated restore, rather than silently authorizing defaults.
+case "$1" in load|erase|reset) func_ready_clear || exit 1;; esac
+
 func_begin || exit 1
 
 case "$1" in
@@ -904,7 +966,8 @@ load)
 	func_load
 	;;
 save)
-	[ -f "$slk" ] && exit 1
+	func_ready || exit 1
+	if [ -e "$slk" ] || [ -L "$slk" ]; then exit 1; fi
 	func_get_mtd
 	func_mdir && func_tarb && func_save || result=1
 	;;
@@ -922,7 +985,11 @@ erase)
 reset)
 	func_stop_apps
 	func_reset
-	func_fill
+	if func_fill && func_tarb && func_ready_publish; then
+		:
+	else
+		result=1
+	fi
 	func_start_apps
 	;;
 fill)

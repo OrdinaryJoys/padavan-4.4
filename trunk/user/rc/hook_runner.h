@@ -1,6 +1,6 @@
 #ifndef K2P_HOOK_RUNNER_H
 #define K2P_HOOK_RUNNER_H
-/* Bounded execution for the trusted root shutdown hook, not a sandbox.
+/* Bounded execution for trusted root startup/shutdown hooks, not a sandbox.
  * A script which changes session/group or performs uninterruptible I/O can
  * escape cleanup; failure never authorizes a firmware write. */
 #include <dirent.h>
@@ -23,6 +23,7 @@
 #define HOOK_RUNNER_TERM_MS 2000U
 #define HOOK_RUNNER_KILL_MS 1000U
 #define HOOK_RUNNER_STREAM_LIMIT (128U * 1024U)
+#define HOOK_RUNNER_NO_ARGUMENT (-1)
 #ifndef HOOK_RUNNER_PROC_LIMIT
 #define HOOK_RUNNER_PROC_LIMIT 8192U
 #endif
@@ -299,7 +300,7 @@ shutdown_hook_run(const char *script, int level, unsigned int timeout_ms,
 	sig_atomic_t cancelled = 0;
 	int64_t start, now, deadline;
 
-	if (!script || !*script || level < 0 || level > 2 || !timeout_ms ||
+	if (!script || !*script || level < HOOK_RUNNER_NO_ARGUMENT || level > 2 || !timeout_ms ||
 	    timeout_ms > HOOK_RUNNER_TIMEOUT_MS || term_ms > HOOK_RUNNER_TERM_MS || kill_ms > HOOK_RUNNER_KILL_MS) {
 		errno = EINVAL;
 		return -1;
@@ -354,7 +355,11 @@ shutdown_hook_run(const char *script, int level, unsigned int timeout_ms,
 	}
 	if (child == 0) {
 		char action[16];
-		char *args[] = { "/bin/sh", "-c", "exec \"$0\" \"$1\"", (char *)script, action, NULL };
+		/* Startup historically receives no arguments.  Keep that contract,
+		 * including literal $0, rather than passing shutdown action 0. */
+		char *args[] = { "/bin/sh", "-c", level == HOOK_RUNNER_NO_ARGUMENT ?
+			"exec \"$0\"" : "exec \"$0\" \"$1\"", (char *)script,
+			level == HOOK_RUNNER_NO_ARGUMENT ? NULL : action, NULL };
 		const int signals[] = { SIGTERM, SIGQUIT, SIGINT, SIGCHLD, SIGHUP, SIGALRM, SIGPIPE, SIGUSR1, SIGUSR2 };
 		struct sigaction reset;
 		int nullfd;

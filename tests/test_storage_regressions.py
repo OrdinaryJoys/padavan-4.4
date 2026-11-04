@@ -5,11 +5,13 @@ No router, host /etc, real services or flash device is accessed.
 import bz2
 import fcntl
 import io
+import json
 import os
 import re
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -86,6 +88,8 @@ class StorageRegression(unittest.TestCase):
         (self.storage/'start_script.sh').write_text('#!/bin/sh\n')
         (self.storage/'original').write_text('keep original')
         self.tmp=self.base/'tmp';self.tmp.mkdir();(self.tmp/'hashes').mkdir()
+        self.ready_parent=self.base/'var/private';self.ready_parent.mkdir(parents=True,mode=0o700)
+        self.ready=self.ready_parent/'storage-save-ready';self.ready.mkdir(mode=0o700)
         self.tbz=self.tmp/'storage.tar.bz2';self.hash=self.tmp/'hashes/storage_md5'
         self.proc=self.base/'mtd';self.proc.write_text('mtd6: 00080000 00010000 "Storage"\n')
         self.device=self.base/'mtdblock6';self.flash_calls=self.base/'flash-calls'
@@ -109,12 +113,23 @@ CODE""")
         self.stub('df','printf "Filesystem 1024-blocks Used Available Capacity Mounted\\nfixture 65536 0 65536 0%% /fixture\\n"')
         self.stub('md5sum','exec python3 -c \'import hashlib,sys; p=sys.argv[1]; print(hashlib.md5(open(p,"rb").read()).hexdigest()+"  "+p)\' "$1"')
         self.stub('mtd_write','echo write >> "'+str(self.flash_calls)+'"\nexit "${FLASH_RC:-0}"')
+        reset=(ROOT/'trunk/user/scripts/reset_ss.sh').read_text().replace('/etc/storage',str(self.storage))
+        reset_path=self.bin/'reset_ss.sh';reset_path.write_text(reset);reset_path.chmod(0o755)
         text=SCRIPT.read_text()
-        replacements={'/sbin/storage_validate':str(self.bin/'storage_validate'),'/sbin/rstats':str(self.bin/'rstats'),'/etc/storage':str(self.storage),'/tmp/':str(self.tmp)+'/', '/proc/mtd':str(self.proc),'/dev/mtdblock':str(self.base/'mtdblock')}
+        replacements={'/sbin/storage_validate':str(self.bin/'storage_validate'),'/sbin/rstats':str(self.bin/'rstats'),'/etc/storage':str(self.storage),'/var/private':str(self.ready_parent),'/etc_ro/':str(self.base/'etc_ro')+'/', '/usr/bin/':str(self.base/'usr/bin')+'/', '/usr/sbin/':str(self.base/'usr/sbin')+'/', '/tmp/':str(self.tmp)+'/', '/proc/mtd':str(self.proc),'/dev/mtdblock':str(self.base/'mtdblock')}
         # Replace the original script once: injected Linux /tmp fixture paths
         # must not be rewritten again by the generic /tmp/ mapping.
         pattern='|'.join(re.escape(old) for old in sorted(replacements,key=len,reverse=True))
         text=re.sub(pattern,lambda match:replacements[match.group(0)],text)
+        if sys.platform=='darwin':
+            # macOS /bin/sh uses 1024-byte -f units.  Target BusyBox uses
+            # RLIMIT_FSIZE shift9 (512 bytes); model that exact target unit,
+            # with the unchanged production commands following this seam.
+            text='''ulimit() {
+ if [ "$1" = -f ]; then command ulimit -f "$(( $2 / 2 ))";
+ else command ulimit "$@"; fi
+}
+'''+text
         self.replay=self.base/'replay.sh';self.replay.write_text(text)
 
     def tearDown(self): self.temp.cleanup()
@@ -228,6 +243,261 @@ CODE""")
         self.assertNotEqual(self.run_script('load').returncode,0)
         self.assertEqual((self.storage/'original').read_text(),'keep original')
         self.assertEqual(self.hash.read_text(),'old hash')
+
+    def test_cold_boot_bad_or_blank_load_fill_cannot_authorize_later_save(self):
+        for payload in (b'nonempty corrupt archive', bytes([255])*4096,
+                        bz2.compress(archive())[:-5]):
+            with self.subTest(payload=payload[:16]):
+                shutil.rmtree(self.storage);self.storage.mkdir()
+                if self.ready.exists():self.ready.rmdir()
+                self.device.write_bytes(payload)
+                self.assertNotEqual(self.run_script('load').returncode,0)
+                self.assertFalse(self.ready.exists())
+                self.run_script('fill')
+                self.assertTrue((self.storage/'start_script.sh').is_file())
+                self.assertNotEqual(self.run_script('save').returncode,0)
+                self.assertFalse(self.flash_calls.exists())
+                self.assertEqual(self.device.read_bytes(),payload)
+
+    def test_load_early_failures_revoke_authorization_before_common_setup(self):
+        self.device.write_bytes(bz2.compress(archive()))
+        for early in ('operation','discovery','directory'):
+            with self.subTest(early=early):
+                if not self.ready.exists():self.ready.mkdir(mode=0o700)
+                lock=self.tmp/'.storage_operation'
+                if lock.exists():shutil.rmtree(lock)
+                if early=='operation':lock.symlink_to(self.base/'missing-operation')
+                elif early=='discovery':self.proc.write_text('not a partition table\n')
+                else:
+                    shutil.rmtree(self.storage);self.storage.symlink_to(self.base/'missing-storage')
+                self.assertNotEqual(self.run_script('load').returncode,0)
+                self.assertFalse(self.ready.exists())
+                if lock.is_symlink():lock.unlink()
+                self.proc.write_text('mtd6: 00080000 00010000 "Storage"\n')
+                if self.storage.is_symlink():
+                    self.storage.unlink();self.storage.mkdir()
+                    (self.storage/'start_script.sh').write_text('#!/bin/sh\n')
+                self.assertNotEqual(self.run_script('save').returncode,0)
+                self.assertFalse(self.flash_calls.exists())
+
+    def test_unsafe_ready_cannot_be_revoked_by_load_restore_or_reset(self):
+        self.ready.rmdir();self.ready.write_text('unexpected state')
+        self.device.write_bytes(bz2.compress(archive()))
+        self.tbz.write_bytes(bz2.compress(archive()))
+        self.hash.write_text('old hash');backup=self.tbz.read_bytes()
+        for action in ('load','restore','reset'):
+            with self.subTest(action=action):
+                self.assertNotEqual(self.run_script(action).returncode,0)
+                self.assertEqual((self.storage/'original').read_text(),'keep original')
+                self.assertEqual(self.hash.read_text(),'old hash')
+                self.assertEqual(self.tbz.read_bytes(),backup)
+                self.assertEqual(self.ready.read_text(),'unexpected state')
+                self.assertFalse(self.flash_calls.exists())
+
+    def test_cold_boot_valid_archive_budget_failure_preserves_flash_hash_backup(self):
+        self.ready.rmdir();shutil.rmtree(self.storage);self.storage.mkdir()
+        old=bz2.compress(archive([('large',bytes(64*1024),tarfile.REGTYPE,'')]))
+        self.device.write_bytes(old);self.hash.write_text('old hash');self.tbz.write_bytes(b'old backup')
+        self.stub('df','printf "Filesystem 1024-blocks Used Available Capacity Mounted\\nfixture 65536 65500 36 99%% /fixture\\n"')
+        self.assertNotEqual(self.run_script('load').returncode,0)
+        self.run_script('fill')
+        self.assertNotEqual(self.run_script('save').returncode,0)
+        self.assertFalse(self.ready.exists());self.assertFalse(self.flash_calls.exists())
+        self.assertEqual(self.device.read_bytes(),old)
+        self.assertEqual(self.hash.read_text(),'old hash')
+        self.assertEqual(self.tbz.read_bytes(),b'old backup')
+
+    def test_ready_state_missing_link_wrong_mode_nonempty_or_parent_is_not_authority(self):
+        self.ready.rmdir()
+        for kind in ('missing','link','file','mode','nonempty','parent-mode','parent-link','parent-missing'):
+            with self.subTest(kind=kind):
+                if kind=='link':self.ready.symlink_to(self.storage,target_is_directory=True)
+                elif kind=='file':self.ready.write_text('')
+                elif kind in ('mode','nonempty'):
+                    self.ready.mkdir(mode=0o755 if kind=='mode' else 0o700)
+                    if kind=='nonempty':(self.ready/'.unexpected').touch()
+                elif kind=='parent-mode':self.ready_parent.chmod(0o755)
+                elif kind=='parent-link':
+                    self.ready_parent.rmdir();self.ready_parent.symlink_to(self.storage,target_is_directory=True)
+                elif kind=='parent-missing':self.ready_parent.rmdir()
+                self.assertNotEqual(self.run_script('save').returncode,0)
+                self.assertFalse(self.flash_calls.exists())
+                if self.ready_parent.is_symlink():
+                    self.ready_parent.unlink();self.ready_parent.mkdir(mode=0o700)
+                elif not self.ready_parent.exists():self.ready_parent.mkdir(mode=0o700)
+                self.ready_parent.chmod(0o700)
+                if self.ready.is_symlink() or self.ready.is_file():self.ready.unlink()
+                elif self.ready.exists():shutil.rmtree(self.ready)
+
+    def test_ready_parent_or_token_wrong_owner_never_authorizes_save(self):
+        original=self.bin/'stat-original';original.write_bytes((self.bin/'stat').read_bytes());original.chmod(0o755)
+        for path in (self.ready_parent,self.ready):
+            with self.subTest(path=path.name):
+                self.stub('stat','if [ "$2" = %u ] && [ "$3" = "'+str(path)+'" ]; then echo 65534; exit 0; fi\nexec "'+str(original)+'" "$@"')
+                self.assertNotEqual(self.run_script('save').returncode,0)
+                self.assertFalse(self.flash_calls.exists())
+
+    def test_actual_dev_init_propagates_load_failure_fills_ram_without_save_authority(self):
+        # Replay every command of the shipped script.  Mount/mdev are inert;
+        # every absolute data path, including proc/sys, is under this fixture.
+        self.ready.rmdir();shutil.rmtree(self.storage);self.storage.mkdir()
+        old=b'nonempty invalid Storage input'
+        self.device.write_bytes(old);self.hash.write_text('old hash');self.tbz.write_bytes(b'old backup')
+        self.stub('mount','[ "$1" = -t ] || exit 1\nexec /bin/mkdir -p "$4"')
+        self.stub('mdev','exit 0')
+        self.stub('mtd_storage.sh','exec sh "'+str(self.replay)+'" "$@"')
+        for path in ('proc/sys/fs','proc/sys/net/ipv4'):(self.base/path).mkdir(parents=True)
+        dev=(ROOT/'trunk/user/scripts/dev_init.sh').read_text()
+        roots=('/etc_ro','/proc','/sys','/dev','/etc','/tmp','/var','/home','/media','/mnt','/usr')
+        dev=re.sub('|'.join(re.escape(p)+r'(?=/|[\s;])' for p in roots),
+                   lambda match:str(self.base/match.group(0).lstrip('/')),dev)
+        script=self.base/'dev-init.sh';script.write_text(dev)
+        result=subprocess.run(['sh',str(script)],env=self.env,capture_output=True,text=True,timeout=15)
+        self.assertNotEqual(result.returncode,0)
+        self.assertTrue((self.storage/'start_script.sh').is_file())
+        self.assertFalse(self.ready.exists())
+        self.assertNotEqual(self.run_script('save').returncode,0)
+        self.assertFalse(self.flash_calls.exists())
+        self.assertEqual(self.device.read_bytes(),old)
+        self.assertEqual(self.hash.read_text(),'old hash')
+        self.assertEqual(self.tbz.read_bytes(),b'old backup')
+        init=(ROOT/'trunk/user/rc/init.c').read_text()
+        self.assertIn('early_status = system("dev_init.sh");',init)
+        self.assertIn('early_status = system("dev_init.sh -l");',init)
+        self.assertIn('if (early_status != 0)',init)
+
+    def test_successful_load_restore_and_explicit_reset_authorize_but_fill_does_not(self):
+        self.ready.rmdir()
+        self.assertNotEqual(self.run_script('save').returncode,0)
+        self.device.write_bytes(bz2.compress(archive()))
+        self.assertEqual(self.run_script('load').returncode,0)
+        self.assertEqual(self.ready.stat().st_mode&0o7777,0o700)
+        (self.storage/'after-load').write_text('edit')
+        self.assertEqual(self.run_script('save').returncode,0)
+        self.ready.rmdir();self.tbz.write_bytes(bz2.compress(archive()))
+        self.assertEqual(self.run_script('restore').returncode,0)
+        self.assertTrue(self.ready.is_dir())
+        self.ready.rmdir()
+        self.assertEqual(self.run_script('reset').returncode,0)
+        self.assertTrue(self.ready.is_dir())
+        self.assertEqual(self.run_script('save').returncode,0)
+
+    def test_ready_publication_failure_after_valid_load_never_authorizes_save(self):
+        self.device.write_bytes(bz2.compress(archive()))
+        self.stub('mkdir','case "$*" in *storage-save-ready*) exit 1;; esac\nexec /bin/mkdir "$@"')
+        self.assertNotEqual(self.run_script('load').returncode,0)
+        self.assertFalse(self.ready.exists())
+        self.assertNotEqual(self.run_script('save').returncode,0)
+        self.assertFalse(self.flash_calls.exists())
+        uploaded=bz2.compress(archive())
+        self.tbz.write_bytes(uploaded)
+        self.assertNotEqual(self.run_script('restore').returncode,0)
+        self.assertFalse(self.ready.exists())
+        self.assertEqual(self.tbz.read_bytes(),uploaded)
+        self.assertNotEqual(self.run_script('reset').returncode,0)
+        self.assertFalse(self.ready.exists())
+        self.assertNotEqual(self.run_script('save').returncode,0)
+        self.assertFalse(self.flash_calls.exists())
+
+    def test_archive_producers_have_live_limits_and_preserve_old_hash_and_backup(self):
+        limits=(ROOT/'trunk/user/busybox/busybox-1.24.x/shell/shell_common.c').read_text()
+        self.assertRegex(limits,r'\{ RLIMIT_FSIZE,\s+9,\s+\'f\'')
+        self.hash.write_text('old hash')
+        self.tbz.write_bytes(b'previous backup')
+        # An inert producer writes ordinary private output past the 8MiB
+        # contract; RLIMIT_FSIZE must stop it before post-validation runs.
+        output=self.base/'producer-bytes'
+        self.stub('tar','case "$1" in -cf) exec python3 - "$2" "'+str(output)+'" <<\'CODE\'\nimport os,sys\np=sys.argv[1]\ntry:\n with open(p,"wb") as f:\n  for _ in range(4096):f.write(bytes(4096))\nfinally:\n open(sys.argv[2],"w").write(str(os.path.getsize(p)))\nCODE\n;; *) exit 1;; esac')
+        self.assertNotEqual(self.run_script('backup').returncode,0)
+        self.assertLessEqual(int(output.read_text()),8*1024*1024)
+        self.assertEqual(self.tbz.read_bytes(),b'previous backup')
+        self.assertEqual(self.hash.read_text(),'old hash')
+        self.assertFalse(self.flash_calls.exists())
+
+    def test_save_compressor_is_limited_to_partition_during_production(self):
+        self.hash.write_text('old hash')
+        output=self.base/'compressor-bytes'
+        self.stub('bzip2','exec python3 - "'+str(output)+'" <<\'CODE\'\nimport os,sys\nn=0\ntry:\n while True:n+=os.write(1,bytes(4096))\nfinally:\n open(sys.argv[1],"w").write(str(n))\nCODE')
+        self.assertNotEqual(self.run_script('save').returncode,0)
+        self.assertLessEqual(int(output.read_text()),512*1024)
+        self.assertEqual(self.hash.read_text(),'old hash')
+        self.assertFalse(self.flash_calls.exists())
+
+    def test_failed_boot_load_remains_protected_at_actual_ordinary_shutdown_save(self):
+        from test_httpd_regressions import function
+        self.ready.rmdir();shutil.rmtree(self.storage);self.storage.mkdir()
+        old=b'nonempty Storage must survive startup recovery'
+        self.device.write_bytes(old);self.hash.write_text('old hash');self.tbz.write_bytes(b'old backup')
+        self.assertNotEqual(self.run_script('load').returncode,0)
+        self.run_script('fill')
+        code=r'''
+#define _GNU_SOURCE
+#include <assert.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#define SCRIPT_SHUTDOWN "/synthetic/absent-shutdown"
+#define HOOK_RUNNER_TIMEOUT_MS 30000U
+#define HOOK_RUNNER_TERM_MS 2000U
+#define HOOK_RUNNER_KILL_MS 1000U
+static int saves,save_status;
+static int doSystem(const char *format,const char *action){
+ pid_t p;int status;assert(!strcmp(format,"/sbin/mtd_storage.sh %s")&&!strcmp(action,"save"));saves++;
+ p=fork();assert(p>=0);if(!p){execl("/bin/sh","sh",FIXTURE_SCRIPT,"save",(char*)0);_exit(127);}
+ assert(waitpid(p,&status,0)==p);save_status=status;return status;
+}
+static int get_ap_mode(void){return 0;}
+static int check_if_file_exist(const char*p){return 0;}
+static int shutdown_hook_run(const char*p,int level,unsigned int run,unsigned int term,unsigned int hard){abort();}
+static void logmessage(const char*tag,const char*fmt,...){abort();}
+#define stop_misc(...) ((void)0)
+#define stop_services(...) ((void)0)
+#define stop_wan(...) ((void)0)
+#define stop_services_lan_wan(...) ((void)0)
+#define set_ipv4_forward(...) ((void)0)
+#define storage_save_time(...) ((void)0)
+#define stop_8021x_all(...) ((void)0)
+#define stop_wifi_all_wl(...) ((void)0)
+#define stop_wifi_all_rt(...) ((void)0)
+#define stop_logger(...) ((void)0)
+#define stop_lan(...) ((void)0)
+#define umount_rwfs_partition(...) ((void)0)
+#define module_smart_unload(...) ((void)0)
+#define LED_CONTROL(...) ((void)0)
+'''
+        code='#define FIXTURE_SCRIPT '+json.dumps(str(self.replay))+'\n'+code
+        rc=(ROOT/'trunk/user/rc/rc.c').read_text()
+        code+=function(rc,'write_storage_to_mtd')+'\n'+function(rc,'shutdown_router')
+        code+='\nint main(void){shutdown_router(0);printf("%d %d\\n",saves,save_status);return 0;}\n'
+        source=self.base/'shutdown.c';source.write_text(code);binary=self.base/'shutdown'
+        built=subprocess.run(['clang','-std=gnu99','-Wall','-Wextra','-Werror','-Wno-unused-parameter',
+                              '-Wno-unused-variable','-fsanitize=address,undefined',str(source),'-o',str(binary)],
+                             capture_output=True,text=True)
+        self.assertEqual(built.returncode,0,built.stderr)
+        result=subprocess.run([str(binary)],env=self.env,capture_output=True,text=True,timeout=15)
+        self.assertEqual(result.returncode,0,result.stderr)
+        saves,status=map(int,result.stdout.split())
+        self.assertEqual(saves,1);self.assertNotEqual(status,0)
+        self.assertFalse(self.flash_calls.exists())
+        self.assertEqual(self.device.read_bytes(),old)
+        self.assertEqual(self.hash.read_text(),'old hash')
+        self.assertEqual(self.tbz.read_bytes(),b'old backup')
+
+    def test_any_existing_storage_lock_type_refuses_save(self):
+        lock=self.tmp/'.storage_locked'
+        for kind in ('regular','directory','fifo','dangling-link'):
+            with self.subTest(kind=kind):
+                if kind=='regular':lock.touch()
+                elif kind=='directory':lock.mkdir()
+                elif kind=='fifo':os.mkfifo(lock)
+                else:lock.symlink_to(self.base/'absent')
+                self.assertNotEqual(self.run_script('save').returncode,0)
+                self.assertFalse(self.flash_calls.exists())
+                if lock.is_dir():lock.rmdir()
+                else:lock.unlink()
 
     def test_decompression_bomb_is_bounded(self):
         self.device.write_bytes(bz2.compress(bytes(9*1024*1024)))

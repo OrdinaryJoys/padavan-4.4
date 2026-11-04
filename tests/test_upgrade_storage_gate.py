@@ -99,6 +99,29 @@ class UpgradeStorageGateTests(unittest.TestCase):
             fixture.tearDown()
             storage_fixture.StorageRegression.tearDownClass()
 
+    def test_cold_boot_failed_load_then_fill_is_refused_by_actual_upgrade_save(self):
+        storage_fixture.StorageRegression.setUpClass()
+        fixture=storage_fixture.StorageRegression('runTest');fixture.setUp()
+        try:
+            fixture.ready.rmdir();shutil.rmtree(fixture.storage);fixture.storage.mkdir()
+            old=b'nonempty recoverable but currently invalid Storage bytes'
+            fixture.device.write_bytes(old);fixture.hash.write_text('old hash')
+            fixture.tbz.write_bytes(b'old backup')
+            self.assertNotEqual(fixture.run_script('load').returncode,0)
+            fixture.run_script('fill')
+            self.assertTrue((fixture.storage/'start_script.sh').exists())
+            save=fixture.run_script('save')
+            self.assertNotEqual(save.returncode,0)
+            self.assertFalse(fixture.flash_calls.exists())
+            self.assertEqual(fixture.device.read_bytes(),old)
+            self.assertEqual(fixture.hash.read_text(),'old hash')
+            self.assertEqual(fixture.tbz.read_bytes(),b'old backup')
+            result=self.run_case(first=save.returncode<<8,hook=True)
+            self.assert_before_quiesce(result)
+            self.assertEqual((result['hooks'],result['saves']),(0,1))
+        finally:
+            fixture.tearDown();storage_fixture.StorageRegression.tearDownClass()
+
     def test_hook_failure_and_second_save_failure_do_not_quiesce(self):
         for status in (256, -1, 15):
             for kwargs in ({'hook_status': status}, {'second': status}):
