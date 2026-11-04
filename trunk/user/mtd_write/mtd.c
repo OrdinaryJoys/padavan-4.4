@@ -80,6 +80,7 @@ enum mtd_image_format {
 };
 
 static char *buf = NULL;
+static size_t buf_capacity;
 static char *imagefile = NULL;
 static enum mtd_image_format imageformat = MTD_IMAGE_FORMAT_UNKNOWN;
 static char *jffs2file = NULL, *jffs2dir = JFFS2_DEFAULT_DIR;
@@ -241,14 +242,18 @@ image_check(int imagefd, const char *mtd)
 
 static int mtd_check(const char *mtd)
 {
+	char targets[PATH_MAX];
 	char *next = NULL;
-	char *str = NULL;
-	int fd;
+	char *larger;
+	size_t length, required = sizeof(uint32_t);
+	int fd, valid;
 
-	if (strchr(mtd, ':')) {
-		str = strdup(mtd);
-		mtd = str;
-	}
+	/* Prepare every target and the largest scratch buffer before main can
+	 * enter its pre-erase loop. The writer uses a bounded target copy too. */
+	if (!mtd || (length = strnlen(mtd, sizeof(targets))) == sizeof(targets))
+		return 0;
+	memcpy(targets, mtd, length + 1);
+	mtd = targets;
 
 	do {
 		next = strchr(mtd, ':');
@@ -261,15 +266,21 @@ static int mtd_check(const char *mtd)
 		if (fd < 0)
 			return 0;
 
-		if (!buf)
-			buf = malloc(erasesize);
-
-		close(fd);
+		valid = erasesize > 0;
+		if (valid && (size_t)erasesize > required)
+			required = (size_t)erasesize;
+		if (close(fd) != 0 || !valid)
+			return 0;
 		mtd = next;
 	} while (next);
 
-	if (str)
-		free(str);
+	if (!buf || required > buf_capacity) {
+		larger = realloc(buf, required);
+		if (!larger)
+			return 0;
+		buf = larger;
+		buf_capacity = required;
+	}
 
 	return 1;
 }
@@ -511,8 +522,9 @@ indicate_writing(const char *mtd)
 static int
 mtd_write(int imagefd, const char *mtd, char *fis_layout, size_t part_offset)
 {
+	char targets[PATH_MAX];
 	char *next = NULL;
-	char *str = NULL;
+	size_t target_length, required;
 	int fd, result;
 	ssize_t r, w, e;
 	ssize_t skip = 0;
@@ -575,10 +587,12 @@ next:
 	}
 #endif
 
-	if (strchr(mtd, ':')) {
-		str = strdup(mtd);
-		mtd = str;
-	}
+	/* mtd_check already bounded this target list before any pre-erase.
+	 * Keep the write path free of a second, fallible heap allocation. */
+	if (!mtd || (target_length = strnlen(mtd, sizeof(targets))) == sizeof(targets))
+		return -1;
+	memcpy(targets, mtd, target_length + 1);
+	mtd = targets;
 
 	r = 0;
 
@@ -593,6 +607,17 @@ resume:
 	if(fd < 0) {
 		fprintf(stderr, "Could not open mtd device: %s\n", mtd);
 		exit(1);
+	}
+	/* Reopening a target must never let changed geometry or carried data
+	 * exceed the scratch capacity prepared before main's mutation stage. */
+	if (!buf || erasesize <= 0 || buflen < 0 || offset != 0) {
+		close(fd);
+		return -1;
+	}
+	required = (size_t)buflen > (size_t)erasesize ? (size_t)buflen : (size_t)erasesize;
+	if (required > buf_capacity) {
+		close(fd);
+		return -1;
 	}
 	if (part_offset > 0) {
 		fprintf(stderr, "Seeking on mtd device '%s' to: %zu\n", mtd, part_offset);
@@ -615,7 +640,6 @@ resume:
 					/* Never pad/write a partial buffer after an input error or
 					 * report a successful Storage save to the caller. */
 					close(fd);
-					free(str);
 					return -1;
 				}
 			}

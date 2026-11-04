@@ -111,6 +111,7 @@ PREFIX = r'''
 #define le32_to_cpu(x) (x)
 enum mtd_image_format { MTD_IMAGE_FORMAT_UNKNOWN, MTD_IMAGE_FORMAT_TRX, MTD_IMAGE_FORMAT_SEAMA, MTD_IMAGE_FORMAT_WRGG03 };
 static char *buf,*imagefile,*jffs2file,*jffs2dir="";
+static size_t buf_capacity;
 static enum mtd_image_format imageformat;
 static int buflen,quiet,no_erase,jffs2_skip_bytes,erasesize=16;
 static int (*trx_check)(int,const char*,char*,int*)=NULL;
@@ -120,7 +121,7 @@ static int trace_used,corrupted,device_reads;
 static void event(const char*s){int n=snprintf(trace+trace_used,sizeof(trace)-(size_t)trace_used,"%s%s",trace_used?",":"",s);if(n<0||(size_t)n>=sizeof(trace)-(size_t)trace_used)abort();trace_used+=n;}
 static int fixture_fd(const char*p,int flags){int fd=open(p,flags|O_NOFOLLOW|O_CLOEXEC);struct stat st;if(fd<0||fstat(fd,&st)||!S_ISREG(st.st_mode))abort();return fd;}
 static int mtd_check_open(const char*n){(void)n;event("writable-open");return fixture_fd(FIXTURE_DEVICE,O_RDWR);}
-static int mtd_check(const char*n){(void)n;event("mtd-check");if(!buf)buf=malloc(16);return buf!=NULL;}
+static int mtd_check(const char*n){(void)n;event("mtd-check");if(!buf)buf=malloc(16);if(buf)buf_capacity=16;return buf!=NULL;}
 static int mtd_block_is_bad(int fd,int n){(void)fd;(void)n;return 0;}
 static int mtd_erase_block(int fd,int n){(void)fd;(void)n;event("erase");return 0;}
 static void indicate_writing(const char*n){(void)n;}

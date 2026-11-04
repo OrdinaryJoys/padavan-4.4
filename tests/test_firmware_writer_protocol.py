@@ -861,6 +861,7 @@ class LegacyFirmwareWriterErrorTests(unittest.TestCase):
 #define FWUP_UNKNOWN 21
 enum mtd_image_format { MTD_IMAGE_FORMAT_UNKNOWN, MTD_IMAGE_FORMAT_TRX, MTD_IMAGE_FORMAT_SEAMA, MTD_IMAGE_FORMAT_WRGG03 };
 static char *buf,*imagefile,*jffs2file,*jffs2dir="";
+static size_t buf_capacity;
 static enum mtd_image_format imageformat;
 static int buflen,quiet,no_erase,jffs2_skip_bytes,erasesize=16;
 static int read_calls,write_calls;
@@ -885,7 +886,7 @@ static ssize_t test_write(int fd,const void*p,size_t n){
 }
 static int test_close(int fd){int device=is_file(fd,"LEGACY_DEVICE"),r=close(fd);if(device){event("close");if(fault("close")){errno=EIO;return -1;}}return r;}
 static int mtd_check_open(const char*mtd){(void)mtd;event("open");return open(getenv("LEGACY_DEVICE"),O_RDWR);}
-static int mtd_check(const char*mtd){(void)mtd;if(!buf)buf=malloc(16);return buf!=NULL;}
+static int mtd_check(const char*mtd){(void)mtd;if(!buf)buf=malloc(16);if(buf)buf_capacity=16;return buf!=NULL;}
 static int mtd_block_is_bad(int fd,int offset){(void)fd;(void)offset;return 0;}
 static int mtd_erase_block(int fd,int offset){(void)fd;(void)offset;event("erase");return 0;}
 static void indicate_writing(const char*mtd){(void)mtd;}
