@@ -92,7 +92,11 @@ echo 65536        > /proc/sys/fs/file-max
 echo "1024 65535" > /proc/sys/net/ipv4/ip_local_port_range
 
 # fill storage
-mtd_storage.sh fill
+storage_fill_status=0
+mtd_storage.sh fill || storage_fill_status=$?
+if [ "$storage_load_status" -eq 0 ]; then
+	storage_load_status=$storage_fill_status
+fi
 
 # prepare ssh authorized_keys
 if [ -f /etc/storage/authorized_keys ] ; then

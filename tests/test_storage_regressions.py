@@ -147,6 +147,112 @@ CODE""")
     def run_script(self,action,**env):
         return subprocess.run(['sh',str(self.replay),action],env={**self.env,**env},text=True,capture_output=True,timeout=15)
 
+    def run_dev_init(self):
+        # Mount/mdev are inert; all data paths, including proc/sys, are private.
+        self.stub('mount','[ "$1" = -t ] || exit 1\nexec /bin/mkdir -p "$4"')
+        self.stub('mdev','exit 0')
+        for path in ('proc/sys/fs','proc/sys/net/ipv4'):(self.base/path).mkdir(parents=True,exist_ok=True)
+        dev=(ROOT/'trunk/user/scripts/dev_init.sh').read_text()
+        roots=('/etc_ro','/proc','/sys','/dev','/etc','/tmp','/var','/home','/media','/mnt','/usr')
+        dev=re.sub('|'.join(re.escape(p)+r'(?=/|[\s;])' for p in roots),
+                   lambda match:str(self.base/match.group(0).lstrip('/')),dev)
+        script=self.base/'dev-init.sh';script.write_text(dev)
+        return subprocess.run(['sh',str(script)],env=self.env,capture_output=True,text=True,timeout=15)
+
+    def device_backend(self):
+        """Finite ordinary-file backend; no device, service or real flash IO."""
+        self.stub('mtd_write','exec python3 - "$@" <<\'CODE\'\n'+
+            'from pathlib import Path\nimport os,sys\n'+
+            'device=Path('+repr(str(self.device))+')\n'+
+            'cache=Path('+repr(str(self.hash))+')\n'+
+            'calls=Path('+repr(str(self.flash_calls))+')\n'+
+            'assert not cache.exists() and not cache.is_symlink(), "cache not revoked before backend"\n'+
+            'with calls.open("a") as stream:stream.write(sys.argv[1]+"\\n")\n'+
+            'if os.environ.get("FLASH_MODE")=="partial":\n'+
+            ' device.write_bytes(b"PARTIAL-ORDINARY-STORAGE-FIXTURE\\n");sys.exit(1)\n'+
+            'if sys.argv[1:]==["erase","Storage"]:\n'+
+            ' device.write_bytes(bytes([255])*524288);sys.exit(0)\n'+
+            'assert sys.argv[1:2]==["write"] and sys.argv[3:]==["Storage"]\n'+
+            'device.write_bytes(Path(sys.argv[2]).read_bytes())\nCODE')
+
+    def rollback_after_attempted_save(self,publication_failure=False):
+        self.device_backend()
+        first=self.run_script('save');self.assertEqual(first.returncode,0,first.stderr)
+        old_image=self.device.read_bytes();old_hash=self.hash.read_text()
+        (self.storage/'original').write_text('different B revision')
+        if publication_failure:
+            self.stub('storage_validate','if [ "$1" = --replace-file ] && [ "$3" = "'+str(self.hash)+'" ]; then exit 1; fi\nexec "'+str(self.validator)+'" "$@"')
+        failed=self.run_script('save',FLASH_MODE=''if publication_failure else'partial')
+        self.assertNotEqual(failed.returncode,0,failed.stderr)
+        self.assertFalse(self.hash.exists())
+        self.assertNotEqual(self.device.read_bytes(),old_image)
+        self.assertEqual((self.storage/'original').read_text(),'different B revision')
+        self.assertEqual(self.flash_calls.read_text().splitlines(),['write','write'])
+        self.stub('storage_validate','exec "'+str(self.validator)+'" "$@"')
+        self.tbz.write_bytes(old_image)
+        restored=self.run_script('restore');self.assertEqual(restored.returncode,0,restored.stderr)
+        self.assertFalse(self.hash.exists())
+        retried=self.run_script('save');self.assertEqual(retried.returncode,0,retried.stderr)
+        self.assertEqual(self.device.read_bytes(),old_image)
+        self.assertEqual(self.hash.read_text(),old_hash)
+        self.assertEqual(self.flash_calls.read_text().splitlines(),['write','write','write'])
+        skipped=self.run_script('save');self.assertEqual(skipped.returncode,0,skipped.stderr)
+        self.assertEqual(self.flash_calls.read_text().splitlines(),['write','write','write'])
+
+    def fill_failure(self,fault,actions=('reset','fill')):
+        """Replay actual writers with one finite private command failure."""
+        for action in actions:
+            with self.subTest(action=action,fault=fault):
+                fixture=StorageRegression('runTest');fixture.setUp()
+                try:
+                    fixture.device.write_bytes(b'previous flash')
+                    fixture.hash.write_text('previous hash')
+                    fixture.tbz.write_bytes(b'previous backup')
+                    if fault=='mkdir':
+                        command='mkdir';body='case "$*" in */cron/crontabs) exit 1;; esac\nexec /bin/mkdir "$@"'
+                    elif fault=='cat':
+                        command='cat';body='if [ -e "'+str(fixture.storage/'started_script.sh')+'" ]; then printf "partial default\\n"; exit 1; fi\nexec /bin/cat "$@"'
+                    elif fault=='chmod':
+                        command='chmod';body='case "$*" in *shutdown_script.sh) exit 1;; esac\nexec /bin/chmod "$@"'
+                    elif fault=='helper':
+                        (fixture.storage/'start_script.sh').unlink()
+                        command='reset_ss.sh';body='exit 1'
+                    elif fault=='helper-cat':
+                        (fixture.storage/'start_script.sh').unlink()
+                        command='cat';body='printf "partial start fixture\\n"\nexit 1'
+                    elif fault=='helper-chmod':
+                        (fixture.storage/'start_script.sh').unlink()
+                        command='chmod';body='case "$*" in *start_script.sh) exit 1;; esac\nexec /bin/chmod "$@"'
+                    elif fault=='migration':
+                        (fixture.storage/'hosts').write_text('legacy hosts fixture')
+                        command='mv';body='exit 1'
+                    elif fault=='tar':
+                        (fixture.base/'etc_ro').mkdir()
+                        (fixture.base/'etc_ro/chnroute.bz2').write_bytes(b'synthetic archive admission only')
+                        command='tar';body='if [ "$1" = jxf ]; then exit 1; fi\nexec /usr/bin/tar "$@"'
+                    else:
+                        raise AssertionError(fault)
+                    target=fixture.bin/command
+                    previous=target.read_bytes() if target.exists() else None
+                    fixture.stub(command,body)
+                    failed=fixture.run_script(action)
+                    self.assertNotEqual(failed.returncode,0,failed.stderr)
+                    self.assertFalse(fixture.ready.exists())
+                    self.assertFalse(fixture.flash_calls.exists())
+                    self.assertEqual(fixture.device.read_bytes(),b'previous flash')
+                    self.assertEqual(fixture.hash.read_text(),'previous hash')
+                    self.assertEqual(fixture.tbz.read_bytes(),b'previous backup')
+                    if previous is None:target.unlink()
+                    else:target.write_bytes(previous);target.chmod(0o755)
+                    if fault=='tar':(fixture.base/'etc_ro/chnroute.bz2').unlink()
+                    healthy=fixture.run_script('fill')
+                    self.assertEqual(healthy.returncode,0,healthy.stderr)
+                    self.assertFalse(fixture.ready.exists())
+                    self.assertNotEqual(fixture.run_script('save').returncode,0)
+                    self.assertFalse(fixture.flash_calls.exists())
+                finally:
+                    fixture.tearDown()
+
     def test_ustar_hidden_spaces_and_internal_links(self):
         members=[('.hidden',b'hidden',tarfile.REGTYPE,''),('with space',b'x',tarfile.REGTYPE,''),('link',b'',tarfile.SYMTYPE,'with space'),('hard',b'',tarfile.LNKTYPE,'with space')]
         self.assertEqual(self.check(archive(members)).returncode,0)
@@ -280,12 +386,12 @@ CODE""")
                 self.assertNotEqual(self.run_script('save').returncode,0)
                 self.assertFalse(self.flash_calls.exists())
 
-    def test_unsafe_ready_cannot_be_revoked_by_load_restore_or_reset(self):
+    def test_unsafe_ready_cannot_be_revoked_by_load_restore_reset_or_fill(self):
         self.ready.rmdir();self.ready.write_text('unexpected state')
         self.device.write_bytes(bz2.compress(archive()))
         self.tbz.write_bytes(bz2.compress(archive()))
         self.hash.write_text('old hash');backup=self.tbz.read_bytes()
-        for action in ('load','restore','reset'):
+        for action in ('load','restore','reset','fill'):
             with self.subTest(action=action):
                 self.assertNotEqual(self.run_script(action).returncode,0)
                 self.assertEqual((self.storage/'original').read_text(),'keep original')
@@ -343,16 +449,8 @@ CODE""")
         self.ready.rmdir();shutil.rmtree(self.storage);self.storage.mkdir()
         old=b'nonempty invalid Storage input'
         self.device.write_bytes(old);self.hash.write_text('old hash');self.tbz.write_bytes(b'old backup')
-        self.stub('mount','[ "$1" = -t ] || exit 1\nexec /bin/mkdir -p "$4"')
-        self.stub('mdev','exit 0')
         self.stub('mtd_storage.sh','exec sh "'+str(self.replay)+'" "$@"')
-        for path in ('proc/sys/fs','proc/sys/net/ipv4'):(self.base/path).mkdir(parents=True)
-        dev=(ROOT/'trunk/user/scripts/dev_init.sh').read_text()
-        roots=('/etc_ro','/proc','/sys','/dev','/etc','/tmp','/var','/home','/media','/mnt','/usr')
-        dev=re.sub('|'.join(re.escape(p)+r'(?=/|[\s;])' for p in roots),
-                   lambda match:str(self.base/match.group(0).lstrip('/')),dev)
-        script=self.base/'dev-init.sh';script.write_text(dev)
-        result=subprocess.run(['sh',str(script)],env=self.env,capture_output=True,text=True,timeout=15)
+        result=self.run_dev_init()
         self.assertNotEqual(result.returncode,0)
         self.assertTrue((self.storage/'start_script.sh').is_file())
         self.assertFalse(self.ready.exists())
@@ -365,6 +463,23 @@ CODE""")
         self.assertIn('early_status = system("dev_init.sh");',init)
         self.assertIn('early_status = system("dev_init.sh -l");',init)
         self.assertIn('if (early_status != 0)',init)
+
+    def test_actual_dev_init_reports_fill_failure_after_successful_load(self):
+        self.device.write_bytes(bz2.compress(archive()))
+        self.stub('mtd_storage.sh','exec sh "'+str(self.replay)+'" "$@"')
+        self.stub('chmod','case "$*" in *shutdown_script.sh) exit 1;; esac\nexec /bin/chmod "$@"')
+        result=self.run_dev_init()
+        self.assertEqual(result.returncode,1,result.stderr)
+        self.assertFalse(self.ready.exists())
+        self.assertTrue((self.storage/'shutdown_script.sh').is_file())
+        self.assertNotEqual(self.run_script('save').returncode,0)
+        self.assertFalse(self.flash_calls.exists())
+
+    def test_actual_dev_init_preserves_first_load_error_when_fill_also_fails(self):
+        self.stub('mtd_storage.sh','case "$1" in load) exit 7;; fill) exit 9;; *) exit 99;; esac')
+        result=self.run_dev_init()
+        self.assertEqual(result.returncode,7,result.stderr)
+        self.assertFalse(self.flash_calls.exists())
 
     def test_successful_load_restore_and_explicit_reset_authorize_but_fill_does_not(self):
         self.ready.rmdir()
@@ -433,6 +548,76 @@ CODE""")
         self.assertEqual(self.hash.read_text(),'old hash')
         self.assertEqual(self.tbz.read_bytes(),b'old backup')
         self.assertEqual(self.device.read_bytes(),b'old flash')
+
+    def test_fill_directory_failure_never_authorizes_partial_defaults(self):
+        self.fill_failure('mkdir')
+
+    def test_fill_cat_failure_never_authorizes_partial_defaults(self):
+        self.fill_failure('cat')
+
+    def test_fill_chmod_failure_never_authorizes_nonexecutable_shutdown_hook(self):
+        self.fill_failure('chmod')
+
+    def test_fill_start_helper_failure_never_authorizes_partial_defaults(self):
+        self.fill_failure('helper')
+
+    def test_actual_start_helper_cat_failure_never_authorizes_partial_defaults(self):
+        self.fill_failure('helper-cat')
+
+    def test_actual_start_helper_chmod_failure_never_authorizes_partial_defaults(self):
+        self.fill_failure('helper-chmod')
+
+    def test_fill_migration_failure_preserves_source_without_save_authority(self):
+        self.fill_failure('migration',actions=('fill',))
+
+    def test_fill_archive_extraction_failure_never_authorizes_partial_defaults(self):
+        self.fill_failure('tar')
+
+    def test_fill_revoke_failure_stops_before_any_configuration_write(self):
+        before={str(p.relative_to(self.storage)):p.read_bytes() for p in self.storage.rglob('*')}
+        self.hash.write_text('previous hash');self.tbz.write_bytes(b'previous backup')
+        self.stub('rmdir','if [ "$1" = "'+str(self.ready)+'" ]; then exit 1; fi\nexec /bin/rmdir "$@"')
+        failed=self.run_script('fill');self.assertNotEqual(failed.returncode,0,failed.stderr)
+        self.assertTrue(self.ready.is_dir())
+        self.assertEqual({str(p.relative_to(self.storage)):p.read_bytes() for p in self.storage.rglob('*')},before)
+        self.assertEqual(self.hash.read_text(),'previous hash')
+        self.assertEqual(self.tbz.read_bytes(),b'previous backup')
+        self.assertFalse(self.flash_calls.exists())
+
+    def test_loaded_fill_keeps_authority_and_existing_private_configuration(self):
+        self.device.write_bytes(bz2.compress(archive()))
+        loaded=self.run_script('load');self.assertEqual(loaded.returncode,0,loaded.stderr)
+        old_hash=self.hash.read_bytes()
+        private=self.storage/'https';private.mkdir(mode=0o700)
+        key=private/'fixture.key';key.write_bytes(b'private fixture');key.chmod(0o600)
+        dns=self.storage/'dnsmasq';dns.mkdir(mode=0o700)
+        conf=dns/'dnsmasq.conf';conf.write_text('keep custom policy\n');conf.chmod(0o600)
+        for _ in range(2):
+            result=self.run_script('fill');self.assertEqual(result.returncode,0,result.stderr)
+            self.assertTrue(self.ready.is_dir())
+            self.assertEqual(self.ready.stat().st_mode&0o7777,0o700)
+            self.assertEqual(private.stat().st_mode&0o777,0o700)
+            self.assertEqual(key.stat().st_mode&0o777,0o600)
+            self.assertEqual(key.read_bytes(),b'private fixture')
+            self.assertEqual(dns.stat().st_mode&0o777,0o700)
+            self.assertEqual(conf.stat().st_mode&0o777,0o600)
+            self.assertEqual(conf.read_text(),'keep custom policy\n')
+            self.assertEqual((self.storage/'shutdown_script.sh').stat().st_mode&0o777,0o755)
+            self.assertEqual(self.hash.read_bytes(),old_hash)
+            self.assertFalse(self.flash_calls.exists())
+
+    def test_authorized_fill_tar_failure_revokes_authority_until_explicit_recovery(self):
+        self.hash.write_text('previous hash');self.tbz.write_bytes(b'previous backup')
+        self.stub('tar','if [ "$1" = -cf ]; then printf "partial tar\\n" > "$2"; exit 1; fi\nexec /usr/bin/tar "$@"')
+        failed=self.run_script('fill');self.assertNotEqual(failed.returncode,0,failed.stderr)
+        self.assertFalse(self.ready.exists())
+        self.assertEqual(self.hash.read_text(),'previous hash')
+        self.assertEqual(self.tbz.read_bytes(),b'previous backup')
+        (self.bin/'tar').unlink()
+        healthy=self.run_script('fill');self.assertEqual(healthy.returncode,0,healthy.stderr)
+        self.assertFalse(self.ready.exists())
+        self.assertNotEqual(self.run_script('save').returncode,0)
+        self.assertFalse(self.flash_calls.exists())
 
     def test_archive_producers_have_live_limits_and_preserve_old_hash_and_backup(self):
         limits=(ROOT/'trunk/user/busybox/busybox-1.24.x/shell/shell_common.c').read_text()
@@ -552,16 +737,98 @@ static void logmessage(const char*tag,const char*fmt,...){abort();}
         self.assertEqual(len([n for n in names if n.startswith('name-')]),150)
         self.assertEqual(self.tbz.stat().st_mode&0o777,0o600)
 
-    def test_failed_flash_does_not_advance_hash_and_retry_rewrites(self):
+    def test_failed_flash_invalidates_hash_and_retry_rewrites(self):
         self.hash.write_text('previous hash')
         p=self.run_script('save',FLASH_RC='1');self.assertNotEqual(p.returncode,0,p.stderr)
-        self.assertEqual(self.hash.read_text(),'previous hash')
+        self.assertFalse(self.hash.exists())
         self.assertEqual(self.flash_calls.read_text().count('write'),1)
         p=self.run_script('save',FLASH_RC='0');self.assertEqual(p.returncode,0,p.stderr)
         self.assertEqual(self.flash_calls.read_text().count('write'),2)
         self.assertNotEqual(self.hash.read_text(),'previous hash')
         p=self.run_script('save',FLASH_RC='0');self.assertEqual(p.returncode,0,p.stderr)
         self.assertEqual(self.flash_calls.read_text().count('write'),2)
+
+    def test_partial_write_then_restore_previous_configuration_must_rewrite(self):
+        self.rollback_after_attempted_save()
+
+    def test_hash_publication_failure_then_restore_previous_configuration_must_rewrite(self):
+        self.rollback_after_attempted_save(publication_failure=True)
+
+    def test_cache_unlink_failure_or_false_success_refuses_backend_and_preserves_data(self):
+        self.device_backend()
+        first=self.run_script('save');self.assertEqual(first.returncode,0,first.stderr)
+        old_image=self.device.read_bytes();old_hash=self.hash.read_bytes()
+        (self.storage/'original').write_text('unsaved B revision')
+        self.tbz.write_bytes(b'previous backup')
+        for result in (1,0):
+            self.stub('rm','if [ "$1" = -f ] && [ "$2" = "'+str(self.hash)+'" ]; then exit '+str(result)+'; fi\nexec /bin/rm "$@"')
+            failed=self.run_script('save');self.assertNotEqual(failed.returncode,0,failed.stderr)
+            self.assertEqual(self.flash_calls.read_text().splitlines(),['write'])
+            self.assertEqual(self.device.read_bytes(),old_image)
+            self.assertEqual(self.hash.read_bytes(),old_hash)
+            self.assertEqual((self.storage/'original').read_text(),'unsaved B revision')
+            self.assertEqual(self.tbz.read_bytes(),b'previous backup')
+
+    def test_kill_after_cache_revoke_before_writer_call_never_retains_stale_hash(self):
+        self.device_backend()
+        first=self.run_script('save');self.assertEqual(first.returncode,0,first.stderr)
+        old_image=self.device.read_bytes()
+        (self.storage/'original').write_text('unsaved B revision')
+        self.tbz.write_bytes(b'previous backup')
+        self.stub('rm','if [ "$1" = -f ] && [ "$2" = "'+str(self.hash)+'" ]; then\n /bin/rm "$@" || exit 1\n kill -KILL "$PPID"\n exit 0\nfi\nexec /bin/rm "$@"')
+        killed=self.run_script('save');self.assertNotEqual(killed.returncode,0)
+        self.assertFalse(self.hash.exists())
+        self.assertEqual(self.device.read_bytes(),old_image)
+        self.assertEqual(self.flash_calls.read_text().splitlines(),['write'])
+        self.assertEqual((self.storage/'original').read_text(),'unsaved B revision')
+        self.assertEqual(self.tbz.read_bytes(),b'previous backup')
+        (self.bin/'rm').unlink()
+        retried=self.run_script('save');self.assertEqual(retried.returncode,0,retried.stderr)
+        self.assertEqual(self.flash_calls.read_text().splitlines(),['write','write'])
+        self.assertTrue(self.hash.is_file())
+        saved_hash=self.hash.read_bytes()
+        p=self.run_script('save',FLASH_RC='0');self.assertEqual(p.returncode,0,p.stderr)
+        self.assertEqual(self.flash_calls.read_text().count('write'),2)
+        self.assertEqual(self.hash.read_bytes(),saved_hash)
+
+    def test_partial_erase_then_verified_restore_previous_configuration_must_rewrite(self):
+        self.device_backend()
+        first=self.run_script('save');self.assertEqual(first.returncode,0,first.stderr)
+        old_image=self.device.read_bytes();old_hash=self.hash.read_bytes()
+        self.tbz.write_bytes(b'previous backup')
+        failed=self.run_script('erase',FLASH_MODE='partial')
+        self.assertNotEqual(failed.returncode,0,failed.stderr)
+        self.assertFalse(self.hash.exists());self.assertFalse(self.ready.exists())
+        self.assertNotEqual(self.device.read_bytes(),old_image)
+        self.assertEqual((self.storage/'original').read_text(),'keep original')
+        self.assertEqual(self.tbz.read_bytes(),b'previous backup')
+        self.assertEqual(self.flash_calls.read_text().splitlines(),['write','erase'])
+        refused=self.run_script('save');self.assertNotEqual(refused.returncode,0,refused.stderr)
+        self.assertEqual(self.flash_calls.read_text().splitlines(),['write','erase'])
+        self.tbz.write_bytes(old_image)
+        restored=self.run_script('restore');self.assertEqual(restored.returncode,0,restored.stderr)
+        self.assertTrue(self.ready.is_dir());self.assertFalse(self.hash.exists())
+        retried=self.run_script('save');self.assertEqual(retried.returncode,0,retried.stderr)
+        self.assertEqual(self.device.read_bytes(),old_image)
+        self.assertEqual(self.hash.read_bytes(),old_hash)
+        self.assertEqual(self.flash_calls.read_text().splitlines(),['write','erase','write'])
+        skipped=self.run_script('save');self.assertEqual(skipped.returncode,0,skipped.stderr)
+        self.assertEqual(self.flash_calls.read_text().splitlines(),['write','erase','write'])
+
+    def test_erase_cache_unlink_failure_or_false_success_refuses_backend(self):
+        self.device_backend()
+        first=self.run_script('save');self.assertEqual(first.returncode,0,first.stderr)
+        old_image=self.device.read_bytes();old_hash=self.hash.read_bytes()
+        self.tbz.write_bytes(b'previous backup')
+        for result in (1,0):
+            self.stub('rm','if [ "$1" = -f ] && [ "$2" = "'+str(self.hash)+'" ]; then exit '+str(result)+'; fi\nexec /bin/rm "$@"')
+            failed=self.run_script('erase');self.assertNotEqual(failed.returncode,0,failed.stderr)
+            self.assertEqual(self.flash_calls.read_text().splitlines(),['write'])
+            self.assertEqual(self.device.read_bytes(),old_image)
+            self.assertEqual(self.hash.read_bytes(),old_hash)
+            self.assertEqual((self.storage/'original').read_text(),'keep original')
+            self.assertEqual(self.tbz.read_bytes(),b'previous backup')
+            self.assertFalse(self.ready.exists())
 
     def test_failed_tar_does_not_publish_stale_or_partial_backup(self):
         self.tbz.write_bytes(b'old good backup');self.stub('tar','echo incomplete > "$2"\nexit 1')

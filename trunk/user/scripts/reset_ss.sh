@@ -3,7 +3,7 @@
 script_start="/etc/storage/start_script.sh"
 
 # create start script
-cat > "$script_start" <<EOF
+cat > "$script_start" <<EOF || exit 1
 #!/bin/sh
 
 ### Custom user script for tuning router before start
@@ -66,7 +66,7 @@ echo 1        > /proc/sys/kernel/kptr_restrict
 echo 1        > /proc/sys/kernel/dmesg_restrict
 
 EOF
-chmod 755 "$script_start"
+chmod 755 "$script_start" || exit 1
 
 if [ -z "$1" ] ; then
 	$script_start

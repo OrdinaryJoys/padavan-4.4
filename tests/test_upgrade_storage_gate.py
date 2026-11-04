@@ -99,6 +99,35 @@ class UpgradeStorageGateTests(unittest.TestCase):
             fixture.tearDown()
             storage_fixture.StorageRegression.tearDownClass()
 
+    def test_actual_storage_cache_revoke_or_partial_write_failure_aborts_before_quiesce(self):
+        storage_fixture.StorageRegression.setUpClass()
+        try:
+            for fault in ('unlink', 'partial'):
+                with self.subTest(fault=fault):
+                    fixture=storage_fixture.StorageRegression('runTest');fixture.setUp()
+                    try:
+                        fixture.device_backend()
+                        first=fixture.run_script('save')
+                        self.assertEqual(first.returncode,0,first.stderr)
+                        (fixture.storage/'original').write_text('new unsaved revision')
+                        fixture.tbz.write_bytes(b'previous backup')
+                        if fault=='unlink':
+                            fixture.stub('rm','if [ "$1" = -f ] && [ "$2" = "'+str(fixture.hash)+'" ]; then exit 1; fi\nexec /bin/rm "$@"')
+                        failed=fixture.run_script('save',FLASH_MODE='partial')
+                        self.assertNotEqual(failed.returncode,0,failed.stderr)
+                        self.assertEqual(fixture.flash_calls.read_text().splitlines(),
+                                         ['write'] if fault=='unlink' else ['write','write'])
+                        self.assertEqual(fixture.hash.exists(),fault=='unlink')
+                        self.assertEqual((fixture.storage/'original').read_text(),'new unsaved revision')
+                        self.assertEqual(fixture.tbz.read_bytes(),b'previous backup')
+                        result=self.run_case(first=failed.returncode<<8,hook=True)
+                        self.assert_before_quiesce(result)
+                        self.assertEqual((result['hooks'],result['saves']),(0,1))
+                    finally:
+                        fixture.tearDown()
+        finally:
+            storage_fixture.StorageRegression.tearDownClass()
+
     def test_cold_boot_failed_load_then_fill_is_refused_by_actual_upgrade_save(self):
         storage_fixture.StorageRegression.setUpClass()
         fixture=storage_fixture.StorageRegression('runTest');fixture.setUp()
@@ -132,7 +161,7 @@ class UpgradeStorageGateTests(unittest.TestCase):
 
     def test_default_comment_only_shutdown_template_exits_zero(self):
         script = source('trunk/user/scripts/mtd_storage.sh')
-        template = script.split('cat > "$script_shutd" <<EOF', 1)[1].split('\nEOF', 1)[0]
+        template = script.split('cat > "$script_shutd" <<EOF', 1)[1].split('\n', 1)[1].split('\nEOF', 1)[0]
         result = subprocess.run(['sh'], input=template, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 

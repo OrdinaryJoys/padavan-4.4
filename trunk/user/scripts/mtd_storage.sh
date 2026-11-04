@@ -247,6 +247,17 @@ func_record_hash()
 	/sbin/storage_validate --replace-file "$work_dir/hash.commit" "$hsh"
 }
 
+# A matching tar hash is evidence only while no later flash mutation has been
+# attempted. Erase/write can fail after changing the old data, or the process
+# can die before it gets a failure result. Invalidate before handing off IO.
+func_invalidate_hash()
+{
+	if ! rm -f "$hsh" || [ -e "$hsh" ] || [ -L "$hsh" ]; then
+		logger -t "Storage" "Cannot invalidate cached flash hash; refusing MTD operation"
+		return 1
+	fi
+}
+
 # Repair the previous candidate's implicit 0700 DNS directory after it has
 # been saved with an explicit header.  Only the known public-data layout is
 # migrated: private/unknown entries and aliases keep their original boundary.
@@ -378,8 +389,9 @@ func_save()
 		logger -t "Storage save" "Invalid storage final data size: $fsz"
 		return 1
 	fi
+	func_invalidate_hash || return 1
 	if ! mtd_write write "$archive" "$mtd_part_name"; then
-		logger -t "Storage save" "Error writing storage MTD; previous hash retained"
+		logger -t "Storage save" "Error writing storage MTD; cached flash hash remains invalid"
 		return 1
 	fi
 	# Commit the hash only after the flash operation succeeds.
@@ -438,15 +450,17 @@ func_restore()
 
 func_erase()
 {
-	mtd_write erase $mtd_part_name
-	if [ $? -eq 0 ] ; then
-		rm -f $hsh
-		rm -rf $dir_storage
-		mkdir -p -m 755 $dir_storage
-		touch "$slk"
-	else
+	if ! func_invalidate_hash; then
 		result=1
+		return 1
 	fi
+	if mtd_write erase "$mtd_part_name" &&
+	   rm -rf "$dir_storage" &&
+	   mkdir -p -m 755 "$dir_storage" && touch "$slk"; then
+		return 0
+	fi
+	result=1
+	return 1
 }
 
 func_reset()
@@ -494,15 +508,19 @@ func_fill()
 	#gfwlist_conf_file="/etc_ro/gfwlist.bz2"
 
 	# create crond dir
-	[ ! -d "$dir_crond" ] && mkdir -p -m 730 "$dir_crond"
+	if [ ! -d "$dir_crond" ]; then
+		mkdir -p -m 730 "$dir_crond" || return 1
+	fi
 
 	# create https dir
-	[ ! -d "$dir_httpssl" ] && mkdir -p -m 700 "$dir_httpssl"
+	if [ ! -d "$dir_httpssl" ]; then
+		mkdir -p -m 700 "$dir_httpssl" || return 1
+	fi
 
 	# create chnroute.txt
 	if [ ! -d "$dir_chnroute" ] ; then
 		if [ -f "$chnroute_file" ]; then
-			mkdir -p "$dir_chnroute" && tar jxf "$chnroute_file" -C "$dir_chnroute"
+			mkdir -p "$dir_chnroute" && tar jxf "$chnroute_file" -C "$dir_chnroute" || return 1
 		fi
 	fi
 
@@ -515,12 +533,12 @@ func_fill()
 
 	# create start script
 	if [ ! -f "$script_start" ] ; then
-		reset_ss.sh -a
+		reset_ss.sh -a || return 1
 	fi
 
 	# create started script
 	if [ ! -f "$script_started" ] ; then
-		cat > "$script_started" <<EOF
+		cat > "$script_started" <<EOF || return 1
 #!/bin/sh
 
 ### Custom user script
@@ -554,12 +572,12 @@ sync && echo 3 > /proc/sys/vm/drop_caches
 
 
 EOF
-		chmod 755 "$script_started"
+		chmod 755 "$script_started" || return 1
 	fi
 
 	# create shutdown script
 	if [ ! -f "$script_shutd" ] ; then
-		cat > "$script_shutd" <<EOF
+		cat > "$script_shutd" <<EOF || return 1
 #!/bin/sh
 
 ### Custom user script
@@ -567,13 +585,13 @@ EOF
 ### \$1 - action (0: reboot, 1: halt, 2: power-off)
 
 EOF
-		chmod 755 "$script_shutd"
+		chmod 755 "$script_shutd" || return 1
 	fi
 
 	# create post-iptables script
 
 	if [ ! -f "$script_postf" ] ; then
-		cat > "$script_postf" <<EOF
+		cat > "$script_postf" <<EOF || return 1
 #!/bin/sh
 
 ### Custom user script
@@ -582,12 +600,12 @@ EOF
 #wing resume
 
 EOF
-		chmod 755 "$script_postf"
+		chmod 755 "$script_postf" || return 1
 	fi
 
 	# create post-wan script
 	if [ ! -f "$script_postw" ] ; then
-		cat > "$script_postw" <<EOF
+		cat > "$script_postw" <<EOF || return 1
 #!/bin/sh
 
 ### Custom user script
@@ -597,12 +615,12 @@ EOF
 ### \$3 - WAN IPv4 address
 
 EOF
-		chmod 755 "$script_postw"
+		chmod 755 "$script_postw" || return 1
 	fi
 
 	# create inet-state script
 	if [ ! -f "$script_inets" ] ; then
-		cat > "$script_inets" <<EOF
+		cat > "$script_inets" <<EOF || return 1
 #!/bin/sh
 
 ### Custom user script
@@ -613,12 +631,12 @@ EOF
 logger -t "di" "Internet state: \$1, elapsed time: \$2s."
 
 EOF
-		chmod 755 "$script_inets"
+		chmod 755 "$script_inets" || return 1
 	fi
 
 	# create vpn server action script
 	if [ ! -f "$script_vpnsc" ] ; then
-		cat > "$script_vpnsc" <<EOF
+		cat > "$script_vpnsc" <<EOF || return 1
 #!/bin/sh
 
 ### Custom user script
@@ -665,12 +683,12 @@ down)
 esac
 
 EOF
-		chmod 755 "$script_vpnsc"
+		chmod 755 "$script_vpnsc" || return 1
 	fi
 
 	# create vpn client action script
 	if [ ! -f "$script_vpncs" ] ; then
-		cat > "$script_vpncs" <<EOF
+		cat > "$script_vpncs" <<EOF || return 1
 #!/bin/sh
 
 ### Custom user script
@@ -712,12 +730,12 @@ down)
 esac
 
 EOF
-		chmod 755 "$script_vpncs"
+		chmod 755 "$script_vpncs" || return 1
 	fi
 
 	# create Ez-Buttons script
 	if [ ! -f "$script_ezbtn" ] ; then
-		cat > "$script_ezbtn" <<EOF
+		cat > "$script_ezbtn" <<EOF || return 1
 #!/bin/sh
 
 ### Custom user script
@@ -727,16 +745,20 @@ EOF
 [ -x /opt/bin/on_wps.sh ] && /opt/bin/on_wps.sh \$1 &
 
 EOF
-		chmod 755 "$script_ezbtn"
+		chmod 755 "$script_ezbtn" || return 1
 	fi
 
 	# create user dnsmasq.conf
-	[ ! -d "$dir_dnsmasq" ] && mkdir -p -m 755 "$dir_dnsmasq"
+	if [ ! -d "$dir_dnsmasq" ]; then
+		mkdir -p -m 755 "$dir_dnsmasq" || return 1
+	fi
 	for i in dnsmasq.conf hosts ; do
-		[ -f "$dir_storage/$i" ] && mv -n "$dir_storage/$i" "$dir_dnsmasq"
+		if [ -f "$dir_storage/$i" ]; then
+			mv -n "$dir_storage/$i" "$dir_dnsmasq" || return 1
+		fi
 	done
 	if [ ! -f "$user_dnsmasq_conf" ] ; then
-		cat > "$user_dnsmasq_conf" <<EOF
+		cat > "$user_dnsmasq_conf" <<EOF || return 1
 # Custom user conf file for dnsmasq
 # Please add needed params only!
 
@@ -771,7 +793,7 @@ dhcp-option=252,"\n"
 
 EOF
 	if [ -f /usr/bin/vlmcsd ]; then
-		cat >> "$user_dnsmasq_conf" <<EOF
+		cat >> "$user_dnsmasq_conf" <<EOF || return 1
 ### vlmcsd related
 srv-host=_vlmcs._tcp,my.router,1688,0,100
 
@@ -779,7 +801,7 @@ EOF
 	fi
 
 	if [ -f /usr/bin/wing ]; then
-		cat >> "$user_dnsmasq_conf" <<EOF
+		cat >> "$user_dnsmasq_conf" <<EOF || return 1
 # Custom domains to gfwlist
 #gfwlist=mit.edu
 #gfwlist=openwrt.org,lede-project.org
@@ -789,29 +811,31 @@ EOF
 	fi
 
 	if [ -d "${dir_gfwlist:-}" ]; then
-		cat >> "$user_dnsmasq_conf" <<EOF
+		cat >> "$user_dnsmasq_conf" <<EOF || return 1
 ### gfwlist related (resolve by port 5353)
 #min-cache-ttl=3600
 #conf-dir=/etc/storage/gfwlist
 
 EOF
 	fi
-		chmod 644 "$user_dnsmasq_conf"
+		chmod 644 "$user_dnsmasq_conf" || return 1
 	fi
 
 	# create user dns servers
 	if [ ! -f "$user_dhcp_conf" ] ; then
-		cat > "$user_dhcp_conf" <<EOF
+		cat > "$user_dhcp_conf" <<EOF || return 1
 #6C:96:CF:E0:95:55,192.168.1.10,iMac
 
 EOF
-		chmod 644 "$user_dhcp_conf"
+		chmod 644 "$user_dhcp_conf" || return 1
 	fi
 
 	# create user inadyn.conf"
-	[ ! -d "$dir_inadyn" ] && mkdir -p -m 755 "$dir_inadyn"
+	if [ ! -d "$dir_inadyn" ]; then
+		mkdir -p -m 755 "$dir_inadyn" || return 1
+	fi
 	if [ ! -f "$user_inadyn_conf" ] ; then
-		cat > "$user_inadyn_conf" <<EOF
+		cat > "$user_inadyn_conf" <<EOF || return 1
 # Custom user conf file for inadyn DDNS client
 # Please add only new custom system!
 
@@ -827,48 +851,56 @@ EOF
 #  alias example.dd-dns.de
 
 EOF
-		chmod 644 "$user_inadyn_conf"
+		chmod 644 "$user_inadyn_conf" || return 1
 	fi
 
 	# create user hosts
 	if [ ! -f "$user_hosts" ] ; then
-		cat > "$user_hosts" <<EOF
+		cat > "$user_hosts" <<EOF || return 1
 # Custom user hosts file
 # Example:
 # 192.168.1.100		Boo
 
 EOF
-		chmod 644 "$user_hosts"
+		chmod 644 "$user_hosts" || return 1
 	fi
 
 	# create user AP confs
-	[ ! -d "$dir_wlan" ] && mkdir -p -m 755 "$dir_wlan"
+	if [ ! -d "$dir_wlan" ]; then
+		mkdir -p -m 755 "$dir_wlan" || return 1
+	fi
 	if [ ! -f "$dir_wlan/AP.dat" ] ; then
-		cat > "$dir_wlan/AP.dat" <<EOF
+		cat > "$dir_wlan/AP.dat" <<EOF || return 1
 # Custom user AP conf file
 
 EOF
-		chmod 644 "$dir_wlan/AP.dat"
+		chmod 644 "$dir_wlan/AP.dat" || return 1
 	fi
 
 	if [ ! -f "$dir_wlan/AP_5G.dat" ] ; then
-		cat > "$dir_wlan/AP_5G.dat" <<EOF
+		cat > "$dir_wlan/AP_5G.dat" <<EOF || return 1
 # Custom user AP conf file
 
 EOF
-		chmod 644 "$dir_wlan/AP_5G.dat"
+		chmod 644 "$dir_wlan/AP_5G.dat" || return 1
 	fi
 
 	# create openvpn files
 	if [ -x /usr/sbin/openvpn ] ; then
-		[ ! -d "$dir_ovpncli" ] && mkdir -p -m 700 "$dir_ovpncli"
-		[ ! -d "$dir_ovpnsvr" ] && mkdir -p -m 700 "$dir_ovpnsvr"
+		if [ ! -d "$dir_ovpncli" ]; then
+			mkdir -p -m 700 "$dir_ovpncli" || return 1
+		fi
+		if [ ! -d "$dir_ovpnsvr" ]; then
+			mkdir -p -m 700 "$dir_ovpnsvr" || return 1
+		fi
 		dir_ovpn="$dir_storage/openvpn"
 		for i in ca.crt dh1024.pem server.crt server.key server.conf ta.key ; do
-			[ -f "$dir_ovpn/$i" ] && mv -n "$dir_ovpn/$i" "$dir_ovpnsvr"
+			if [ -f "$dir_ovpn/$i" ]; then
+				mv -n "$dir_ovpn/$i" "$dir_ovpnsvr" || return 1
+			fi
 		done
 		if [ ! -f "$user_ovpnsvr_conf" ] ; then
-			cat > "$user_ovpnsvr_conf" <<EOF
+			cat > "$user_ovpnsvr_conf" <<EOF || return 1
 # Custom user conf file for OpenVPN server
 # Please add needed params only!
 
@@ -896,11 +928,11 @@ verb 0
 mute 10
 
 EOF
-			chmod 644 "$user_ovpnsvr_conf"
+			chmod 644 "$user_ovpnsvr_conf" || return 1
 		fi
 
 		if [ ! -f "$user_ovpncli_conf" ] ; then
-			cat > "$user_ovpncli_conf" <<EOF
+			cat > "$user_ovpncli_conf" <<EOF || return 1
 # Custom user conf file for OpenVPN client
 # Please add needed params only!
 
@@ -915,40 +947,51 @@ verb 0
 mute 10
 
 EOF
-			chmod 644 "$user_ovpncli_conf"
+			chmod 644 "$user_ovpncli_conf" || return 1
 		fi
 	fi
 
 	# create strongswan files
 	if [ -x /usr/sbin/ipsec ] ; then
-		[ ! -d "$dir_sswan" ] && mkdir -p -m 700 "$dir_sswan"
-		[ ! -d "$dir_sswan_crt" ] && mkdir -p -m 700 "$dir_sswan_crt"
-		[ ! -d "$dir_sswan_crt/cacerts" ] && mkdir -p -m 700 "$dir_sswan_crt/cacerts"
-		[ ! -d "$dir_sswan_crt/certs" ] && mkdir -p -m 700 "$dir_sswan_crt/certs"
-		[ ! -d "$dir_sswan_crt/private" ] && mkdir -p -m 700 "$dir_sswan_crt/private"
+		if [ ! -d "$dir_sswan" ]; then
+			mkdir -p -m 700 "$dir_sswan" || return 1
+		fi
+		if [ ! -d "$dir_sswan_crt" ]; then
+			mkdir -p -m 700 "$dir_sswan_crt" || return 1
+		fi
+		if [ ! -d "$dir_sswan_crt/cacerts" ]; then
+			mkdir -p -m 700 "$dir_sswan_crt/cacerts" || return 1
+		fi
+		if [ ! -d "$dir_sswan_crt/certs" ]; then
+			mkdir -p -m 700 "$dir_sswan_crt/certs" || return 1
+		fi
+		if [ ! -d "$dir_sswan_crt/private" ]; then
+			mkdir -p -m 700 "$dir_sswan_crt/private" || return 1
+		fi
 
 		if [ ! -f "$user_sswan_conf" ] ; then
-			cat > "$user_sswan_conf" <<EOF
+			cat > "$user_sswan_conf" <<EOF || return 1
 ### strongswan.conf - user strongswan configuration file
 
 EOF
-			chmod 644 "$user_sswan_conf"
+			chmod 644 "$user_sswan_conf" || return 1
 		fi
 		if [ ! -f "$user_sswan_ipsec_conf" ] ; then
-			cat > "$user_sswan_ipsec_conf" <<EOF
+			cat > "$user_sswan_ipsec_conf" <<EOF || return 1
 ### ipsec.conf - user strongswan IPsec configuration file
 
 EOF
-			chmod 644 "$user_sswan_ipsec_conf"
+			chmod 644 "$user_sswan_ipsec_conf" || return 1
 		fi
 		if [ ! -f "$user_sswan_secrets" ] ; then
-			cat > "$user_sswan_secrets" <<EOF
+			cat > "$user_sswan_secrets" <<EOF || return 1
 ### ipsec.secrets - user strongswan IPsec secrets file
 
 EOF
-			chmod 644 "$user_sswan_secrets"
+			chmod 644 "$user_sswan_secrets" || return 1
 		fi
 	fi
+	return 0
 }
 
 # Revoke before even the operation lock/discovery can fail.  dev_init creates
@@ -992,8 +1035,18 @@ reset)
 	func_start_apps
 	;;
 fill)
-	func_mdir || exit 1
-	func_fill
+	# Filling may fail after writing only part of a new default. Revoke first,
+	# and restore only authority established before this operation, after a
+	# complete fill and validated tar. A failed boot load cannot gain authority.
+	fill_was_ready=0
+	if func_ready; then fill_was_ready=1; fi
+	if func_ready_clear && func_mdir && func_fill; then
+		if [ "$fill_was_ready" = 1 ]; then
+			func_tarb && func_ready_publish || result=1
+		fi
+	else
+		result=1
+	fi
 	;;
 *)
 	echo "Usage: $0 {load|save|backup|restore|erase|reset|fill}"
