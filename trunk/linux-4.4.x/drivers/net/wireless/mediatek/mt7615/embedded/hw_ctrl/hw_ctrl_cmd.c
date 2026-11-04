@@ -322,17 +322,23 @@ VOID RTMP_MAC_RECOVERY(struct _RTMP_ADAPTER *pAd, UINT32 Status)
 {
 	UINT32 value = 0;
 
+	if (RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_HALT_IN_PROGRESS) ||
+		pAd->ErrRecoveryCtl.recovery_failed)
+		return;
+
 #if defined(MT7615) || defined(MT7622) || defined(P18)
 	if (IS_MT7615(pAd) || IS_MT7622(pAd) || IS_P18(pAd))
 		value = Status & ERROR_DETECT_MASK;
 #endif
 
 	/* Trigger error recovery process with fw reload. */
+	NdisAcquireSpinLock(&pAd->HwCtrl.ser_lock);
 	if (pAd->HwCtrl.ser_func_state != RTMP_TASK_STAT_RUNNING) {
 		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				 ("%s::ERR! SER func not ready(%d)\n",
 				  __func__, pAd->HwCtrl.ser_func_state));
 		/* TODO: do we may hit this case? */
+		NdisReleaseSpinLock(&pAd->HwCtrl.ser_lock);
 		return;
 	}
 
@@ -345,6 +351,7 @@ VOID RTMP_MAC_RECOVERY(struct _RTMP_ADAPTER *pAd, UINT32 Status)
 				 ("%s::ERR! prev state=%x, new stat=%x\n",
 				  __func__, pAd->HwCtrl.ser_status, value));
 	}
+	NdisReleaseSpinLock(&pAd->HwCtrl.ser_lock);
 }
 
 INT IsStopingPdma(ERR_RECOVERY_CTRL_T *pErrRecoveryCtl)

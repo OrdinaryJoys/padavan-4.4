@@ -458,6 +458,8 @@ INT32 WfHifSysInit(RTMP_ADAPTER *pAd, HIF_INFO_T *pHifInfo)
 	NDIS_STATUS status;
 
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s()-->\n", __func__));
+	if (pAd->PktTokenCb != NULL)
+		return NDIS_STATUS_FAILURE;
 	RT28XXDMADisable(pAd);
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s():Disable WPDMA\n", __func__));
 #ifdef CONFIG_WIFI_PAGE_ALLOC_SKB
@@ -471,10 +473,13 @@ INT32 WfHifSysInit(RTMP_ADAPTER *pAd, HIF_INFO_T *pHifInfo)
 	status = RTMPAllocTxRxRingMemory(pAd);
 #endif /* RESOURCE_PRE_ALLOC */
 
-	cut_through_init(&pAd->PktTokenCb, pAd);
-
 	if (status != NDIS_STATUS_SUCCESS) {
 		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("RTMPAllocTxRxMemory failed, Status[=0x%08x]\n", status));
+		goto err;
+	}
+	if (!cut_through_init(&pAd->PktTokenCb, pAd)) {
+		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("cut_through_init failed\n"));
+		status = NDIS_STATUS_RESOURCES;
 		goto err;
 	}
 

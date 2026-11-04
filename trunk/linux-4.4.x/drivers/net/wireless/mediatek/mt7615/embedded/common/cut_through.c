@@ -115,7 +115,7 @@ static INT cut_through_token_list_destroy(
 	PKT_TOKEN_QUEUE *token_q,
 	INT type)
 {
-	INT idx;
+	UINT32 idx;
 	RTMP_ADAPTER *pAd = (RTMP_ADAPTER *)(pktTokenCb->pAd);
 
 	if (token_q->token_inited == TRUE) {
@@ -154,29 +154,35 @@ static INT cut_through_token_list_init(
 	PKT_TOKEN_CB *pktTokenCb,
 	PKT_TOKEN_QUEUE *token_q)
 {
-	PKT_TOKEN_LIST *token_list;
-	INT idx;
+	PKT_TOKEN_LIST *token_list = NULL;
+	UINT32 idx;
 
 	if (token_q->token_inited == FALSE) {
+		if (token_q->list != NULL)
+			return FALSE;
 		NdisAllocateSpinLock(pktTokenCb->pAd, &token_q->token_id_lock);
-		os_alloc_mem(pktTokenCb->pAd, (UCHAR **)&token_q->list, sizeof(PKT_TOKEN_LIST));
+		/* Publish the queue only after all of its allocations succeed. */
+		os_alloc_mem(pktTokenCb->pAd, (UCHAR **)&token_list, sizeof(PKT_TOKEN_LIST));
 
-		if (token_q->list == NULL) {
+		if (token_list == NULL) {
 			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 					 ("%s(): AllocMem failed!\n", __func__));
 			NdisFreeSpinLock(&token_q->token_id_lock);
 			return FALSE;
 		}
 
-		NdisZeroMemory(token_q->list, sizeof(PKT_TOKEN_LIST));
-		token_list = token_q->list;
+		NdisZeroMemory(token_list, sizeof(PKT_TOKEN_LIST));
 		token_list->id_head = 0;
 		token_list->id_tail = pktTokenCb->pkt_tx_tkid_cnt;
 		/*allocate freeid*/
 		os_alloc_mem(pktTokenCb->pAd, (UCHAR **)&token_list->free_id, sizeof(UINT16)*pktTokenCb->pkt_tx_tkid_aray);
+		if (token_list->free_id == NULL)
+			goto err;
 		os_zero_mem(token_list->free_id, sizeof(UINT16)*pktTokenCb->pkt_tx_tkid_aray);
 		/*allocate pkt_token*/
 		os_alloc_mem(pktTokenCb->pAd, (UCHAR **)&token_list->pkt_token, sizeof(PKT_TOKEN_ENTRY)*pktTokenCb->pkt_tx_tkid_cnt);
+		if (token_list->pkt_token == NULL)
+			goto err;
 		os_zero_mem(token_list->pkt_token, sizeof(PKT_TOKEN_ENTRY)*pktTokenCb->pkt_tx_tkid_cnt);
 
 		/*initial freeid*/
@@ -209,6 +215,7 @@ static INT cut_through_token_list_init(
 		}
 
 #endif
+		token_q->list = token_list;
 		token_q->token_inited = TRUE;
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF,
 				 ("%s(): TokenList inited done!id_head/tail=%d/%d\n",
@@ -233,6 +240,15 @@ static INT cut_through_token_list_init(
 	}
 
 	return TRUE;
+
+err:
+	if (token_list->free_id)
+		os_free_mem(token_list->free_id);
+	if (token_list->pkt_token)
+		os_free_mem(token_list->pkt_token);
+	os_free_mem(token_list);
+	NdisFreeSpinLock(&token_q->token_id_lock);
+	return FALSE;
 }
 
 PNDIS_PACKET cut_through_rx_deq(
@@ -765,8 +781,12 @@ BUILD_TIMER_FUNCTION(TokenHistoryExec);
 
 INT cut_through_init(VOID **ppPktTokenCb, VOID *pAd)
 {
-	PKT_TOKEN_CB *pktTokenCb;
+	PKT_TOKEN_CB *pktTokenCb = NULL;
 	RTMP_ADAPTER *ad = (RTMP_ADAPTER *)pAd;
+
+	/* Do not replace an existing owner's queues or its live packet mappings. */
+	if (ppPktTokenCb == NULL || pAd == NULL || *ppPktTokenCb != NULL)
+		return FALSE;
 
 	os_alloc_mem(pAd, (UCHAR **)&pktTokenCb, sizeof(PKT_TOKEN_CB));
 
@@ -797,15 +817,14 @@ INT cut_through_init(VOID **ppPktTokenCb, VOID *pAd)
 	pktTokenCb->pkt_tkid_invalid = (pktTokenCb->pkt_tx_tkid_max + 1);
 	pktTokenCb->pkt_tx_tkid_cnt = (pktTokenCb->pkt_tx_tkid_max + 1);
 	pktTokenCb->pkt_tx_tkid_aray = (pktTokenCb->pkt_tx_tkid_cnt + 1);
-	cut_through_token_list_init(pktTokenCb, &pktTokenCb->tx_id_list);
-	cut_through_token_list_init(pktTokenCb, &pktTokenCb->rx_id_list);
+	if (!cut_through_token_list_init(pktTokenCb, &pktTokenCb->tx_id_list) ||
+		!cut_through_token_list_init(pktTokenCb, &pktTokenCb->rx_id_list))
+		goto err;
 #ifdef RX_CUT_THROUGH
 	pktTokenCb->cut_through_type = CUT_THROUGH_TYPE_BOTH;
 #else
 	pktTokenCb->cut_through_type = CUT_THROUGH_TYPE_TX;
 #endif
-	*ppPktTokenCb = pktTokenCb;
-
 	if (IS_ASIC_CAP(ad, fASIC_CAP_MCU_OFFLOAD))
 		pktTokenCb->TxTokenLowWaterMark = 211;
 	else
@@ -820,7 +839,12 @@ INT cut_through_init(VOID **ppPktTokenCb, VOID *pAd)
 	RTMPInitTimer(pAd, &pktTokenCb->TokenHistoryTimer, GET_TIMER_FUNCTION(TokenHistoryExec), pktTokenCb, TRUE);
 	RTMPSetTimer(&pktTokenCb->TokenHistoryTimer, 1000);
 #endif
+	*ppPktTokenCb = pktTokenCb;
 	return TRUE;
+
+err:
+	cut_through_deinit(&pktTokenCb);
+	return FALSE;
 }
 
 

@@ -310,6 +310,11 @@ INT ser_init(RTMP_ADAPTER *pAd)
 	RTMP_OS_TASK *task = &hw_ctrl->ser_task;
 
 	NdisAllocateSpinLock(pAd, &hw_ctrl->ser_lock);
+	pAd->ErrRecoveryCtl.errRecovState = ERR_RECOV_STOP_IDLE;
+	pAd->ErrRecoveryCtl.status = 0;
+	pAd->ErrRecoveryCtl.queues_retired = FALSE;
+	pAd->ErrRecoveryCtl.recovery_failed = FALSE;
+	hw_ctrl->ser_status = 0;
 	hw_ctrl->ser_func_state = RTMP_TASK_STAT_INITED;
 	RTMP_OS_TASK_INIT(task, "ser_task", pAd);
 	Status = RtmpOSTaskAttach(task, ser_ctrl_task, (ULONG)task);
@@ -324,12 +329,37 @@ INT ser_init(RTMP_ADAPTER *pAd)
 }
 
 
+VOID HwCtrlSerExit(RTMP_ADAPTER *pAd)
+{
+#ifdef KTHREAD_SUPPORT
+	HW_CTRL_T *hw_ctrl = &pAd->HwCtrl;
+
+	/* Called by the single serialized interface/init teardown owner. */
+	if (RTMP_OS_TASK_LEGALITY(&hw_ctrl->ser_task)) {
+		NdisAcquireSpinLock(&hw_ctrl->ser_lock);
+		hw_ctrl->ser_func_state = RTMP_TASK_STAT_STOPED;
+		NdisReleaseSpinLock(&hw_ctrl->ser_lock);
+		/* This joins the software worker, not the hardware DMA engine. */
+		RtmpOSTaskKill(&hw_ctrl->ser_task);
+		NdisAcquireSpinLock(&hw_ctrl->ser_lock);
+		hw_ctrl->ser_func_state = RTMP_TASK_STAT_UNKNOWN;
+		NdisReleaseSpinLock(&hw_ctrl->ser_lock);
+	}
+#endif /* KTHREAD_SUPPORT */
+}
+
+
 INT ser_exit(RTMP_ADAPTER *pAd)
 {
 	INT32 ret;
 	HW_CTRL_T *hw_ctrl = &pAd->HwCtrl;
 	/*kill task*/
+#ifdef KTHREAD_SUPPORT
+	HwCtrlSerExit(pAd);
+	ret = NDIS_STATUS_SUCCESS;
+#else
 	ret = RtmpOSTaskKill(&hw_ctrl->ser_task);
+#endif
 	NdisFreeSpinLock(&hw_ctrl->ser_lock);
 	return ret;
 }
@@ -420,6 +450,9 @@ VOID HwCtrlExit(RTMP_ADAPTER *pAd)
 	INT32 ret;
 	HW_CTRL_T *pHwCtrl = &pAd->HwCtrl;
 	HWCTRL_OP *hwctrl_ops = &pHwCtrl->hwctrl_ops;
+#ifdef ERR_RECOVERY
+	HwCtrlSerExit(pAd);
+#endif
 	/*flush all queued command*/
 	HwCtrlCmdHandler(pAd);
 	/*kill task*/

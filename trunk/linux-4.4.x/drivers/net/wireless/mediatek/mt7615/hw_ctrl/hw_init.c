@@ -211,6 +211,9 @@ INT32 WfHifInit(RTMP_ADAPTER *pAd)
 	INT32 ret = NDIS_STATUS_SUCCESS;
 	HIF_INFO_T hifInfo;
 
+	/* A failed repeated init must not run the cleanup for an older owner. */
+	if (pAd->PktTokenCb != NULL)
+		return NDIS_STATUS_FAILURE;
 	os_zero_mem(&hifInfo, sizeof(HIF_INFO_T));
 	ret = WfHifSysInit(pAd, &hifInfo);
 

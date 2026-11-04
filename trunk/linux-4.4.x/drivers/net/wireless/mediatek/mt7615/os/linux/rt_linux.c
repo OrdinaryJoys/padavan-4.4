@@ -888,16 +888,21 @@ static inline NDIS_STATUS __RtmpOSTaskKill(OS_TASK *pTask)
 {
 	int ret = NDIS_STATUS_FAILURE;
 #ifdef KTHREAD_SUPPORT
+	struct task_struct *task;
 
 	if (pTask->kthread_task) {
-		if (kthread_stop(pTask->kthread_task) == 0) {
-			pTask->kthread_task = NULL;
-			ret = NDIS_STATUS_SUCCESS;
-		} else {
+		task = pTask->kthread_task;
+		/* kthread_stop waits for exit; its result is the thread's exit code,
+		 * not a failure to retire the task. Never retain a stopped task. */
+		ret = kthread_stop(task);
+		pTask->kthread_task = NULL;
+		put_task_struct(task);
+		if (ret != 0) {
 			MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_WARN,
-				 ("%s kthread_task %s stop failed\n", __func__,
-				  pTask->taskName));
+				 ("%s kthread_task %s exited with status %d\n", __func__,
+				  pTask->taskName, ret));
 		}
+		ret = NDIS_STATUS_SUCCESS;
 	} else
 		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_WARN,
 				 ("%s null kthread_task %s\n", __func__,
@@ -986,12 +991,13 @@ static inline NDIS_STATUS __RtmpOSTaskAttach(
 	IN ULONG arg)
 {
 	NDIS_STATUS status = NDIS_STATUS_SUCCESS;
+#ifdef KTHREAD_SUPPORT
+	struct task_struct *task;
+#endif
 #ifndef KTHREAD_SUPPORT
 	pid_t pid_number = -1;
 #endif /* KTHREAD_SUPPORT */
 #ifdef KTHREAD_SUPPORT
-	pTask->task_killed = 0;
-
 	if (pTask->kthread_task) {
 		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				 ("%s non-null kthread_task %s\n", __func__,
@@ -1000,17 +1006,21 @@ static inline NDIS_STATUS __RtmpOSTaskAttach(
 		goto done;
 	}
 
-	pTask->kthread_task = kthread_run((cast_fn)fn, (void *)arg,
+	/* Hold an owner reference before publishing or allowing an early exit. */
+	task = kthread_create((cast_fn)fn, (void *)arg,
 									  pTask->taskName);
 
-	if (IS_ERR(pTask->kthread_task)) {
+	if (IS_ERR(task)) {
 		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-				 ("%s kthread_run %s err %ld\n", __func__,
-				  pTask->taskName, PTR_ERR(pTask->kthread_task)));
-		pTask->kthread_task = NULL;
+				 ("%s kthread_create %s err %ld\n", __func__,
+				  pTask->taskName, PTR_ERR(task)));
 		status = NDIS_STATUS_FAILURE;
 		goto done;
 	}
+	get_task_struct(task);
+	pTask->task_killed = 0;
+	pTask->kthread_task = task;
+	wake_up_process(task);
 
 #else
 	pid_number =
@@ -1043,6 +1053,10 @@ static inline NDIS_STATUS __RtmpOSTaskInit(
 	int len;
 
 	ASSERT(pTask);
+#ifdef KTHREAD_SUPPORT
+	if (pTask->kthread_task)
+		return NDIS_STATUS_FAILURE;
+#endif
 #ifndef KTHREAD_SUPPORT
 	os_zero_mem((PUCHAR) (pTask), sizeof(OS_TASK));
 #endif

@@ -867,6 +867,9 @@ NTSTATUS HwRecoveryFromError(RTMP_ADAPTER *pAd)
 
 	if (!pAd)
 		return NDIS_STATUS_INVALID_DATA;
+	if (RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_HALT_IN_PROGRESS) ||
+		pAd->ErrRecoveryCtl.recovery_failed)
+		return NDIS_STATUS_FAILURE;
 
 #ifdef CONFIG_ATE
 
@@ -918,14 +921,21 @@ NTSTATUS HwRecoveryFromError(RTMP_ADAPTER *pAd)
 			pSerTimes[SER_TIME_ID_T2] = Lowpart;
 			tm_exit(pAd);
 			qm_exit(pAd);
+				pErrRecoveryCtrl->queues_retired = TRUE;
 #ifdef RESOURCE_PRE_ALLOC
 			RTMPResetTxRxRingMemory(pAd);
 #endif
 			cut_through_deinit((PKT_TOKEN_CB **)&pAd->PktTokenCb);
 
-			WfHifInit(pAd);
+				if (WfHifInit(pAd) != NDIS_STATUS_SUCCESS) {
+					pErrRecoveryCtrl->recovery_failed = TRUE;
+					MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+						("SER HIF reinitialization failed; queues remain retired\n"));
+					return NDIS_STATUS_FAILURE;
+				}
 			qm_init(pAd);
 			tm_init(pAd);
+				pErrRecoveryCtrl->queues_retired = FALSE;
 			RT28XXDMAEnable(pAd);
 			HIF_IO_WRITE32(pAd, MT_WPDMA_MEM_RNG_ERR, 0);
 			ErrRecoveryReinitPdma(pErrRecoveryCtrl);

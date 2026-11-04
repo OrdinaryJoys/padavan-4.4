@@ -777,17 +777,28 @@ VOID RTMPDrvClose(VOID *pAdSrc, VOID *net_dev)
 		RTMP_CLEAR_FLAG(pAd, fRTMP_ADAPTER_INTERRUPT_REGISTER_TO_OS);
 	}
 
+#ifdef ERR_RECOVERY
+	/* Retire the recovery worker before releasing any queue or HIF owner. */
+	HwCtrlSerExit(pAd);
+#endif
 #ifdef SINGLE_SKU_V2
     RTMPResetSkuParam(pAd);
     RTMPResetBackOffParam(pAd);
 #endif
 	tr_ctl_exit(pAd);
 
+#ifdef ERR_RECOVERY
+	if (!pAd->ErrRecoveryCtl.queues_retired) {
+#endif
 	/* tm exit */
 	tm_exit(pAd);
 
 	/* qm exit */
 	qm_exit(pAd);
+#ifdef ERR_RECOVERY
+		pAd->ErrRecoveryCtl.queues_retired = TRUE;
+	}
+#endif
 	/*remove hw related system info*/
 	WfSysPosExit(pAd);
 	RTMP_CLEAR_FLAG(pAd, fRTMP_ADAPTER_HALT_IN_PROGRESS);

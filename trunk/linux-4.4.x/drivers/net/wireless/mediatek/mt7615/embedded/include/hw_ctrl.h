@@ -649,8 +649,12 @@ typedef enum _ERR_RECOVERY_STATE {
 typedef struct _ERR_RECOVERY_CTRL_T {
 	ERR_RECOVERY_STATE errRecovState;
 	UINT32 status;
+	/* Software queue ownership only; these do not acknowledge DMA idle. */
+	BOOLEAN queues_retired;
+	BOOLEAN recovery_failed;
 } ERR_RECOVERY_CTRL_T;
 
+VOID HwCtrlSerExit(struct _RTMP_ADAPTER *pAd);
 VOID RTMP_MAC_RECOVERY(struct _RTMP_ADAPTER *pAd, UINT32 Status);
 INT IsStopingPdma(ERR_RECOVERY_CTRL_T *pErrRecoveryCtl);
 ERR_RECOVERY_STATE ErrRecoveryCurStat(ERR_RECOVERY_CTRL_T *pErrRecoveryCtl);
