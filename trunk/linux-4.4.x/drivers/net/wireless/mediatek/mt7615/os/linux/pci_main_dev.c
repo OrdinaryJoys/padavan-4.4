@@ -458,6 +458,12 @@ static VOID DEVEXIT rt_pci_remove(struct pci_dev *pci_dev)
 #endif
 #endif
 		net_dev = pci_get_drvdata(pci_dev);
+		if (net_dev == NULL) {
+			pci_clear_master(pci_dev);
+			if (pci_is_enabled(pci_dev))
+				pci_disable_device(pci_dev);
+			return;
+		}
 		csr_addr = net_dev->base_addr;
 #ifndef INTELP6_SUPPORT
 		GET_PAD_FROM_NET_DEV(pAd, net_dev);
@@ -473,6 +479,10 @@ static VOID DEVEXIT rt_pci_remove(struct pci_dev *pci_dev)
 			RtmpPhyNetDevExit(pAd, net_dev);
 			/* Free RTMP_ADAPTER related structures. */
 			RtmpRaDevCtrlExit(pAd);
+			/* Suppress new bus mastering before releasing PCI resources.
+			 * This does not establish that in-flight PDMA has drained.
+			 */
+			pci_clear_master(pci_dev);
 			/* Unmap CSR base address */
 			iounmap((char *)(csr_addr));
 			/* release memory region */
@@ -480,6 +490,7 @@ static VOID DEVEXIT rt_pci_remove(struct pci_dev *pci_dev)
 		} else {
 			/* Unregister network device */
 			RtmpOSNetDevDetach(net_dev);
+			pci_clear_master(pci_dev);
 			/* Unmap CSR base address */
 			iounmap((char *)(net_dev->base_addr));
 			/* release memory region */
@@ -491,7 +502,11 @@ static VOID DEVEXIT rt_pci_remove(struct pci_dev *pci_dev)
 #endif /*CONFIG_WIFI_MSI_SUPPORT*/
 
 		/* Free the root net_device */
+		pci_set_drvdata(pci_dev, NULL);
 		RtmpOSNetDevFree(net_dev);
+		/* Balance the successful probe's pci_enable_device(). */
+		if (pci_is_enabled(pci_dev))
+			pci_disable_device(pci_dev);
 #ifdef INTELP6_SUPPORT
 #ifdef MULTI_INF_SUPPORT
 		g_AdapCount--;
@@ -524,6 +539,16 @@ static VOID DEVEXIT rt_pci_remove(struct pci_dev *pci_dev)
 }
 
 
+static VOID rt_pci_shutdown(struct pci_dev *pci_dev)
+{
+	/* Ordinary reboot does not clear bus mastering in the PCI core.  Keep
+	 * all DMA ownership intact here: disabling new transactions is not an
+	 * acknowledgement that the device has completed in-flight DMA.
+	 */
+	pci_clear_master(pci_dev);
+}
+
+
 /*
  *	Our PCI driver structure
  */
@@ -534,6 +559,8 @@ id_table :
 	rt_pci_tbl,
 probe :
 	rt_pci_probe,
+shutdown :
+	rt_pci_shutdown,
 #if LINUX_VERSION_CODE >= 0x20412
 remove :
 	DEVEXIT_P(rt_pci_remove),
