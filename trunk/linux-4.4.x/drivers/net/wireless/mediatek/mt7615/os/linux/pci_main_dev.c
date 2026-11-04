@@ -424,7 +424,6 @@ err_out_free_radev:
 	RTMPFreeAdapter(pAd);
 err_out_iounmap:
 	iounmap((void *)(csr_addr));
-	pci_release_regions(pdev);
 err_out_free_res:
 	pci_release_regions(pdev);
 err_out:
