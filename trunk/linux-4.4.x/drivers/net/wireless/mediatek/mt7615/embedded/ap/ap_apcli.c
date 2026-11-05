@@ -3967,6 +3967,7 @@ VOID APCli_Init(RTMP_ADAPTER *pAd, RTMP_OS_NETDEV_OP_HOOK *pNetDevOps)
 			MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_ERROR,
 					 ("Assign wdev idx for %s failed, free net device!\n",
 					  RTMP_OS_NETDEV_GET_DEVNAME(new_dev_p)));
+			wdev->if_dev = NULL;
 			RtmpOSNetDevFree(new_dev_p);
 			break;
 		}
@@ -3978,6 +3979,8 @@ VOID APCli_Init(RTMP_ADAPTER *pAd, RTMP_OS_NETDEV_OP_HOOK *pNetDevOps)
 			MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_ERROR,
 					 ("register wdev_ops %s failed, free net device!\n",
 					  RTMP_OS_NETDEV_GET_DEVNAME(new_dev_p)));
+			wdev_deinit(pAd, wdev);
+			wdev->if_dev = NULL;
 			RtmpOSNetDevFree(new_dev_p);
 			break;
 		}
@@ -4103,7 +4106,12 @@ VOID APCli_Init(RTMP_ADAPTER *pAd, RTMP_OS_NETDEV_OP_HOOK *pNetDevOps)
 #endif /* APCLI_CFG80211_SUPPORT */
 
 		/* register this device to OS */
-		RtmpOSNetDevAttach(pAd->OpMode, new_dev_p, pNetDevOps);
+		if (RtmpOSNetDevAttach(pAd->OpMode, new_dev_p, pNetDevOps) != NDIS_STATUS_SUCCESS) {
+			wdev_deinit(pAd, wdev);
+			wdev->if_dev = NULL;
+			RtmpOSNetDevFree(new_dev_p);
+			break;
+		}
 		pApCliEntry->ApCliInit = TRUE;
 	}
 

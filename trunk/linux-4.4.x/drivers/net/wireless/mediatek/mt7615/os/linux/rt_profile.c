@@ -1501,17 +1501,13 @@ VOID RTMPFreeAdapter(VOID *pAdSrc)
 #ifdef CONFIG_AP_SUPPORT
 
 	if ((IS_HIF_TYPE(pAd, HIF_MT)) && (pAd->OpMode == OPMODE_AP)) {
-		BSS_STRUCT *pMbss;
-
-		pMbss = &pAd->ApCfg.MBSSID[MAIN_MBSSID];
-		ASSERT(pMbss);
-
-		if (pMbss)
-			bcn_buf_deinit(pAd, &pMbss->wdev.bcn_buf);
-		else {
-			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s():func_dev is NULL!\n", __func__));
-			return;
-		}
+		/* MBSS netdev removal keeps cached beacon owners alive.  Visit the
+		 * full embedded array, including slots beyond a reduced BssidNum and
+		 * never-initialized slots, before the HIF beacon lock is destroyed.
+		 */
+		for (index = 0; index < sizeof(pAd->ApCfg.MBSSID) /
+				sizeof(pAd->ApCfg.MBSSID[0]); index++)
+			bcn_buf_deinit(pAd, &pAd->ApCfg.MBSSID[index].wdev.bcn_buf);
 	}
 
 #endif

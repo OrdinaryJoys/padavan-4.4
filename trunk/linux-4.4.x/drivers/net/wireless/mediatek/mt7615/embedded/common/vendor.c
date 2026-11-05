@@ -233,50 +233,48 @@ static INT32 insert_vie(struct wifi_dev *wdev,
 			UCHAR *frame_buffer)
 {
 	struct vie_struct *vie = NULL;
-	struct vie_struct *current_frm_tail_vie = NULL;
-	INT32 ret = NDIS_STATUS_SUCCESS;
+	struct vie_struct *current_frm_tail_vie;
+	UCHAR *ie_ctnt = NULL;
 	VIE_CTRL *vie_ctrl = NULL;
 	UINT32 local_oui_oitype = oui_oitype;
 
-	if (os_alloc_mem(NULL, (UCHAR **)&vie, sizeof(struct vie_struct)) == NDIS_STATUS_FAILURE) {
-		ret = NDIS_STATUS_FAILURE;
-		return ret;
-	}
-
+	if (out_vie == NULL)
+		return NDIS_STATUS_FAILURE;
+	*out_vie = NULL;
+	if (wdev == NULL || (ie_length && frame_buffer == NULL))
+		return NDIS_STATUS_FAILURE;
 	get_vie_ctrl(wdev, &vie_ctrl, frm_type_index);
-	if (vie_ctrl == NULL) {
-		ret = NDIS_STATUS_FAILURE;
-		return ret;
-	}
+	if (vie_ctrl == NULL)
+		return NDIS_STATUS_FAILURE;
 
-	current_frm_tail_vie = vie_ctrl->vie_in_frm;
-	if (vie_ctrl->vie_num > 0) {
-		while (current_frm_tail_vie) {
-			if (current_frm_tail_vie->next_vie)
-				current_frm_tail_vie = current_frm_tail_vie->next_vie;
-			else {
-				current_frm_tail_vie->next_vie = vie;
-				break;
-			}
-		}
-	} else
-		vie_ctrl->vie_in_frm = vie;
-
+	/* Keep both allocations private until the complete IE can be published. */
+	if (os_alloc_mem(NULL, (UCHAR **)&vie, sizeof(*vie)) != NDIS_STATUS_SUCCESS || !vie)
+		goto fail;
+	if (os_alloc_mem(NULL, &ie_ctnt, ie_length) != NDIS_STATUS_SUCCESS || !ie_ctnt)
+		goto fail;
+	NdisZeroMemory(vie, sizeof(*vie));
+	vie->ie_ctnt = ie_ctnt;
 	vie->vie_length = ie_length;
 	NdisMoveMemory(vie->oui_oitype, &local_oui_oitype, sizeof(local_oui_oitype));
-
-	if (os_alloc_mem(NULL, (UCHAR **)&vie->ie_ctnt, ie_length) == NDIS_STATUS_FAILURE) {
-		ret = NDIS_STATUS_FAILURE;
-		goto end;
-	} else
+	if (ie_length)
 		NdisMoveMemory(vie->ie_ctnt, frame_buffer, ie_length);
 
-	vie->next_vie = NULL;
+	current_frm_tail_vie = vie_ctrl->vie_in_frm;
+	if (current_frm_tail_vie) {
+		while (current_frm_tail_vie->next_vie)
+			current_frm_tail_vie = current_frm_tail_vie->next_vie;
+		current_frm_tail_vie->next_vie = vie;
+	} else
+		vie_ctrl->vie_in_frm = vie;
 	vie_ctrl->vie_num++;
 	*out_vie = vie;
-
-end:
-	return ret;
+	return NDIS_STATUS_SUCCESS;
+fail:
+	if (ie_ctnt)
+		os_free_mem(ie_ctnt);
+	if (vie)
+		os_free_mem(vie);
+	return NDIS_STATUS_FAILURE;
 }
 
 BOOLEAN find_oui_oitype(struct wifi_dev *wdev, UINT frm_type_bit, UINT32 oui_oitype, struct vie_struct **vie)
@@ -318,6 +316,10 @@ INT32 add_vie(struct _RTMP_ADAPTER *pAd,
 	UINT frm_type_mask = 0;
 	UINT frm_type_bit = 0;
 	INT32 ret = NDIS_STATUS_SUCCESS;
+	UCHAR *new_ie_ctnt, *old_ie_ctnt;
+
+	if (wdev == NULL || (ie_length && frame_buffer == NULL))
+		return NDIS_STATUS_FAILURE;
 
 	/*
 	 * check if there is the same oui and oi_type vie exists already, if it does, update it.
@@ -328,17 +330,21 @@ INT32 add_vie(struct _RTMP_ADAPTER *pAd,
 		frm_type_bit = frm_type_map & frm_type_mask;
 		if (frm_type_bit) {
 			if (find_oui_oitype(wdev, frm_type_bit, oui_oitype, &vie) == TRUE) {
-				/*we found a duplicate oui and oi type, update it.*/
-				vie->vie_length = ie_length;
-				/*the check should be not necessary, but check it anyway.*/
-				if (vie->ie_ctnt)
-					os_free_mem(vie->ie_ctnt);
-
-				if (os_alloc_mem(pAd, (UCHAR **)&vie->ie_ctnt, ie_length) == NDIS_STATUS_FAILURE) {
+				/* A failed replacement keeps the existing IE and length intact. */
+				new_ie_ctnt = NULL;
+				if (os_alloc_mem(pAd, &new_ie_ctnt, ie_length) != NDIS_STATUS_SUCCESS || !new_ie_ctnt) {
+					if (new_ie_ctnt)
+						os_free_mem(new_ie_ctnt);
 					ret = NDIS_STATUS_FAILURE;
 					goto end;
-				} else
-					NdisMoveMemory(vie->ie_ctnt, frame_buffer, ie_length);
+				}
+				if (ie_length)
+					NdisMoveMemory(new_ie_ctnt, frame_buffer, ie_length);
+				old_ie_ctnt = vie->ie_ctnt;
+				vie->ie_ctnt = new_ie_ctnt;
+				vie->vie_length = ie_length;
+				if (old_ie_ctnt)
+					os_free_mem(old_ie_ctnt);
 			} else {
 				/*cannot find a exist oui_oitype in this kind of frm_type pkt. add a new one in it.*/
 				if (insert_vie(wdev,
@@ -434,8 +440,7 @@ VOID init_vie_ctrl(struct wifi_dev *wdev)
 
 		/*should be not necessary for this step.*/
 		while (vie != NULL) {
-			if (vie->next_vie != NULL)
-				temp_vie = vie->next_vie;
+			temp_vie = vie->next_vie;
 
 			if (vie->ie_ctnt != NULL) {
 				os_free_mem(vie->ie_ctnt);

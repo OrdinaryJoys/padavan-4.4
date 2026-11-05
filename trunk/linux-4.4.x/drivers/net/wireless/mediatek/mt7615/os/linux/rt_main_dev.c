@@ -829,7 +829,12 @@ PNET_DEV RtmpPhyNetDevInit(VOID *pAd, RTMP_OS_NETDEV_OP_HOOK *pNetDevHook)
 		return NULL;
 	}
 
-	RTMP_DRIVER_NET_DEV_SET(pAd, net_dev);
+	if (RTMP_DRIVER_NET_DEV_SET(pAd, net_dev) != NDIS_STATUS_SUCCESS) {
+		/* The caller retains the unpublished netdev on a failed wdev stage. */
+		((RTMP_ADAPTER *)pAd)->net_dev = NULL;
+		RtmpOSNetDevFree(net_dev);
+		return NULL;
+	}
 #if (KERNEL_VERSION(2, 6, 24) > LINUX_VERSION_CODE)
 	SET_MODULE_OWNER(net_dev);
 #endif
@@ -1100,12 +1105,61 @@ struct rtnl_link_stats64 *RT28xx_get_ether_stats64(struct net_device *net_dev, s
 	return stats;
 }
 
+/* Close every published interface before destroying any wdev/configuration.
+ * A per-interface hardware-command timeout is not a worker join: only the
+ * last interface's full close, followed by the checks below, retires owners.
+ * RTNL excludes a concurrent open while all wdev and netdev objects stay live.
+ */
+static BOOLEAN RtmpPhyNetDevCloseAll(RTMP_ADAPTER *pAd, PNET_DEV net_dev)
+{
+	INT index;
+	BOOLEAN retired;
+	struct wifi_dev *wdev;
+
+	RtmpOSNetDevProtect(1);
+	/* Keep ordinary VIF opens excluded after RTNL is released for unregister.
+	 * Do not hold the lifecycle mutex over ndo_stop's nested full close.
+	 */
+	RtmpDmaLifecycleLock(pAd);
+	WRITE_ONCE(pAd->dma_removing, TRUE);
+	RtmpDmaLifecycleUnlock(pAd);
+	for (index = 0; index < WDEV_NUM_MAX; index++) {
+		wdev = pAd->wdev_list[index];
+		if (wdev && wdev->if_dev && (wdev->if_dev->flags & IFF_UP))
+			dev_close(wdev->if_dev);
+	}
+	if (net_dev && (net_dev->flags & IFF_UP))
+		dev_close(net_dev);
+
+	/* dev_close ignores ndo_stop's result.  Do not infer retirement from it,
+	 * or from an individual synchronous HW command's completion/timeout.
+	 */
+	retired = VIRTUAL_IF_NUM(pAd) == 0 &&
+		!RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_START_UP) &&
+		!RTMP_OS_TASK_LEGALITY(&pAd->HwCtrl.HwCtrlTask) &&
+		pAd->HwCtrl.HwCtrlQ.CmdQState == RTMP_TASK_STAT_UNKNOWN &&
+		!RTMP_OS_TASK_LEGALITY(&pAd->cmdQTask) &&
+		pAd->RscTimerCreateList.size == 0 &&
+#ifdef ERR_RECOVERY
+		!RTMP_OS_TASK_LEGALITY(&pAd->HwCtrl.ser_task) &&
+		!pAd->HwCtrl.ser_initialized &&
+#endif
+#ifdef WSC_INCLUDED
+		!RTMP_OS_TASK_LEGALITY(&pAd->wscTask) &&
+		!pAd->WscWorkerInitialized &&
+#endif
+		RtmpDmaFinalReleaseCheck(pAd);
+	RtmpOSNetDevProtect(0);
+	return retired;
+}
+
 BOOLEAN RtmpPhyNetDevExit(VOID *pAd, PNET_DEV net_dev)
 {
 	if (!RtmpDmaResourcesMayRelease((RTMP_ADAPTER *)pAd))
 		return FALSE;
-	/*remove cfg */
-	wpf_exit(pAd);
+	if (!RtmpPhyNetDevCloseAll((RTMP_ADAPTER *)pAd, net_dev))
+		return FALSE;
+	/* All software producers have retired before wdev/netdev removal. */
 #ifdef CONFIG_AP_SUPPORT
 #ifdef APCLI_SUPPORT
 #if defined(P2P_APCLI_SUPPORT) || defined(RT_CFG80211_P2P_CONCURRENT_DEVICE) || defined(CFG80211_MULTI_STA)
@@ -1150,6 +1204,10 @@ BOOLEAN RtmpPhyNetDevExit(VOID *pAd, PNET_DEV net_dev)
 #endif /* RT_CFG80211_SUPPORT */
 	}
 
+	/* Detach drains registered netdev users, and wdev_deinit may still need
+	 * wpf_op.  Clear configuration links only after every netdev is gone.
+	 */
+	wpf_exit(pAd);
 	return TRUE;
 }
 

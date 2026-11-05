@@ -1440,6 +1440,7 @@ VOID WDS_Init(RTMP_ADAPTER *pAd, RTMP_OS_NETDEV_OP_HOOK *pNetDevOps)
 		if (Ret == FALSE) {
 			MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("Assign wdev idx for %s failed, free net device!\n",
 					 RTMP_OS_NETDEV_GET_DEVNAME(pWdsNetDev)));
+			wdev->if_dev = NULL;
 			RtmpOSNetDevFree(pWdsNetDev);
 			break;
 		}
@@ -1451,6 +1452,8 @@ VOID WDS_Init(RTMP_ADAPTER *pAd, RTMP_OS_NETDEV_OP_HOOK *pNetDevOps)
 			MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 					 ("register wdev_ops %s failed, free net device!\n",
 					  RTMP_OS_NETDEV_GET_DEVNAME(pWdsNetDev)));
+			wdev_deinit(pAd, wdev);
+			wdev->if_dev = NULL;
 			RtmpOSNetDevFree(pWdsNetDev);
 			break;
 		}
@@ -1473,7 +1476,12 @@ VOID WDS_Init(RTMP_ADAPTER *pAd, RTMP_OS_NETDEV_OP_HOOK *pNetDevOps)
 		pNetDevOps->needProtcted = TRUE;
 		pNetDevOps->wdev = wdev;
 		/* Register this device */
-		RtmpOSNetDevAttach(pAd->OpMode, pWdsNetDev, pNetDevOps);
+		if (RtmpOSNetDevAttach(pAd->OpMode, pWdsNetDev, pNetDevOps) != NDIS_STATUS_SUCCESS) {
+			wdev_deinit(pAd, wdev);
+			wdev->if_dev = NULL;
+			RtmpOSNetDevFree(pWdsNetDev);
+			break;
+		}
 	}
 
 	NdisAllocateSpinLock(pAd, &pAd->WdsTab.WdsTabLock);

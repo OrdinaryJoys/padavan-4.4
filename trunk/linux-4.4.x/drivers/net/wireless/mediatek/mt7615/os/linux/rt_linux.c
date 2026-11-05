@@ -1528,6 +1528,15 @@ void RtmpOSNetDevClose(PNET_DEV pNetDev)
 void RtmpOSNetDevFree(PNET_DEV pNetDev)
 {
 	ASSERT(pNetDev);
+#if (KERNEL_VERSION(2, 6, 31) <= LINUX_VERSION_CODE)
+	/* RtmpOSNetDevCreate owns these private vmalloc'ed operations.
+	 * Detach already clears them; unpublished rollback must release them too.
+	 */
+	if (pNetDev->netdev_ops) {
+		vfree((void *)pNetDev->netdev_ops);
+		pNetDev->netdev_ops = NULL;
+	}
+#endif
 #if (KERNEL_VERSION(2, 5, 0) <= LINUX_VERSION_CODE)
 	free_netdev(pNetDev);
 #else

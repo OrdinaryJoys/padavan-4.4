@@ -811,7 +811,7 @@ VOID rtmp_chip_prepare(RTMP_ADAPTER *pAd)
 extern struct wifi_dev_ops ap_wdev_ops;
 extern struct wifi_dev_ops sta_wdev_ops;
 
-static VOID rtmp_netdev_set(RTMP_ADAPTER *pAd, PNET_DEV net_dev)
+static NDIS_STATUS rtmp_netdev_set(RTMP_ADAPTER *pAd, PNET_DEV net_dev)
 {
 	struct wifi_dev *wdev = NULL;
 	INT32 ret = 0;
@@ -832,8 +832,10 @@ static VOID rtmp_netdev_set(RTMP_ADAPTER *pAd, PNET_DEV net_dev)
 		if (!ret) {
 			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("Assign wdev idx for %s failed, free net device!\n",
 					 RTMP_OS_NETDEV_GET_DEVNAME(pAd->net_dev)));
-			RtmpOSNetDevFree(pAd->net_dev);
-			return;
+			wdev->if_dev = NULL;
+			RTMP_OS_NETDEV_SET_WDEV(net_dev, NULL);
+			pAd->net_dev = NULL;
+			return NDIS_STATUS_FAILURE;
 		}
 
 		ret = wdev_ops_register(wdev, WDEV_TYPE_AP, &ap_wdev_ops,
@@ -842,12 +844,17 @@ static VOID rtmp_netdev_set(RTMP_ADAPTER *pAd, PNET_DEV net_dev)
 		if (!ret) {
 			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 					 ("register wdev_ops %s failed, free net device!\n", RTMP_OS_NETDEV_GET_DEVNAME(pAd->net_dev)));
-			RtmpOSNetDevFree(pAd->net_dev);
-			return;
+			wdev_deinit(pAd, wdev);
+			wdev->if_dev = NULL;
+			RTMP_OS_NETDEV_SET_WDEV(net_dev, NULL);
+			pAd->net_dev = NULL;
+			return NDIS_STATUS_FAILURE;
 		}
 	}
 
 #endif /* CONFIG_AP_SUPPORT */
+	/* The unpublished netdev remains owned by RtmpPhyNetDevInit on failure. */
+	return NDIS_STATUS_SUCCESS;
 }
 
 INT RTMP_COM_IoctlHandle(
@@ -885,7 +892,7 @@ INT RTMP_COM_IoctlHandle(
 #endif /* APCLI_CFG80211_SUPPORT */
 
 	case CMD_RTPRIV_IOCTL_NETDEV_SET: {
-		rtmp_netdev_set(pAd, pData);
+		Status = rtmp_netdev_set(pAd, pData);
 		break;
 	}
 

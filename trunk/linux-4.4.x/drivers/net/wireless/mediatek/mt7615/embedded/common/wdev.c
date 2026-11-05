@@ -384,11 +384,13 @@ INT32 wdev_init(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, enum WDEV_TYPE wdev_ty
 	wdev->forbid_data_tx = 0x1 << MSDU_FORBID_CONNECTION_NOT_READY;
 	wdev->bAllowBeaconing = FALSE;
 	wdev_idx = wdev_idx_reg(pAd, wdev);
+	if (wdev_idx < 0) {
+		/* The caller still owns the unpublished netdev. */
+		wdev->if_dev = NULL;
+		return FALSE;
+	}
 
 	init_vie_ctrl(wdev);
-
-	if (wdev_idx < 0)
-		return FALSE;
 
 	hc_obj_init(wdev, wdev_idx);
 

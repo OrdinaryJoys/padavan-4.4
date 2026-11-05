@@ -1110,6 +1110,7 @@ VOID Monitor_Init(RTMP_ADAPTER *pAd, RTMP_OS_NETDEV_OP_HOOK *pNetDevOps)
 	if (wdev_idx_reg(pAd, wdev) < 0) {
 		MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				 ("Assign wdev idx for %s failed, free net device!\n", RTMP_OS_NETDEV_GET_DEVNAME(new_dev_p)));
+		wdev->if_dev = NULL;
 		RtmpOSNetDevFree(new_dev_p);
 		return;
 	}
@@ -1123,7 +1124,12 @@ VOID Monitor_Init(RTMP_ADAPTER *pAd, RTMP_OS_NETDEV_OP_HOOK *pNetDevOps)
 	pNetDevOps->wdev = wdev;
 	NdisMoveMemory(pNetDevOps->devAddr, &wdev->if_addr[0], MAC_ADDR_LEN);
 	/* register this device to OS */
-	RtmpOSNetDevAttach(pAd->OpMode, new_dev_p, pNetDevOps);
+	if (RtmpOSNetDevAttach(pAd->OpMode, new_dev_p, pNetDevOps) != NDIS_STATUS_SUCCESS) {
+		wdev_idx_unreg(pAd, wdev);
+		wdev->if_dev = NULL;
+		RtmpOSNetDevFree(new_dev_p);
+		return;
+	}
 
 		pAd->monitor_ctrl[idx].bMonitorInitiated = TRUE;
 		pAd->monitor_ctrl[idx].MacFilterOn = FALSE;

@@ -103,7 +103,7 @@ VOID MBSS_Init(RTMP_ADAPTER *pAd, RTMP_OS_NETDEV_OP_HOOK *pNetDevOps)
 	/* first IdBss must not be 0 (BSS0), must be 1 (BSS1) */
 	for (IdBss = FIRST_MBSSID; IdBss < HW_BEACON_MAX_NUM; IdBss++) {
 		pAd->ApCfg.MBSSID[IdBss].wdev.if_dev = NULL;
-		pAd->ApCfg.MBSSID[IdBss].wdev.bcn_buf.BeaconPkt = NULL;
+		/* Beacon storage belongs to the embedded wdev until adapter release. */
 	}
 
 	/* create virtual network interface */
@@ -128,6 +128,7 @@ VOID MBSS_Init(RTMP_ADAPTER *pAd, RTMP_OS_NETDEV_OP_HOOK *pNetDevOps)
 		if(dev_name == NULL){
 			MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				("get_dev_name_prefix error!\n"));
+			pAd->ApCfg.BssidNum = IdBss;
 			break;
 		}
 		snprintf(final_name,sizeof(final_name),"%s",dev_name);
@@ -164,6 +165,8 @@ VOID MBSS_Init(RTMP_ADAPTER *pAd, RTMP_OS_NETDEV_OP_HOOK *pNetDevOps)
 		if (!Ret) {
 			MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("Assign wdev idx for %s failed, free net device!\n",
 					 RTMP_OS_NETDEV_GET_DEVNAME(pDevNew)));
+			wdev->if_dev = NULL;
+			pAd->ApCfg.BssidNum = IdBss;
 			RtmpOSNetDevFree(pDevNew);
 			break;
 		}
@@ -175,6 +178,9 @@ VOID MBSS_Init(RTMP_ADAPTER *pAd, RTMP_OS_NETDEV_OP_HOOK *pNetDevOps)
 			MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 					 ("register wdev_ops %s failed, free net device!\n",
 					  RTMP_OS_NETDEV_GET_DEVNAME(pDevNew)));
+			wdev_deinit(pAd, wdev);
+			wdev->if_dev = NULL;
+			pAd->ApCfg.BssidNum = IdBss;
 			RtmpOSNetDevFree(pDevNew);
 			break;
 		}
@@ -209,6 +215,14 @@ VOID MBSS_Init(RTMP_ADAPTER *pAd, RTMP_OS_NETDEV_OP_HOOK *pNetDevOps)
 
 		/* register this device to OS */
 		status = RtmpOSNetDevAttach(pAd->OpMode, pDevNew, &netDevHook);
+		if (status != NDIS_STATUS_SUCCESS) {
+			/* Attach did not publish the netdev; only undo acquired stages. */
+			wdev_deinit(pAd, wdev);
+			wdev->if_dev = NULL;
+			pAd->ApCfg.BssidNum = IdBss;
+			RtmpOSNetDevFree(pDevNew);
+			break;
+		}
 	}
 
 	pAd->FlgMbssInit = TRUE;
@@ -235,24 +249,23 @@ VOID MBSS_Remove(RTMP_ADAPTER *pAd)
 {
 	struct wifi_dev *wdev;
 	UINT IdBss;
-	BSS_STRUCT *pMbss;
-	INT32 MaxNumBss;
 
 	if (!pAd)
 		return;
+	/* The physical remove protocol closes every interface and joins global
+	 * producers first.  Refuse a direct call while the adapter is still live.
+	 */
+	if (RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_START_UP) ||
+		!RtmpDmaFinalReleaseCheck(pAd))
+		return;
 
-	MaxNumBss = pAd->ApCfg.BssidNum;
-
-	if (MaxNumBss > HW_BEACON_MAX_NUM)
-		MaxNumBss = HW_BEACON_MAX_NUM;
-
-
-	for (IdBss = FIRST_MBSSID; IdBss < MaxNumBss; IdBss++) {
+	/* BssidNum may have shrunk since successful publication. */
+	for (IdBss = FIRST_MBSSID; IdBss < sizeof(pAd->ApCfg.MBSSID) /
+			sizeof(pAd->ApCfg.MBSSID[0]); IdBss++) {
 		wdev = &pAd->ApCfg.MBSSID[IdBss].wdev;
-		pMbss = &pAd->ApCfg.MBSSID[IdBss];
-
-		if (pMbss)
-			bcn_buf_deinit(pAd, &wdev->bcn_buf);
+		/* Cached beacon packet/lock remain owned by this embedded wdev;
+		 * RTMPFreeAdapter releases every slot after producer retirement.
+		 */
 
 		if (wdev->if_dev) {
 			RtmpOSNetDevProtect(1);
