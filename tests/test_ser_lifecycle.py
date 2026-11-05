@@ -1,5 +1,6 @@
 """Current SER software lifetime controls; no DMA or hardware execution."""
 import json
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -81,13 +82,32 @@ class SerLifecycleTests(unittest.TestCase):
         self.assertLess(close.index('RTMP_OS_IRQ_RELEASE'),close.index('HwCtrlSerExit(pAd);'))
         self.assertLess(close.index('HwCtrlExit(pAd);'),close.index('NICRestartFirmware(pAd)'))
         self.assertLess(close.index('HwCtrlExit(pAd);'),close.index('RTMP_OS_IRQ_RELEASE'))
-        self.assertLess(close.index('HwCtrlSerExit(pAd);'),close.index('tr_ctl_exit(pAd);'))
-        self.assertLess(close.index('HwCtrlSerExit(pAd);'),close.index('tm_exit(pAd);'))
-        self.assertLess(close.index('qm_exit(pAd);'),close.index('tr_ctl_exit(pAd);'))
-        self.assertLess(close.index('tr_ctl_exit(pAd);'),close.index('WfSysPosExit(pAd)'))
+        self.assertLess(close.index('HwCtrlSerExit(pAd);'),close.index('tr_ctl_exit(pAd)'))
+        self.assertLess(close.index('HwCtrlSerExit(pAd);'),close.index('tm_exit(pAd)'))
+        self.assertLess(close.index('qm_exit(pAd);'),close.index('tr_ctl_exit(pAd)'))
+        self.assertLess(close.index('tr_ctl_exit(pAd)'),close.index('WfSysPosExit(pAd)'))
         self.assertLess(close.index('WscThreadExit(pAd);'),close.index('WfSysPosExit(pAd)'))
         self.assertLess(close.index('RTMP_AllTimerListRelease(pAd);'),close.index('WfSysPosExit(pAd)'))
-        self.assertRegex(close,r'if \(!pAd->ErrRecoveryCtl.queues_retired\) \{[\s\S]*?tm_exit\(pAd\);[\s\S]*?qm_exit\(pAd\);[\s\S]*?queues_retired = TRUE;\s*\}')
+        self.assertRegex(close,r'if \(!pAd->ErrRecoveryCtl.queues_retired\) \{[\s\S]*?tm_exit\(pAd\)[\s\S]*?qm_exit\(pAd\);[\s\S]*?queues_retired = TRUE;\s*\}')
+        def checked_cleanup(text):
+            tm=text.index('tm_exit(pAd)');qm=text.index('qm_exit(pAd);')
+            tr=text.index('tr_ctl_exit(pAd)');hw=text.index('WfSysPosExit(pAd)')
+            self.assertLess(text.index('RTMP_OS_IRQ_RELEASE'),text.index('HwCtrlSerExit(pAd);'))
+            self.assertLess(text.index('HwCtrlSerExit(pAd);'),tm)
+            self.assertLess(tm,qm);self.assertLess(qm,text.index('queues_retired = TRUE;'))
+            self.assertLess(text.index('queues_retired = TRUE;'),tr);self.assertLess(tr,hw)
+            blocks={}
+            for name,boundary in (('tm_exit',qm),('tr_ctl_exit',hw)):
+                found=list(re.finditer(r'if\s*\(\s*'+name+r'\(pAd\)\s*!=\s*NDIS_STATUS_SUCCESS\s*\)\s*\{\s*RtmpDmaQuarantine\(pAd\);\s*return;\s*\}',text))
+                self.assertEqual(len(found),1,'Checked quarantine/return block required: '+name)
+                self.assertLess(found[0].end(),boundary)
+                blocks[name]=found[0].group()
+            return blocks
+        blocks=checked_cleanup(close)
+        for name,block in blocks.items():
+            for replacement in (name+'(pAd);',block.replace('return;',''),block.replace('RtmpDmaQuarantine(pAd);','')):
+                with self.subTest(cleanup=name,removed_guard=replacement),self.assertRaises(AssertionError):
+                    checked_cleanup(close.replace(block,replacement))
         producer=h.function(self.texts['command'],'RTMP_MAC_RECOVERY')
         self.assertLess(producer.index('NdisAcquireSpinLock'),producer.index('RTCMDUp('))
         self.assertLess(producer.index('RTCMDUp('),producer.rindex('NdisReleaseSpinLock'))

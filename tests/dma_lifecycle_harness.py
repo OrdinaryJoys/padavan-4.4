@@ -100,6 +100,9 @@ static void cut_through_deinit(PKT_TOKEN_CB **p){event(13);
  if(!idle){unsafe_frees++;}assert(token_live);token_live=0;*p=NULL;}
 static int WfEPROMSysExit(RTMP_ADAPTER *p){(void)p;event(14);return 0;}
 static int WfMcuSysExit(RTMP_ADAPTER *p){(void)p;event(15);return 0;}
+/* Complete software retirement/failure ownership is executed by the separate
+ * quarantine adapter. This DMA-only seam models its accepted success result. */
+static int rtmp_sys_task_exit(RTMP_ADAPTER *p){(void)p;return NDIS_STATUS_SUCCESS;}
 /* Lifecycle state is exercised in dma_quarantine_harness. Here the seam
  * composes the actual DMA reset implementation and caches its accepted idle. */
 BOOLEAN RT28XXDMAReset(RTMP_ADAPTER *p);

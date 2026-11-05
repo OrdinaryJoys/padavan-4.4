@@ -74,6 +74,14 @@ class DmaLifecycleTests(unittest.TestCase):
             self.assertTrue(h.function(self.texts[key],name))
 
         self.assertIn('NDIS_STATUS (*FwInit)(struct _RTMP_ADAPTER *pAd);',self.texts['chip_header'])
+        # The separate retirement seam must not make the caller's checked
+        # failure/early-return contract disappear before dependent release.
+        exit_body=h.function(self.texts['hw'],'WfSysPosExit')
+        guard='if (rtmp_sys_task_exit(pAd) != NDIS_STATUS_SUCCESS)\n\t\treturn NDIS_STATUS_FAILURE;'
+        self.assertEqual(exit_body.count(guard),1)
+        self.assertLess(exit_body.index(guard)+len(guard),exit_body.index('WfEPROMSysExit(pAd);'))
+        self.assertLess(exit_body.index('WfEPROMSysExit(pAd);'),exit_body.index('WfMcuSysExit(pAd);'))
+        self.assertLess(exit_body.index('WfMcuSysExit(pAd);'),exit_body.index('WfHifSysExit(pAd)'))
         with self.assertRaises(ValueError):h.generate_source({})
         with self.assertRaises(ValueError):h.generate_source(self.texts,'legacy')
 
