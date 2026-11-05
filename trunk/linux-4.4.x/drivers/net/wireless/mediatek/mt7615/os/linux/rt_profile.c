@@ -1505,8 +1505,8 @@ VOID RTMPFreeAdapter(VOID *pAdSrc)
 		 * full embedded array, including slots beyond a reduced BssidNum and
 		 * never-initialized slots, before the HIF beacon lock is destroyed.
 		 */
-		for (index = 0; index < sizeof(pAd->ApCfg.MBSSID) /
-				sizeof(pAd->ApCfg.MBSSID[0]); index++)
+		for (index = 0; index < (INT)(sizeof(pAd->ApCfg.MBSSID) /
+				sizeof(pAd->ApCfg.MBSSID[0])); index++)
 			bcn_buf_deinit(pAd, &pAd->ApCfg.MBSSID[index].wdev.bcn_buf);
 	}
 

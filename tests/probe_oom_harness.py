@@ -27,8 +27,12 @@ MODEL_VARIANT = {'role': 'unpublished-constructor-private-inert-model',
  'reduced_beacon_packet_bytes': 64,
  'beacon_packet_and_lock_ownership_asserted': True,
  'same_wdev_repeat_init_reuses_owner': True,
- 'uninitialized_beacon_cleanup_requires_retired_callers': True}
+ 'uninitialized_beacon_cleanup_requires_retired_callers': True,
+ 'reduced_MBSSID_slots': 3,
+ 'all_embedded_beacon_slots_freed_after_count_shrinks': True}
+
 BASE = 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/'
+
 SOURCE_PATHS = {'init': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/embedded/common/rtmp_init.c',
  'os': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/os/linux/rt_linux.c',
  'pci': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/os/linux/pci_main_dev.c',
@@ -49,6 +53,7 @@ SOURCE_PATHS = {'init': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/
  'bcn': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/embedded/common/bcn.c',
  'chip_header': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/include/hw_ctrl/cmm_chip.h',
  'bcn_header': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/embedded/include/bcn.h'}
+
 FUNCTION_SOURCES = {'RtmpOsStatsAlloc': 'os',
  'AdapterBlockAllocateMemory': 'os',
  'hdev_ctrl_init': 'hdev',
@@ -66,6 +71,7 @@ FUNCTION_SOURCES = {'RtmpOsStatsAlloc': 'os',
  'rt_pci_probe': 'pci',
  'bcn_buf_init': 'bcn',
  'bcn_buf_deinit': 'bcn'}
+
 BODY_ORDER = ('RtmpOsStatsAlloc',
  'AdapterBlockAllocateMemory',
  'hdev_ctrl_init',
@@ -83,6 +89,7 @@ BODY_ORDER = ('RtmpOsStatsAlloc',
  'rt_pci_probe',
  'bcn_buf_init',
  'bcn_buf_deinit')
+
 SOURCE_ONLY_FUNCTION_SOURCES = {'wifi_sys_init': 'wifi_sys',
  'RTMPAllocGlobalUtility': 'init',
  'hdev_resource_init': 'hdev',
@@ -98,12 +105,14 @@ SOURCE_ONLY_FUNCTION_SOURCES = {'wifi_sys_init': 'wifi_sys',
  'vht_cfg_exit': 'config_vht',
  'multi_inf_adapt_reg': 'multi',
  'multi_inf_adapt_unreg': 'multi'}
+
 SOURCE_DECLARATIONS = {'^#define NDIS_STATUS_SUCCESS\\s+0x[0-9a-fA-F]+\\s*$': 'os_header',
  '^#define NDIS_STATUS_FAILURE\\s+0x[0-9a-fA-F]+\\s*$': 'os_header',
  '^#define NDIS_STATUS_RESOURCES\\s+0x[0-9a-fA-F]+\\s*$': 'os_header',
  'enum HIF_TYPE \\{[\\s\\S]*?\\n\\};': 'chip_header',
  'enum BCN_TX_STATE \\{[\\s\\S]*?\\n\\};': 'header',
  'typedef enum _BCN_GEN_METHOD \\{[\\s\\S]*?\\} BCN_GEN_METHOD;': 'bcn_header'}
+
 CASE_NAMES = ('ctor-oom-2',
  'ctor-oom-3',
  'ctor-oom-4',
@@ -178,7 +187,11 @@ CASE_NAMES = ('ctor-oom-2',
  'bcn-foreign-owner',
  'bcn-missing-packet',
  'bcn-noowner-tim-only',
- 'bcn-noowner-beacon-only')
+ 'bcn-noowner-beacon-only',
+ 'bcn-all-slots-final-free',
+ 'bcn-shrunk-count-final-free',
+ 'bcn-empty-slot-repeat-final-free')
+
 FIELDS = ('result',
  'heap_live',
  'locks_live',
@@ -194,6 +207,7 @@ FIELDS = ('result',
  'hardware_resource_exits',
  'owned_graph_retained',
  'device_resource_releases')
+
 CASE_GROUPS = {'constructor-oom': ('ctor-oom-2',
                      'ctor-oom-3',
                      'ctor-oom-4',
@@ -247,7 +261,9 @@ CASE_GROUPS = {'constructor-oom': ('ctor-oom-2',
                'hdev-initialized-exit',
                'hdev-null-exit'),
  'quarantine': ('quarantined-final-free', 'quarantined-devctrl-free'),
- 'extra': ('hdev-existing-owner', 'probe-msi-owned-constructor-failure', 'probe-msi-request-failure'),
+ 'extra': ('hdev-existing-owner',
+           'probe-msi-owned-constructor-failure',
+           'probe-msi-request-failure'),
  'beacon': ('bcn-never-init',
             'bcn-post-hdev-exit',
             'bcn-adapter-lock-order',
@@ -265,7 +281,11 @@ CASE_GROUPS = {'constructor-oom': ('ctor-oom-2',
             'bcn-foreign-owner',
             'bcn-missing-packet',
             'bcn-noowner-tim-only',
-            'bcn-noowner-beacon-only')}
+            'bcn-noowner-beacon-only',
+            'bcn-all-slots-final-free',
+            'bcn-shrunk-count-final-free',
+            'bcn-empty-slot-repeat-final-free')}
+
 EXPECTED_ROWS = {'ctor-oom-2': [1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
  'ctor-oom-3': [1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
  'ctor-oom-4': [1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -340,7 +360,13 @@ EXPECTED_ROWS = {'ctor-oom-2': [1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
  'bcn-foreign-owner': [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
  'bcn-missing-packet': [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
  'bcn-noowner-tim-only': [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
- 'bcn-noowner-beacon-only': [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]}
+ 'bcn-noowner-beacon-only': [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+ 'bcn-all-slots-final-free': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+ 'bcn-shrunk-count-final-free': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+ 'bcn-empty-slot-repeat-final-free': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0]}
+
+SOURCE_FIELD_CONSTRAINTS = {'BOOLEAN BcnContentLockInitialized;': 'header'}
+
 PREFIX = ('\n'
  '#include <assert.h>\n'
  '#include <errno.h>\n'
@@ -400,8 +426,8 @@ PREFIX = ('\n'
  'struct net_device_stats {int value;};struct iw_statistics {int value;};\n'
  'typedef struct {int values[4];} RLM_CAL_CACHE;\n'
  'struct wifi_dev;\n'
- 'typedef struct _BCN_BUF_STRUCT {enum BCN_TX_STATE bcn_state;void *BeaconPkt;int cap_ie_pos;struct wifi_dev '
- '*pWdev;struct {void *TimPkt;} tim_buf;int BcnContentLock;\n'
+ 'typedef struct _BCN_BUF_STRUCT {enum BCN_TX_STATE bcn_state;void *BeaconPkt;int '
+ 'cap_ie_pos;struct wifi_dev *pWdev;struct {void *TimPkt;} tim_buf;int BcnContentLock;\n'
  ' STATE_FIELDS\n'
  ' int BcnUpdateMethod;} BCN_BUF_STRUC;\n'
  'struct wifi_dev {BCN_BUF_STRUC bcn_buf;};typedef struct {struct wifi_dev wdev;} BSS_STRUCT;\n'
@@ -409,10 +435,12 @@ PREFIX = ('\n'
  'typedef struct _RTMP_ADAPTER {void *OS_Cookie,*stats,*iw_stats,*hdev_ctrl,*rlmCalCache;\n'
  ' int '
  'RscTimerMemList,RscTaskMemList,RscLockMemList,RscTaskletMemList,RscSemMemList,RscAtomicMemList,RscTimerCreateList;\n'
- ' int TimerSemLock,WdevListLock,BssInfoIdxBitMapLock,irq_lock,tssi_lock,LockInterrupt,VirtualIfLock;\n'
+ ' int '
+ 'TimerSemLock,WdevListLock,BssInfoIdxBitMapLock,irq_lock,tssi_lock,LockInterrupt,VirtualIfLock;\n'
  ' int McuCmdLock,DriverOwnLock,UAPSDEOSPLock,AutoRateLock,OpMode,quarantined,hif_type;\n'
  ' struct {int lock;} mpdu_blk_pool,WifiSysInfo;\n'
- ' struct {int ReptCliEntryLock,CliLinkMapLock,bMACRepeaterEn;BSS_STRUCT MBSSID[1];} ApCfg;\n'
+ ' struct {int ReptCliEntryLock,CliLinkMapLock,bMACRepeaterEn;int BssidNum;BSS_STRUCT MBSSID[3];} '
+ 'ApCfg;\n'
  ' struct {UCHAR *pIe;} ProbeRespIE[MAX_LEN_OF_BSS_TABLE];\n'
  ' struct _PCI_HIF_T PciHif;struct wpf_ctrl wpf;\n'
  '} RTMP_ADAPTER,*PRTMP_ADAPTER;\n'
@@ -423,18 +451,23 @@ PREFIX = ('\n'
  'FUNCTION_DECLARATIONS\n'
  'struct allocation {void *p;size_t bytes;int live;};\n'
  'static struct allocation allocated[128];\n'
- 'static int allocations,allocation_attempt,fail_at,locks_live,allocations_after_locks,unsafe_frees;\n'
+ 'static int '
+ 'allocations,allocation_attempt,fail_at,locks_live,allocations_after_locks,unsafe_frees;\n'
  'static int cookie_failure_preserved,early_publications,hw_exits,owned_graph_retained;\n'
- 'static int fail_enable,fail_mask,fail_region,fail_map,fail_pcie,fail_netdev,fail_attach,fail_multi;\n'
+ 'static int '
+ 'fail_enable,fail_mask,fail_region,fail_map,fail_pcie,fail_netdev,fail_attach,fail_multi;\n'
  '#ifdef CONFIG_WIFI_MSI_SUPPORT\n'
  'static int fail_msi,msi_enables,msi_disables;\n'
  '#endif\n'
- 'static int config_initializations,config_exits,dep_live,ring_live,sem_live,device_resource_releases;\n'
+ 'static int '
+ 'config_initializations,config_exits,dep_live,ring_live,sem_live,device_resource_releases;\n'
  'static void **watched_output;\n'
- 'static int packet_allocating,packet_status,packet_null_success,packet_calls,packet_frees,sem_checks;\n'
+ 'static int '
+ 'packet_allocating,packet_status,packet_null_success,packet_calls,packet_frees,sem_checks;\n'
  'static int expect_cookie;static void *cookie_pointer;\n'
  'static struct pci_dev pci;\n'
- 'static int live_heap(void){int n=0;for(int i=0;i<allocations;i++)n+=allocated[i].live;return n;}\n'
+ 'static int live_heap(void){int n=0;for(int i=0;i<allocations;i++)n+=allocated[i].live;return '
+ 'n;}\n'
  'static void *get_memory(size_t n){void *p;allocation_attempt++;\n'
  ' if(watched_output&&*watched_output)early_publications++;\n'
  ' if(locks_live&&!packet_allocating)allocations_after_locks++;\n'
@@ -468,7 +501,8 @@ PREFIX = ('\n'
  'static int multi_inf_adapt_reg(void *ad){(void)ad;return '
  'fail_multi?NDIS_STATUS_FAILURE:NDIS_STATUS_SUCCESS;}\n'
  'static int multi_inf_adapt_unreg(void *ad){(void)ad;return NDIS_STATUS_SUCCESS;}\n'
- 'static void HdevHwResourceExit(struct hdev_ctrl *ctrl){assert(ctrl&&ctrl->cookie&&ctrl->hif);hw_exits++;}\n'
+ 'static void HdevHwResourceExit(struct hdev_ctrl '
+ '*ctrl){assert(ctrl&&ctrl->cookie&&ctrl->hif);hw_exits++;}\n'
  'static void hdev_resource_exit(void *arg){struct hdev_ctrl '
  '*ctrl=arg;if(ctrl&&ctrl->cookie){HdevHwResourceExit(ctrl);ctrl->cookie=NULL;ctrl->hif=NULL;}}\n'
  'static RTMP_CHIP_CAP fake_cap;\n'
@@ -477,9 +511,10 @@ PREFIX = ('\n'
  'static void sem_check(int *p){assert(p&&*p==1);sem_checks++;}\n'
  '#define RTMP_SEM_LOCK(p) sem_check(p)\n'
  '#define RTMP_SEM_UNLOCK(p) sem_check(p)\n'
- 'static NDIS_STATUS RTMPAllocateNdisPacket(RTMP_ADAPTER *ad,void **out,void *header,int hlen,void *data,int '
- 'bytes){\n'
- ' (void)ad;(void)header;(void)hlen;(void)data;assert(bytes==MAX_BEACON_LENGTH);packet_calls++;*out=NULL;\n'
+ 'static NDIS_STATUS RTMPAllocateNdisPacket(RTMP_ADAPTER *ad,void **out,void *header,int hlen,void '
+ '*data,int bytes){\n'
+ ' '
+ '(void)ad;(void)header;(void)hlen;(void)data;assert(bytes==MAX_BEACON_LENGTH);packet_calls++;*out=NULL;\n'
  ' if(packet_status)return packet_status;\n'
  ' if(packet_null_success)return NDIS_STATUS_SUCCESS;\n'
  ' packet_allocating=1;*out=get_memory((size_t)bytes);packet_allocating=0;return '
@@ -500,17 +535,19 @@ PREFIX = ('\n'
  'static void RTMPFreeTxRxRingMemory(RTMP_ADAPTER *ad){(void)ad;ring_live=0;}\n'
  'static void completed_device_init(RTMP_ADAPTER *ad){struct hdev_ctrl '
  '*ctrl=ad->hdev_ctrl;assert(ctrl&&!ctrl->cookie&&!dep_live&&!ring_live&&!sem_live);\n'
- ' ctrl->cookie=ad->OS_Cookie;ctrl->hif=&ad->PciHif;ad->AutoRateLock=1;dep_live=ring_live=sem_live=1;}\n'
+ ' '
+ 'ctrl->cookie=ad->OS_Cookie;ctrl->hif=&ad->PciHif;ad->AutoRateLock=1;dep_live=ring_live=sem_live=1;}\n'
  'static void *pci_get_drvdata(struct pci_dev *d){return d->drvdata;}\n'
  'static void pci_set_drvdata(struct pci_dev *d,void *p){d->drvdata=p;}\n'
- 'static int pci_enable_device(struct pci_dev *d){if(fail_enable)return-EIO;d->enabled=1;return 0;}\n'
+ 'static int pci_enable_device(struct pci_dev *d){if(fail_enable)return-EIO;d->enabled=1;return '
+ '0;}\n'
  'static void pci_disable_device(struct pci_dev '
  '*d){assert(!d->mapped&&!d->regions&&!d->master&&!d->msi_enabled);d->enabled=0;}\n'
  'static char *pci_name(struct pci_dev *d){(void)d;return "inert-pci";}\n'
  'static int pci_set_dma_mask(struct pci_dev *d,int mask){assert(d->enabled&&mask==32);return '
  'fail_mask?-EIO:0;}\n'
- 'static int pci_set_consistent_dma_mask(struct pci_dev *d,int mask){assert(d->enabled&&mask==32);return '
- '0;}\n'
+ 'static int pci_set_consistent_dma_mask(struct pci_dev *d,int '
+ 'mask){assert(d->enabled&&mask==32);return 0;}\n'
  '#ifdef CONFIG_WIFI_MSI_SUPPORT\n'
  'static int RtmpOsPciMsiEnable(struct pci_dev '
  '*d){msi_enables++;if(fail_msi)return-EIO;assert(!d->msi_enabled);d->msi_enabled=1;return 0;}\n'
@@ -519,15 +556,19 @@ PREFIX = ('\n'
  '#endif\n'
  'static int pci_request_regions(struct pci_dev *d,char '
  '*name){(void)name;assert(d->enabled);if(fail_region)return-EBUSY;d->regions=1;return 0;}\n'
- 'static unsigned long pci_resource_start(struct pci_dev *d,int i){assert(d->regions&&i==0);return 1;}\n'
- 'static unsigned long pci_resource_len(struct pci_dev *d,int i){assert(d->regions&&i==0);return 1;}\n'
+ 'static unsigned long pci_resource_start(struct pci_dev *d,int i){assert(d->regions&&i==0);return '
+ '1;}\n'
+ 'static unsigned long pci_resource_len(struct pci_dev *d,int i){assert(d->regions&&i==0);return '
+ '1;}\n'
  'static void *ioremap(unsigned long start,unsigned long '
- 'bytes){assert(start==1&&bytes==1);if(fail_map)return NULL;pci.mapped=1;return(void*)(uintptr_t)1;}\n'
+ 'bytes){assert(start==1&&bytes==1);if(fail_map)return '
+ 'NULL;pci.mapped=1;return(void*)(uintptr_t)1;}\n'
  'static void pci_set_master(struct pci_dev *d){assert(d->mapped);d->master=1;}\n'
  'static void pci_clear_master(struct pci_dev *d){d->master=0;}\n'
  'static void iounmap(void '
  '*p){assert(p==(void*)(uintptr_t)1&&!pci.master);assert(live_heap()==0);pci.mapped=0;}\n'
- 'static void pci_release_regions(struct pci_dev *d){assert(d->regions&&!d->mapped);d->regions=0;}\n'
+ 'static void pci_release_regions(struct pci_dev '
+ '*d){assert(d->regions&&!d->mapped);d->regions=0;}\n'
  '#define RTMP_DRIVER_PCI_CSR_SET(ad,addr) do{assert((ad)&&(addr)==1);}while(0)\n'
  '#define RTMP_DRIVER_PCIE_INIT(ad,cfg,dev) '
  'do{assert((dev)==&pci);((RTMP_ADAPTER*)(ad))->OpMode=OPMODE_AP;((RTMP_ADAPTER*)(ad))->hif_type=HIF_MT;(cfg)->pci_init_succeed=!fail_pcie;if(!fail_pcie)completed_device_init(ad);}while(0)\n'
@@ -543,6 +584,7 @@ PREFIX = ('\n'
  'static int RtmpOSNetDevAttach(ULONG mode,struct net_device *n,RTMP_OS_NETDEV_OP_HOOK '
  '*hook){(void)mode;(void)hook;assert(n==&net);return fail_attach?-EIO:0;}\n'
  'static void RtmpOSNetDevFree(struct net_device *n){assert(n==&net);n->adapter=NULL;}\n')
+
 SUFFIX = ('\n'
  'static POS_COOKIE cookie_new(void){POS_COOKIE '
  'c=NULL;os_alloc_mem(NULL,(UCHAR**)&c,sizeof(*c));assert(c);memset(c,0,sizeof(*c));c->pci_dev=&pci;return '
@@ -551,7 +593,8 @@ SUFFIX = ('\n'
  '*ctrl=ad->hdev_ctrl;assert(ctrl);ctrl->hif=&ad->PciHif;ctrl->cookie=ad->OS_Cookie;}\n'
  'static void emit(int '
  'result){printf("[%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d]\\n",result,live_heap(),locks_live,cookie_failure_preserved,early_publications,allocations_after_locks,pci.enabled,pci.regions,pci.mapped,pci.master,pci.drvdata!=NULL,unsafe_frees,hw_exits,owned_graph_retained,device_resource_releases);}\n'
- 'int main(int argc,char **argv){const char *name;int result=0;VOID *out=NULL;POS_COOKIE cookie=NULL;\n'
+ 'int main(int argc,char **argv){const char *name;int result=0;VOID *out=NULL;POS_COOKIE '
+ 'cookie=NULL;\n'
  ' assert(argc==2);name=argv[1];CASE_ADMISSION\n'
  ' '
  'expect_cookie=!strncmp(name,"ctor-",5)||!strncmp(name,"probe-",6)||!strncmp(name,"quarantined-",12)||!strncmp(name,"bcn-",4);\n'
@@ -566,9 +609,11 @@ SUFFIX = ('\n'
  'if(!strcmp(name,"bcn-noowner-tim-only"))assert(RTMPAllocateNdisPacket(ad,&info->tim_buf.TimPkt,NULL,0,NULL,MAX_BEACON_LENGTH)==NDIS_STATUS_SUCCESS);\n'
  '   '
  'if(!strcmp(name,"bcn-noowner-beacon-only"))assert(RTMPAllocateNdisPacket(ad,&info->BeaconPkt,NULL,0,NULL,MAX_BEACON_LENGTH)==NDIS_STATUS_SUCCESS);\n'
- '   result=bcn_buf_deinit(ad,info);assert(!info->BeaconPkt&&!info->tim_buf.TimPkt&&!info->pWdev);\n'
+ '   '
+ 'result=bcn_buf_deinit(ad,info);assert(!info->BeaconPkt&&!info->tim_buf.TimPkt&&!info->pWdev);\n'
  '   assert(result==TRUE&&!sem_checks&&locks_live==base_locks);\n'
- '   if(!strcmp(name,"bcn-noowner-repeat")){assert(bcn_buf_deinit(ad,info)==TRUE);assert(!sem_checks);}\n'
+ '   '
+ 'if(!strcmp(name,"bcn-noowner-repeat")){assert(bcn_buf_deinit(ad,info)==TRUE);assert(!sem_checks);}\n'
  '  }else{\n'
  '   initialized_hdev(ad);\n'
  '   '
@@ -595,16 +640,31 @@ SUFFIX = ('\n'
  '    if(!strcmp(name,"bcn-foreign-owner")){struct wifi_dev foreign={0};info->pWdev=&foreign;int '
  'calls=packet_calls;void '
  '*owner=info->BeaconPkt;result=bcn_buf_init(ad,wdev);assert(result==NDIS_STATUS_FAILURE&&info->pWdev==&foreign&&info->BeaconPkt==owner&&packet_calls==calls&&locks_live==base_locks+1);}\n'
- '    if(!strcmp(name,"bcn-missing-packet")){RTMPFreeNdisPacket(ad,info->BeaconPkt);info->BeaconPkt=NULL;int '
+ '    '
+ 'if(!strcmp(name,"bcn-missing-packet")){RTMPFreeNdisPacket(ad,info->BeaconPkt);info->BeaconPkt=NULL;int '
  'calls=packet_calls;result=bcn_buf_init(ad,wdev);assert(result==NDIS_STATUS_FAILURE&&info->BcnContentLockInitialized&&info->pWdev==wdev&&packet_calls==calls&&locks_live==base_locks+1);}\n'
  '    if(!strcmp(name,"bcn-post-hdev-exit")){hdev_resource_exit(ad->hdev_ctrl);assert(((struct '
  'hdev_ctrl*)ad->hdev_ctrl)->hif==NULL);}\n'
  '    if(!strcmp(name,"bcn-tim-only")||!strcmp(name,"bcn-both-packets")){\n'
  '     '
  'assert(RTMPAllocateNdisPacket(ad,&info->tim_buf.TimPkt,NULL,0,NULL,MAX_BEACON_LENGTH)==NDIS_STATUS_SUCCESS);\n'
- '     if(!strcmp(name,"bcn-tim-only")){RTMPFreeNdisPacket(ad,info->BeaconPkt);info->BeaconPkt=NULL;}\n'
+ '     '
+ 'if(!strcmp(name,"bcn-tim-only")){RTMPFreeNdisPacket(ad,info->BeaconPkt);info->BeaconPkt=NULL;}\n'
  '    }\n'
- '    if(!strcmp(name,"bcn-adapter-lock-order")){\n'
+ '    '
+ 'if(!strcmp(name,"bcn-all-slots-final-free")||!strcmp(name,"bcn-shrunk-count-final-free")||!strcmp(name,"bcn-empty-slot-repeat-final-free")){\n'
+ '     int packets=1;\n'
+ '     for(int slot=1;slot<3;slot++){\n'
+ '      if(slot==1&&!strcmp(name,"bcn-empty-slot-repeat-final-free")){\n'
+ '       assert(bcn_buf_deinit(ad,&ad->ApCfg.MBSSID[slot].wdev.bcn_buf)==TRUE);\n'
+ '       assert(bcn_buf_deinit(ad,&ad->ApCfg.MBSSID[slot].wdev.bcn_buf)==TRUE);\n'
+ '      '
+ '}else{assert(bcn_buf_init(ad,&ad->ApCfg.MBSSID[slot].wdev)==NDIS_STATUS_SUCCESS);packets++;}\n'
+ '     }\n'
+ '     ad->ApCfg.BssidNum=!strcmp(name,"bcn-shrunk-count-final-free")?1:3;\n'
+ '     '
+ 'RTMPFreeAdapter(ad);out=NULL;freed=1;assert(packet_frees==packets&&locks_live==0);result=0;\n'
+ '    }else if(!strcmp(name,"bcn-adapter-lock-order")){\n'
  '     RTMPFreeAdapter(ad);out=NULL;freed=1;assert(packet_frees==1&&locks_live==0);result=0;\n'
  '    }else{\n'
  '     int operation_status=result;assert(bcn_buf_deinit(ad,info)==TRUE);\n'
@@ -621,7 +681,8 @@ SUFFIX = ('\n'
  '  if(!freed){assert(!info->BcnContentLockInitialized);RTMPFreeAdapter(ad);out=NULL;}\n'
  ' }else\n'
  'if(!strncmp(name,"ctor-oom-",9)||!strcmp(name,"ctor-failure-retry")){\n'
- '  cookie=cookie_new();fail_at=!strcmp(name,"ctor-failure-retry")?4:atoi(name+9);watched_output=&out;\n'
+ '  '
+ 'cookie=cookie_new();fail_at=!strcmp(name,"ctor-failure-retry")?4:atoi(name+9);watched_output=&out;\n'
  '  result=RTMPAllocAdapterBlock(cookie,&out);assert(result!=NDIS_STATUS_SUCCESS&&out==NULL);\n'
  '  assert(cookie->pAd_va==0&&live_heap()==1&&locks_live==0);cookie_failure_preserved=1;\n'
  '  '
@@ -647,7 +708,8 @@ SUFFIX = ('\n'
  'RTMPFreeAdapter(ad);assert(live_heap()==before&&locks_live==16&&cookie->pAd_va==(LONG)ad);owned_graph_retained=1;ad->quarantined=0;}\n'
  '   '
  'if(!strcmp(name,"ctor-success-devctrl-free")){completed_device_init(ad);assert(RtmpRaDevCtrlExit(ad)==TRUE);}else '
- 'if(!strcmp(name,"quarantined-devctrl-free"))assert(RtmpRaDevCtrlExit(ad)==TRUE);else RTMPFreeAdapter(ad);\n'
+ 'if(!strcmp(name,"quarantined-devctrl-free"))assert(RtmpRaDevCtrlExit(ad)==TRUE);else '
+ 'RTMPFreeAdapter(ad);\n'
  '  }\n'
  ' }else '
  'if(!strcmp(name,"ctor-null-handle")){result=RTMPAllocAdapterBlock(NULL,&out);assert(result!=NDIS_STATUS_SUCCESS&&!out);\n'
@@ -682,7 +744,8 @@ SUFFIX = ('\n'
  '  RTMP_ADAPTER ad;memset(&ad,0,sizeof(ad));assert(wpf_config_init(&ad)==NDIS_STATUS_SUCCESS);\n'
  '  if(!strcmp(name,"wpf-existing-owner")){int n=allocation_attempt;void '
  '*owner=ad.wpf.pf[1].conf;result=wpf_config_init(&ad);assert(result!=NDIS_STATUS_SUCCESS&&allocation_attempt==n&&ad.wpf.pf[1].conf==owner);}\n'
- '  wpf_config_exit(&ad);wpf_config_exit(&ad);assert(config_initializations==config_exits&&live_heap()==0);\n'
+ '  '
+ 'wpf_config_exit(&ad);wpf_config_exit(&ad);assert(config_initializations==config_exits&&live_heap()==0);\n'
  ' }else '
  'if(!strcmp(name,"hdev-uninitialized-exit")||!strcmp(name,"hdev-initialized-exit")||!strcmp(name,"hdev-null-exit")){\n'
  '  RTMP_ADAPTER '
@@ -693,13 +756,12 @@ SUFFIX = ('\n'
  'assert(live_heap()==0&&locks_live==0&&unsafe_frees==0&&early_publications==0&&allocations_after_locks==0);\n'
  ' assert(!dep_live&&!ring_live&&!sem_live&&config_initializations==config_exits);\n'
  '#ifdef CONFIG_WIFI_MSI_SUPPORT\n'
- ' if(!strcmp(name,"probe-msi-owned-constructor-failure"))assert(msi_enables==1&&msi_disables==1);\n'
+ ' '
+ 'if(!strcmp(name,"probe-msi-owned-constructor-failure"))assert(msi_enables==1&&msi_disables==1);\n'
  ' if(!strcmp(name,"probe-msi-request-failure"))assert(msi_enables==1&&msi_disables==0);\n'
  '#endif\n'
  ' emit(result);return 0;\n'
  '}\n')
-
-SOURCE_FIELD_CONSTRAINTS = {'BOOLEAN BcnContentLockInitialized;': 'header'}
 
 def function(text,name):
     token=r'/\*[\s\S]*?\*/|//[^\n]*|"(?:\\[\s\S]|[^"\\])*"|\'(?:\\[\s\S]|[^\'\\])*\''

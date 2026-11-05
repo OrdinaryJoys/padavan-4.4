@@ -56,7 +56,7 @@ class ProbeOOMTests(unittest.TestCase):
                     r=subprocess.run([str(binary),name],check=True,capture_output=True,text=True,timeout=10)
                     self.assertEqual(json.loads(r.stdout),h.EXPECTED_ROWS[name])
     def test_complete_functions_and_explicit_variant_are_bound(self):
-        self.assertEqual(len(h.CASE_NAMES),75)
+        self.assertEqual(len(h.CASE_NAMES),78)
         self.assertEqual(set(h.CASE_NAMES),set(h.EXPECTED_ROWS))
         self.assertEqual(set(h.CASE_NAMES),{n for names in h.CASE_GROUPS.values()for n in names})
         self.assertTrue(all(type(row)is list and len(row)==len(h.FIELDS)and all(type(x)is int for x in row)for row in h.EXPECTED_ROWS.values()))
