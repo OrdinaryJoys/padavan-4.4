@@ -199,8 +199,11 @@ static struct workqueue_struct *allocate_queue(const char *name,int flags,int co
  q=calloc(1,sizeof(*q));assert(q);q->live=1;q->id=++created;live++;
  for(i=0;i<32;i++){if(!registry[i]){registry[i]=q;return q;}}
  abort();}
+#if (KERNEL_VERSION(2, 6, 37) <= LINUX_VERSION_CODE)
 #define alloc_workqueue(n,f,c) allocate_queue(n,f,c)
+#else
 static struct workqueue_struct *create_singlethread_workqueue(const char *n){legacy_calls++;return allocate_queue(n,0,1);}
+#endif
 static void init_work(struct work_struct *w,void(*fn)(struct work_struct *)){assert(!lock_depth&&!w->queued&&fn);w->func=fn;w->initialized=1;init_work_calls++;}
 #define INIT_WORK(w,f) init_work(w,f)
 static int queue_work(struct workqueue_struct *q,struct work_struct *w){assert(wq_depth==1&&q&&q->live&&w->initialized&&w->func);queue_calls++;

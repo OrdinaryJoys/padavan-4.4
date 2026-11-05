@@ -9,7 +9,8 @@ import cmwq_lifecycle_harness as h
 
 ROOT=Path(__file__).resolve().parents[1]
 FLAGS=['-std=gnu99','-Os','-pthread','-Wall','-Wextra','-Werror',
-       '-Wno-unused-function','-Wno-unused-parameter']
+       '-fno-strict-aliasing','-Wno-unused-parameter','-Wno-unused-variable',
+       '-Wno-unused-but-set-variable']
 
 
 class CmwqLifecycleTests(unittest.TestCase):
@@ -26,7 +27,8 @@ class CmwqLifecycleTests(unittest.TestCase):
         if 'Free Software Foundation'not in version or 'clang'in version.lower():raise AssertionError('True GNU GCC required')
         cls.binaries=[]
         for name,compiler,extra in (('clang-asan',shutil.which('clang'),['-fsanitize=address,undefined']),
-                                   ('gcc',gnu,[]),('gcc-old-kernel',gnu,['-DLINUX_VERSION_CODE=132644'])):
+                                   ('gcc',gnu,[]),('gcc-old-kernel',gnu,['-DLINUX_VERSION_CODE=132644']),
+                                   ('gcc-allocator-boundary',gnu,['-DLINUX_VERSION_CODE=132645'])):
             if not compiler:raise AssertionError('Required compiler absent: '+name)
             binary=cls.directory/name
             result=subprocess.run([compiler,*FLAGS,*extra,str(source),'-o',str(binary)],capture_output=True,text=True,timeout=60)
@@ -82,6 +84,10 @@ class CmwqLifecycleTests(unittest.TestCase):
         self.cases('worker-requeue-qm','worker-requeue-hif')
 
     def test_complete_bodies_declarations_and_case_contract_are_bound(self):
+        self.assertNotIn('-Wno-unused-function',FLAGS)
+        self.assertEqual(set(FLAGS),{'-std=gnu99','-Os','-pthread','-Wall','-Wextra','-Werror',
+                                   '-fno-strict-aliasing','-Wno-unused-parameter',
+                                   '-Wno-unused-variable','-Wno-unused-but-set-variable'})
         self.assertEqual(len(h.CASE_NAMES),42)
         self.assertEqual(len(set(h.CASE_NAMES)),42)
         self.assertEqual(set(h.EXPECTED_ROWS),set(h.CASE_NAMES))
