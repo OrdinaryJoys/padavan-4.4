@@ -2601,7 +2601,7 @@ INT RtmpRaDevCtrlInit(VOID *pAdSrc, RTMP_INF_TYPE infType)
 	BOOLEAN chip_data = FALSE;
 
 	if (pAd == NULL || pAd->hdev_ctrl == NULL ||
-		((struct hdev_ctrl *)pAd->hdev_ctrl)->cookie != NULL)
+		hc_get_os_cookie(pAd->hdev_ctrl) != NULL)
 		return NDIS_STATUS_FAILURE;
 #ifdef FW_DUMP_SUPPORT
 	pAd->fw_dump_max_size = MAX_FW_DUMP_SIZE;

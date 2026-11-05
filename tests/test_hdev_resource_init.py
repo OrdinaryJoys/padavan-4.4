@@ -66,11 +66,27 @@ class HdevResourceTests(unittest.TestCase):
         self.assertNotIn('CASE_ADMISSION',self.code);self.assertNotIn('SOURCE_DEFINITIONS',self.code);self.assertNotIn('FUNCTION_DECLARATIONS',self.code)
 
     def test_source_declarations_require_unique_complete_status_interface_and_return_types(self):
-        self.assertEqual(len(h.SOURCE_DECLARATIONS),11)
+        self.assertEqual(len(h.SOURCE_DECLARATIONS),12)
         for pattern,key in h.SOURCE_DECLARATIONS.items():
             found=re.findall(pattern,self.texts[key],re.M);self.assertEqual(len(found),1)
             bad=dict(self.texts);bad[key]=bad[key].replace(found[0],'')
             with self.subTest(pattern=pattern),self.assertRaises(ValueError):h.generate_source(bad)
+
+        # Consumer sees only a forward declaration; the private owner TU
+        # compiles the actual getter against its public declaration.
+        current,owner=opaque_resource_sources(self.texts)
+        self.assertNotRegex(current,r'struct hdev_ctrl\s*\{')
+        old_consumer,_=opaque_resource_sources(self.texts,True)
+        for cc,label in ((self.gnu,'gnu'),(self.clang,'clang')):
+            for unit,code in (('consumer',current),('owner',owner)):
+                src=self.directory/('opaque-'+label+'-'+unit+'.c');src.write_text(code)
+                built=subprocess.run([cc,*FLAGS,'-c',str(src),'-o',str(src.with_suffix('.o'))],capture_output=True,text=True,timeout=30)
+                self.assertEqual((built.returncode,built.stderr),(0,''),built.stderr)
+            src=self.directory/('opaque-'+label+'-old-consumer.c');src.write_text(old_consumer)
+            built=subprocess.run([cc,*FLAGS,'-c',str(src),'-o',str(src.with_suffix('.o'))],capture_output=True,text=True,timeout=30)
+            self.assertNotEqual(built.returncode,0)
+            self.assertIn('hdev_ctrl',built.stderr)
+            self.assertRegex(built.stderr,r'(undefined|incomplete)')
 
     def test_model_profile_keeps_current_ip_assembly_and_explicit_non_kernel_seams(self):
         for key in ('MT_MAC','IP_ASSEMBLY','RESOURCE_PRE_ALLOC','ring_DMA_hardware_seam','RTMPFreeAdapter_fixture_seam','RtmpDmaFinalReleaseCheck_fixture_seam'):
@@ -118,6 +134,49 @@ class HdevResourceTests(unittest.TestCase):
         self.assertTrue(all(row['execution']=='source-only-not-run'for row in proof.values()))
         with self.assertRaises(ValueError):h.generate_source(self.texts,'unreviewed')
         with self.assertRaises(ValueError):h.generate_source(dict(self.texts,extra=''))
+
+def opaque_resource_sources(texts, legacy_direct_field=False):
+    """Separate compile-only TUs check the public opaque accessor boundary.
+
+    The resource/MIPS model still uses an explicit inert getter seam. This
+    extra check compiles the actual full consumer and the actual getter body,
+    without counting the getter as an executed MIPS model function.
+    """
+    pattern=r'(?m)^VOID \*hc_get_os_cookie\(void \*hdev_ctrl\)\s*\{[^{}]*\}'
+    bodies=re.findall(pattern,texts['hdev']);decls=re.findall(r'VOID \*hc_get_os_cookie\(void \*hdev_ctrl\);',texts['hdev_header'])
+    if len(bodies)!=1 or len(decls)!=1:raise ValueError('Unique actual accessor definition and public declaration required')
+    owner='#define VOID void\nstruct hdev_ctrl {void *cookie;};\n'+decls[0]+'\n'+bodies[0]+'\n'
+    prefix=r'''
+#include <stddef.h>
+#define VOID void
+#define TRUE 1
+#define FALSE 0
+#define RESOURCE_PRE_ALLOC 1
+#define MTWF_LOG(...) ((void)0)
+#define WLAN_HOOK_INIT() ((void)0)
+typedef int INT,NDIS_STATUS,BOOLEAN;
+typedef unsigned int UINT32;
+struct hdev_ctrl;
+'''+h.declarations(texts)+r'''
+typedef struct _RTMP_ADAPTER {void *hdev_ctrl;RTMP_INF_TYPE infType;
+ int AutoRateLock,RscSemMemList,ChipID,HWVersion,FWVersion;} RTMP_ADAPTER,*PRTMP_ADAPTER;
+void model_sem_init(int *,int *);
+void model_sem_destroy(int *);
+#define RTMP_SEM_EVENT_INIT(p,l) model_sem_init((p),(l))
+#define RTMP_SEM_EVENT_DESTORY(p) model_sem_destroy((p))
+INT RtmpChipOpsRegister(RTMP_ADAPTER *,RTMP_INF_TYPE);
+void hdev_resource_exit(void *);
+void AsicGetMacInfo(RTMP_ADAPTER *,int *,int *,int *);
+NDIS_STATUS alloc_chip_cap_dep_data(RTMP_ADAPTER *);
+void free_chip_cap_dep_data(RTMP_ADAPTER *);
+NDIS_STATUS RTMPAllocTxRxRingMemory(RTMP_ADAPTER *);
+void RTMPFreeTxRxRingMemory(RTMP_ADAPTER *);
+'''
+    body=h.function(texts['init'],'RtmpRaDevCtrlInit')
+    needle='hc_get_os_cookie(pAd->hdev_ctrl) != NULL'
+    if body.count(needle)!=1:raise ValueError('Actual consumer must use public accessor')
+    if legacy_direct_field:body=body.replace(needle,'((struct hdev_ctrl *)pAd->hdev_ctrl)->cookie != NULL')
+    return prefix+body+'\n',owner
 
 
 if __name__=='__main__':unittest.main()

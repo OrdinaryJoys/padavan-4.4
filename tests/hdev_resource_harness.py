@@ -15,7 +15,9 @@ MODEL_VARIANT = {'role': 'private-prepublication-resource-inert-model',
  'ring_DMA_hardware_seam': True,
  'RtmpChipOpsHook_seam': True,
  'RTMPFreeAdapter_fixture_seam': True,
- 'RtmpDmaFinalReleaseCheck_fixture_seam': True}
+ 'RtmpDmaFinalReleaseCheck_fixture_seam': True,
+ 'hc_get_os_cookie_fixture_seam': True,
+ 'opaque_consumer_public_accessor_required': True}
 
 SOURCE_PATHS = {'wmm': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/embedded/hw_ctrl/hdev/wmm_ctrl.c',
  'basic': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/embedded/hw_ctrl/hdev/hdev_basic.c',
@@ -79,7 +81,8 @@ SOURCE_DECLARATIONS = {'(#define NDIS_STATUS_SUCCESS\\s+0x00)': 'os_header',
  '(#define GET_NUM_OF_TX_RING\\(_chipCap\\)[^\\n]+)': 'chip_header',
  '(#define GET_NUM_OF_RX_RING\\(_chipCap\\)[^\\n]+)': 'chip_header',
  '(INT hdev_resource_init\\(void \\*hdev_ctrl\\);)': 'hdev_header',
- '(INT HdevHwResourceInit\\(struct hdev_ctrl \\*ctrl\\);)': 'basic_header'}
+ '(INT HdevHwResourceInit\\(struct hdev_ctrl \\*ctrl\\);)': 'basic_header',
+ '(VOID \\*hc_get_os_cookie\\(void \\*hdev_ctrl\\);)': 'hdev_header'}
 
 CASE_NAMES = ('pci-oom-1',
  'pci-oom-2',
@@ -323,6 +326,8 @@ PREFIX = ('/* Private reduced-field source model; none of these structs is the k
  '}\n'
  'static void os_free_mem(void *p) {assert(p);for(int '
  'i=0;i<128;i++)if(owners[i]==p){owners[i]=NULL;live--;free(p);return;}abort();}\n'
+ '/* Public accessor boundary is an explicit inert seam in this model. */\n'
+ 'VOID *hc_get_os_cookie(void *p) {return ((struct hdev_ctrl *)p)->cookie;}\n'
  'static RTMP_CHIP_CAP *hc_get_chip_cap(void *p) {return &((struct hdev_ctrl *)p)->chip_cap;}\n'
  'static struct _PCI_HIF_T *hc_get_hif_ctrl(void *p) {return ((struct hdev_ctrl *)p)->hif;}\n'
  'static void lock_init(int *p) {assert(*p==0);*p=1;lock_live++;}\n'
