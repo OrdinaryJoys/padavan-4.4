@@ -39,7 +39,7 @@ class WifiBinIOTests(unittest.TestCase):
 
     def row(self,case,profile='current'):
         result=subprocess.run([str(self.binaries.get(profile,profile)),case],capture_output=True,
-                              text=True,timeout=5,env=dict(os.environ,ASAN_OPTIONS='detect_stack_use_after_return=1'))
+                              text=True,timeout=5,env=dict(os.environ,ASAN_OPTIONS=(os.environ.get('ASAN_OPTIONS', '').rstrip(':') + ':detect_stack_use_after_return=1').lstrip(':')))
         self.assertEqual((result.returncode,result.stderr),(0,''),result.stderr)
         return json.loads(result.stdout)
 
@@ -106,7 +106,7 @@ class WifiBinIOTests(unittest.TestCase):
                                 ('reset-multicard-long-name','stack-buffer-overflow')]:
             with self.subTest(case=case):
                 result=subprocess.run([str(self.binaries['baseline']),case],capture_output=True,text=True,timeout=5,
-                                      env=dict(os.environ,ASAN_OPTIONS='detect_stack_use_after_return=1'))
+                                      env=dict(os.environ,ASAN_OPTIONS=(os.environ.get('ASAN_OPTIONS', '').rstrip(':') + ':detect_stack_use_after_return=1').lstrip(':')))
                 self.assertNotEqual(result.returncode,0);self.assertIn(diagnostic,result.stderr)
                 self.assertNotIn(case,h.BASELINE_CASES)
         for case in ('load-multicard-long-name','write-multicard-long-name','reset-multicard-long-name'):
