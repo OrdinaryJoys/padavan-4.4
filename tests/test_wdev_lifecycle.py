@@ -1,5 +1,6 @@
 """Whole functions with controlled allocator, stop and registration faults."""
 import json
+import re
 from pathlib import Path
 import shutil,subprocess,tempfile,unittest
 import wdev_lifecycle_harness as h
@@ -35,6 +36,13 @@ class WdevLifecycleTests(unittest.TestCase):
     def test_vendor_ie_two_allocations_preserve_previous_chain_and_payload(self):self.cases('vie')
     def test_model_full_bodies_manifests_typed_rows_and_explicit_inert_scope(self):
         self.assertEqual(len(h.CASE_NAMES),54);self.assertEqual(len(h.BODY_ORDER),15)
+        # Legacy target GCC treats a local identifier named main as -Wmain.
+        # Retain the C entry point and forbid shadowing without weakening flags.
+        token=r'/\*[\s\S]*?\*/|//[^\n]*|"(?:\\[\s\S]|[^"\\])*"|\'(?:\\[\s\S]|[^\'\\])*\''
+        masked=re.sub(token,lambda m:' '*len(m.group()),self.generated)
+        self.assertEqual(re.findall(r'\bmain\b',masked),['main'])
+        self.assertIn('PNET_DEV root_netdev=NULL;',self.generated)
+
         self.assertEqual(set(h.CASE_NAMES),set(h.EXPECTED_ROWS));self.assertEqual(set(h.CASE_NAMES),{n for ns in h.CASE_GROUPS.values()for n in ns})
         self.assertEqual(len(h.function_manifest(self.texts)),15);self.assertEqual(len(h.source_only_manifest(self.texts)),7)
         for n,k in h.FUNCTION_SOURCES.items():self.assertEqual(self.generated.count(h.function(self.texts[k],n)),1)
