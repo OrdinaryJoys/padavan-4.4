@@ -637,6 +637,8 @@ int mt_wifi_init(VOID *pAdSrc, RTMP_STRING *pDefaultMac, RTMP_STRING *pHostName)
 #endif
 	return TRUE;
 err3:
+	if (!RtmpDmaTeardownCheck(pAd))
+		goto err0;
 	RTMP_SET_FLAG(pAd, fRTMP_ADAPTER_HALT_IN_PROGRESS);
 #ifdef CONFIG_AP_SUPPORT
 	if (ap_initialized)
@@ -648,6 +650,8 @@ err3:
 		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 			("%s: armed initialization unwind failed DMA idle check\n", __func__));
 err2:
+	if (!RtmpDmaResourcesMayRelease(pAd))
+		goto err0;
 	rtmp_sys_exit(pAd);
 err0:
 	RTMP_CLEAR_FLAG(pAd, fRTMP_ADAPTER_START_UP);
@@ -747,6 +751,8 @@ VOID RTMPDrvClose(VOID *pAdSrc, VOID *net_dev)
 	INT j;
 	struct customer_vendor_ie *ap_vendor_ie;
 #endif /* CUSTOMER_VENDOR_IE_SUPPORT */
+	if (!RtmpDmaTeardownCheck(pAd))
+		return;
 	prCtl = &pAd->MCUCtrl;
 #ifdef CONFIG_AP_SUPPORT
 #ifdef BG_FT_SUPPORT
@@ -816,7 +822,7 @@ VOID RTMPDrvClose(VOID *pAdSrc, VOID *net_dev)
 	/* Flush/join hardware command and SER workers while MCU/IRQ still live. */
 	HwCtrlExit(pAd);
 	/* A firmware restart acknowledgement is not a DMA drain barrier. */
-	if (NICRestartFirmware(pAd) != NDIS_STATUS_SUCCESS)
+	if (!RtmpDmaStopping(pAd) && NICRestartFirmware(pAd) != NDIS_STATUS_SUCCESS)
 		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 			("%s: firmware restart failed during close\n", __func__));
 
@@ -888,6 +894,7 @@ VOID RTMPDrvClose(VOID *pAdSrc, VOID *net_dev)
 		RTMP_OS_IRQ_RELEASE(pAd, net_dev);
 #endif /* RTMP_MAC_PCI */
 		RTMP_CLEAR_FLAG(pAd, fRTMP_ADAPTER_INTERRUPT_REGISTER_TO_OS);
+		pAd->dma_irq_registered = FALSE;
 	}
 
 #ifdef ERR_RECOVERY
@@ -917,8 +924,7 @@ VOID RTMPDrvClose(VOID *pAdSrc, VOID *net_dev)
 	RTMP_AllTimerListRelease(pAd);
 	/*remove hw related system info*/
 	if (WfSysPosExit(pAd) != NDIS_STATUS_SUCCESS)
-		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-			("%s: DMA teardown failed; outer close/remove remains unsafe\n", __func__));
+		return;
 	RTMP_CLEAR_FLAG(pAd, fRTMP_ADAPTER_HALT_IN_PROGRESS);
 #ifdef WLAN_SKB_RECYCLE
 	skb_queue_purge(&pAd->rx0_recycle);

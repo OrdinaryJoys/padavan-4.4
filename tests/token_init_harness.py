@@ -101,6 +101,9 @@ static void release(void *p) {
 #define RELEASE_NDIS_PACKET(a,p,s) do{(void)(a);(void)(p);(void)(s);abort();}while(0)
 typedef struct _RTMP_ADAPTER {VOID *PktTokenCb;int caps;} RTMP_ADAPTER;
 typedef struct {int inert;} HIF_INFO_T;
+/* This allocation-only model assumes the enclosing lifetime was acquired.
+ * The real MarkActive/get/arm failure boundary is exercised by quarantine. */
+static int RtmpDmaMarkActive(RTMP_ADAPTER *p){assert(p);return 1;}
 static void RT28XXDMADisable(RTMP_ADAPTER *p){assert(p);disables++;}
 static int RTMPInitTxRxRingMemory(RTMP_ADAPTER *p){assert(p);ring_calls++;return ring_status;}
 static void WfHifHwInit(RTMP_ADAPTER *p,HIF_INFO_T *i){assert(p&&i);hardware_calls++;}

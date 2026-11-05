@@ -109,6 +109,225 @@ struct rtnl_link_stats64 *RT28xx_get_ether_stats64(struct net_device *net_dev, s
  *		(3) BA Reordering:				ba_reordering_resource_release()
  * ========================================================================
  */
+#ifdef RTMP_PCI_SUPPORT
+/*
+ * Lock ordering: netdev RTNL -> dma_lifecycle_lock -> dma_state_lock.
+ * Workers only trylock dma_lifecycle_lock and never wait for it, so close
+ * may join them while holding it. PCI remove unlocks BEFORE unregister.
+ */
+VOID RtmpDmaLifecycleInit(RTMP_ADAPTER *pAd)
+{
+	POS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;
+
+	mutex_init(&obj->dma_lifecycle_lock);
+	spin_lock_init(&obj->dma_state_lock);
+}
+
+VOID RtmpDmaLifecycleLock(RTMP_ADAPTER *pAd)
+{
+	POS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;
+
+	mutex_lock(&obj->dma_lifecycle_lock);
+}
+
+VOID RtmpDmaLifecycleUnlock(RTMP_ADAPTER *pAd)
+{
+	POS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;
+
+	mutex_unlock(&obj->dma_lifecycle_lock);
+}
+
+BOOLEAN RtmpDmaQuarantined(RTMP_ADAPTER *pAd)
+{
+	return READ_ONCE(pAd->dma_quarantined);
+}
+
+BOOLEAN RtmpDmaStopping(RTMP_ADAPTER *pAd)
+{
+	if (!IS_PCI_INF(pAd) && !IS_PCIE_INF(pAd))
+		return FALSE;
+	return READ_ONCE(pAd->dma_stopping) || RtmpDmaQuarantined(pAd);
+}
+
+BOOLEAN RtmpDmaResourcesMayRelease(RTMP_ADAPTER *pAd)
+{
+	BOOLEAN allowed;
+	ULONG flags;
+
+	if (!IS_PCI_INF(pAd) && !IS_PCIE_INF(pAd))
+		return TRUE;
+	spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+	allowed = !pAd->dma_quarantined &&
+		(!pAd->dma_lifecycle_pinned || pAd->dma_quiesced);
+	spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+	return allowed;
+}
+
+/* Caller owns dma_lifecycle_lock before any first firmware/DMA setup. */
+BOOLEAN RtmpDmaLifecycleGet(RTMP_ADAPTER *pAd)
+{
+	POS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;
+	ULONG flags;
+
+	if (!IS_PCI_INF(pAd) && !IS_PCIE_INF(pAd))
+		return TRUE;
+	if (pAd->dma_removing || RtmpDmaQuarantined(pAd) ||
+		pAd->dma_lifecycle_pinned || !try_module_get(THIS_MODULE))
+		return FALSE;
+	/* Acquiring this reference after failed idle or in .remove is too late. */
+	pci_dev_get(obj->pci_dev);
+	spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+	pAd->dma_lifecycle_pinned = TRUE;
+	pAd->dma_stopping = FALSE;
+	pAd->dma_tasks_retired = FALSE;
+	pAd->dma_cmd_task_retired = FALSE;
+	pAd->dma_quiesced = TRUE; /* No HIF/DMA setup has run in this open yet. */
+	spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+	return TRUE;
+}
+
+BOOLEAN RtmpDmaMarkActive(RTMP_ADAPTER *pAd)
+{
+	BOOLEAN allowed;
+	ULONG flags;
+
+	if (!IS_PCI_INF(pAd) && !IS_PCIE_INF(pAd))
+		return TRUE;
+	spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+	allowed = pAd->dma_lifecycle_pinned && !pAd->dma_stopping && !pAd->dma_quarantined;
+	if (allowed)
+		pAd->dma_quiesced = FALSE;
+	spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+	return allowed;
+}
+
+VOID RtmpDmaLifecyclePut(RTMP_ADAPTER *pAd)
+{
+	POS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;
+	ULONG flags;
+	BOOLEAN release = FALSE;
+
+	if (!IS_PCI_INF(pAd) && !IS_PCIE_INF(pAd))
+		return;
+	spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+	if (pAd->dma_lifecycle_pinned && pAd->dma_quiesced &&
+		!pAd->dma_quarantined && !pAd->dma_running &&
+		!pAd->dma_irq_registered && !pAd->tm_qm_ops && !pAd->tm_hif_ops) {
+		pAd->dma_lifecycle_pinned = FALSE;
+		release = TRUE;
+	}
+	spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+	if (release) {
+		pci_dev_put(obj->pci_dev);
+		module_put(THIS_MODULE);
+	}
+}
+
+VOID RtmpDmaQuarantine(RTMP_ADAPTER *pAd)
+{
+	POS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;
+	ULONG flags;
+
+	if (!IS_PCI_INF(pAd) && !IS_PCIE_INF(pAd))
+		return;
+	spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+	pAd->dma_quarantined = TRUE;
+	pAd->dma_stopping = TRUE;
+	spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+	RTMP_SET_FLAG(pAd, fRTMP_ADAPTER_HALT_IN_PROGRESS);
+	RTMP_CLEAR_FLAG(pAd, fRTMP_ADAPTER_START_UP);
+	if (RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_INTERRUPT_ACTIVE))
+		RTMP_ASIC_INTERRUPT_DISABLE(pAd);
+	if (pAd->net_dev) {
+		netif_tx_stop_all_queues(pAd->net_dev);
+		netif_carrier_off(pAd->net_dev);
+	}
+	/* Containment only: clear-master and idle bits do not prove PCI drain.
+	 * Retain adapter, rings/token, IRQ, netdev, BAR, PCI and module owners.
+	 * No dev_hold is taken, since unregister waits for netdev references.
+	 */
+	pci_clear_master(obj->pci_dev);
+	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
+		("%s: retaining complete PCI DMA owner graph until independent recovery\n", __func__));
+}
+
+BOOLEAN RtmpDmaTeardownCheck(RTMP_ADAPTER *pAd)
+{
+	BOOLEAN done;
+	ULONG flags;
+
+	if (!IS_PCI_INF(pAd) && !IS_PCIE_INF(pAd))
+		return TRUE;
+	spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+	if (pAd->dma_quarantined) {
+		spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+		return FALSE;
+	}
+	pAd->dma_stopping = TRUE;
+	done = !pAd->dma_lifecycle_pinned || pAd->dma_quiesced;
+	spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+	if (done)
+		return TRUE;
+	RTMP_SET_FLAG(pAd, fRTMP_ADAPTER_HALT_IN_PROGRESS);
+	if (pAd->dma_irq_registered) {
+		if (RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_INTERRUPT_ACTIVE))
+			RTMP_ASIC_INTERRUPT_DISABLE(pAd);
+		synchronize_irq(pAd->net_dev->irq);
+	}
+	/* Joining execution contexts is not a DMA unmap. Keep queues and ops
+	 * available until the hardware stop has actually been accepted.
+	 */
+	if (tm_quiesce(pAd) != NDIS_STATUS_SUCCESS) {
+		RtmpDmaQuarantine(pAd);
+		return FALSE;
+	}
+	AndesDmaQuiesce(pAd);
+	if (!RT28XXDMAReset(pAd)) {
+		RtmpDmaQuarantine(pAd);
+		return FALSE;
+	}
+	spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+	pAd->dma_quiesced = TRUE;
+	spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+	return TRUE;
+}
+
+/* Caller holds RTNL. Preflight before any unregister or resource release. */
+BOOLEAN RtmpDmaBeginRemove(RTMP_ADAPTER *pAd)
+{
+	BOOLEAN allowed;
+
+	if (!IS_PCI_INF(pAd) && !IS_PCIE_INF(pAd))
+		return TRUE;
+	RtmpDmaLifecycleLock(pAd);
+	pAd->dma_removing = TRUE;
+	allowed = RtmpDmaTeardownCheck(pAd);
+	RtmpDmaLifecycleUnlock(pAd);
+	/* unregister later invokes the last-VIF close; do not free its owners here. */
+	return allowed;
+}
+
+/* Terminal gate for callers which are about to destroy the adapter itself.
+ * The caller must already have detached/drained netdev users (or never
+ * published the adapter).  A mutex cannot substitute for a pointer reference.
+ */
+BOOLEAN RtmpDmaFinalReleaseCheck(RTMP_ADAPTER *pAd)
+{
+	BOOLEAN allowed;
+
+	if (!IS_PCI_INF(pAd) && !IS_PCIE_INF(pAd))
+		return TRUE;
+	RtmpDmaLifecycleLock(pAd);
+	pAd->dma_removing = TRUE;
+	allowed = !pAd->dma_lifecycle_pinned && !pAd->dma_running &&
+		!pAd->dma_irq_registered && !pAd->tm_qm_ops && !pAd->tm_hif_ops &&
+		!RtmpDmaQuarantined(pAd);
+	RtmpDmaLifecycleUnlock(pAd);
+	return allowed;
+}
+
+#endif /* RTMP_PCI_SUPPORT */
+
 int main_virtual_if_close(IN struct net_device *net_dev)
 {
 	VOID *pAd = NULL;
@@ -168,7 +387,7 @@ int main_virtual_if_open(struct net_device *net_dev)
 	GET_PAD_FROM_NET_DEV(pAd, net_dev);
 
 	if (pAd == NULL)
-		return 0;
+		return -ENODEV;
 
 #ifdef IFUP_IN_PROBE
 
@@ -235,12 +454,26 @@ int mt_wifi_close(VOID *dev)
 
 	if (pAd == NULL)
 		return 0;
+	RtmpDmaLifecycleLock((RTMP_ADAPTER *)pAd);
+	if (RtmpDmaQuarantined((RTMP_ADAPTER *)pAd)) {
+		RtmpDmaLifecycleUnlock((RTMP_ADAPTER *)pAd);
+		return -EIO;
+	}
+	if (!((RTMP_ADAPTER *)pAd)->dma_running) {
+		RtmpDmaLifecycleUnlock((RTMP_ADAPTER *)pAd);
+		return 0;
+	}
 #ifdef CONFIG_INIT_RADIO_ONOFF
 	if(!((PRTMP_ADAPTER)pAd)->ApCfg.bRadioOn)
 		RTMP_CLEAR_FLAG(((PRTMP_ADAPTER)pAd), fRTMP_ADAPTER_DISABLE_DEQUEUEPACKET);
 #endif
 
 	RTMPDrvClose(pAd, net_dev);
+	if (!RtmpDmaResourcesMayRelease((RTMP_ADAPTER *)pAd)) {
+		RtmpDmaLifecycleUnlock((RTMP_ADAPTER *)pAd);
+		return -EIO;
+	}
+	((RTMP_ADAPTER *)pAd)->dma_running = FALSE;
 #ifdef RTMP_UDMA_SUPPORT
 	mt_udma_unregister(pAd);
 #endif/*RTMP_UDMA_SUPPORT*/
@@ -250,6 +483,8 @@ int mt_wifi_close(VOID *dev)
 	DiagProcExit(pAd);
 #endif
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("<=== mt_wifi_close\n"));
+	RtmpDmaLifecyclePut((RTMP_ADAPTER *)pAd);
+	RtmpDmaLifecycleUnlock((RTMP_ADAPTER *)pAd);
 	return 0;
 }
 
@@ -285,6 +520,11 @@ int mt_wifi_open(VOID *dev)
 		return -1;
 	}
 
+	RtmpDmaLifecycleLock((RTMP_ADAPTER *)pAd);
+	if (!RtmpDmaLifecycleGet((RTMP_ADAPTER *)pAd)) {
+		RtmpDmaLifecycleUnlock((RTMP_ADAPTER *)pAd);
+		return -EBUSY;
+	}
 	RTMP_DRIVER_MCU_SLEEP_CLEAR(pAd);
 	RTMP_DRIVER_OP_MODE_GET(pAd, &OpMode);
 #if WIRELESS_EXT >= 12
@@ -318,8 +558,12 @@ int mt_wifi_open(VOID *dev)
 	 *	so we must reqister IRQ hander here.
 	 */
 	retval = RtmpOSIRQRequest(net_dev);
-	if (retval != 0)
+	if (retval != 0) {
+		RtmpDmaLifecyclePut((RTMP_ADAPTER *)pAd);
+		RtmpDmaLifecycleUnlock((RTMP_ADAPTER *)pAd);
 		return retval;
+	}
+	((RTMP_ADAPTER *)pAd)->dma_irq_registered = TRUE;
 	/* Init IRQ parameters stored in pAd */
 	/*	rtmp_irq_init(pAd); */
 	RTMP_DRIVER_IRQ_INIT(pAd);
@@ -364,6 +608,7 @@ int mt_wifi_open(VOID *dev)
 	RTMP_DRIVER_CFG80211_START(pAd);
 #endif /* RT_CFG80211_SUPPORT */
 #endif /* LINUX */
+	((RTMP_ADAPTER *)pAd)->dma_running = TRUE;
 	RTMPDrvOpen(pAd);
 #ifdef VENDOR_FEATURE2_SUPPORT
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
@@ -381,9 +626,18 @@ int mt_wifi_open(VOID *dev)
 	DiagProcInit(pAd);
 #endif
 
+	RtmpDmaLifecycleUnlock((RTMP_ADAPTER *)pAd);
 	return retval;
 err:
+	if (!RtmpDmaTeardownCheck((RTMP_ADAPTER *)pAd)) {
+		RtmpDmaLifecycleUnlock((RTMP_ADAPTER *)pAd);
+		return -EIO;
+	}
 	RTMP_DRIVER_IRQ_RELEASE(pAd);
+	((RTMP_ADAPTER *)pAd)->dma_irq_registered = FALSE;
+	RTMP_CLEAR_FLAG(((RTMP_ADAPTER *)pAd), fRTMP_ADAPTER_INTERRUPT_REGISTER_TO_OS);
+	RtmpDmaLifecyclePut((RTMP_ADAPTER *)pAd);
+	RtmpDmaLifecycleUnlock((RTMP_ADAPTER *)pAd);
 	return -1;
 }
 
@@ -391,34 +645,38 @@ int virtual_if_up_handler(VOID *dev)
 {
 	struct net_device *net_dev = (struct net_device *)dev;
 	struct _RTMP_ADAPTER *pAd = NULL;
-	int retval = 0;
 	struct wifi_dev *wdev = NULL;
+	BOOLEAN was_up;
 
 	GET_PAD_FROM_NET_DEV(pAd, net_dev);
-
-	if (pAd == NULL) {
-		retval = -1;
-		return retval;
-	}
-
+	if (pAd == NULL)
+		return -1;
+	/* Linux virtual-open callers pair one successful INIT with this UP,
+	 * under RTNL and before their interface module reference is published.
+	 */
+	if (VIRTUAL_IF_NUM(pAd) == 0)
+		return -1;
 	wdev = wdev_search_by_netdev(pAd, net_dev);
-	if (wdev == NULL) {
-		MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s() wdev fail!!!\n", __func__));
-		retval = -1;
-		return retval;
-	}
+	if (wdev == NULL || RtmpDmaStopping(pAd) || READ_ONCE(pAd->dma_removing))
+		goto undo_init;
 
+	was_up = wdev->if_up_down_state;
 	wdev_if_up_down(pAd, wdev, TRUE);
+	if (wdev_do_open(wdev) == TRUE)
+		return 0;
 
-	if (VIRTUAL_IF_NUM(pAd) != 0) {
-		if (wdev_do_open(wdev) != TRUE) {
-			MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s() inf_up (idx %d) fail!!!\n",
-				__func__, wdev->wdev_idx));
-		}
-	}
-
-	return retval;
+	/* Current AP callbacks reject before publishing an open owner. Restore
+	 * only our state change; another live VIF keeps its count and resources.
+	 */
+	wdev_if_up_down(pAd, wdev, was_up);
+undo_init:
+	VIRTUAL_IF_DEC(pAd);
+	if (VIRTUAL_IF_NUM(pAd) == 0)
+		mt_wifi_close(pAd->net_dev);
+	/* Preserve the original open failure even if cleanup quarantined DMA. */
+	return -1;
 }
+
 
 int virtual_if_down_handler(VOID *dev)
 {
@@ -441,9 +699,20 @@ int virtual_if_down_handler(VOID *dev)
 		return retval;
 	}
 
+	if (VIRTUAL_IF_NUM(pAd) == 0) {
+		BOOLEAN allowed;
+		RtmpDmaLifecycleLock(pAd);
+		allowed = RtmpDmaTeardownCheck(pAd);
+		RtmpDmaLifecycleUnlock(pAd);
+		if (!allowed)
+			return -EIO;
+	}
+	if (RtmpDmaQuarantined(pAd))
+		return -EIO;
 	wdev_if_up_down(pAd, wdev, FALSE);
 
 	if (wdev_do_close(wdev) != TRUE) {
+		retval = -1;
 		MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s() inf_down (idx %d) fail!!!\n",
 			__func__, wdev->wdev_idx));
 	}
@@ -469,6 +738,8 @@ INT virtual_if_init_handler(VOID *dev)
 		return retval;
 	}
 
+	if (RtmpDmaQuarantined(pAd) || READ_ONCE(pAd->dma_removing))
+		return NDIS_STATUS_FAILURE;
 	if (VIRTUAL_IF_NUM(pAd) == 0) {
 		VIRTUAL_IF_INC(pAd);
 
@@ -504,7 +775,7 @@ INT virtual_if_deinit_handler(VOID *dev)
 	}
 
 	if (VIRTUAL_IF_NUM(pAd) == 0)
-		mt_wifi_close(pAd->net_dev);
+		return mt_wifi_close(pAd->net_dev);
 
 	return retval;
 }
@@ -823,6 +1094,8 @@ struct rtnl_link_stats64 *RT28xx_get_ether_stats64(struct net_device *net_dev, s
 
 BOOLEAN RtmpPhyNetDevExit(VOID *pAd, PNET_DEV net_dev)
 {
+	if (!RtmpDmaResourcesMayRelease((RTMP_ADAPTER *)pAd))
+		return FALSE;
 	/*remove cfg */
 	wpf_exit(pAd);
 #ifdef CONFIG_AP_SUPPORT

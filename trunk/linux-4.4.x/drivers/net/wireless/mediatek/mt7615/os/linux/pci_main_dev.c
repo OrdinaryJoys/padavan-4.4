@@ -233,6 +233,9 @@ static int DEVINIT rt_pci_probe(struct pci_dev *pdev, const struct pci_device_id
 	RT_CMD_PCIE_INIT pci_config;
 
 	MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_TRACE, ("===> %s()\n", __func__));
+	/* A prior failed remove retains drvdata and every dependent owner. */
+	if (pci_get_drvdata(pdev) != NULL)
+		return -EBUSY;
 	/*PCIDevInit============================================== */
 	/* wake up and enable device */
 	rv = pci_enable_device(pdev);
@@ -401,6 +404,7 @@ static int DEVINIT rt_pci_probe(struct pci_dev *pdev, const struct pci_device_id
 	return 0; /* probe ok */
 	/* --------------------------- ERROR HANDLE --------------------------- */
 err_out_free_netdev:
+	pci_set_drvdata(pdev, NULL);
 	RtmpOSNetDevFree(net_dev);
 #ifdef MEM_ALLOC_INFO_SUPPORT
 	{
@@ -471,13 +475,21 @@ static VOID DEVEXIT rt_pci_remove(struct pci_dev *pci_dev)
 		MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_TRACE, ("===> %s()\n", __func__));
 
 		if (pAd != NULL) {
+			rtnl_lock();
+			if (!RtmpDmaBeginRemove((RTMP_ADAPTER *)pAd)) {
+				rtnl_unlock();
+				return;
+			}
+			rtnl_unlock();
+			/* Unregister/Free all allocated net_device. */
+			if (!RtmpPhyNetDevExit(pAd, net_dev))
+				return;
 #ifdef WIFI_DIAG
 			DiagCtrlFree(pAd);
 #endif
-			/* Unregister/Free all allocated net_device. */
-			RtmpPhyNetDevExit(pAd, net_dev);
-			/* Free RTMP_ADAPTER related structures. */
-			RtmpRaDevCtrlExit(pAd);
+			/* Free RTMP_ADAPTER related structures only after last close. */
+			if (!RtmpRaDevCtrlExit(pAd))
+				return;
 			/* Suppress new bus mastering before releasing PCI resources.
 			 * This does not establish that in-flight PDMA has drained.
 			 */

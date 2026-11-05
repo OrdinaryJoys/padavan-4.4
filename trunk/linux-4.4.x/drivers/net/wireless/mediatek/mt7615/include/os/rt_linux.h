@@ -35,6 +35,7 @@ ARRISMOD_EXTERN(void, arris_event_send_hook, int, int, int, char *, int);
 #include <linux/version.h>
 #include <linux/kernel.h>
 #include <linux/spinlock.h>
+#include <linux/mutex.h>
 #include <linux/init.h>
 #include <linux/string.h>
 #include <linux/timer.h>
@@ -44,6 +45,7 @@ ARRISMOD_EXTERN(void, arris_event_send_hook, int, int, int, char *, int);
 #include <linux/pci.h>
 #include <linux/platform_device.h>
 #include <linux/netdevice.h>
+#include <linux/rtnetlink.h>
 #include <linux/etherdevice.h>
 #include <linux/skbuff.h>
 #include <linux/ethtool.h>
@@ -689,6 +691,10 @@ static inline void NdisGetSystemUpTime(ULONG *time)
  ***********************************************************************************/
 
 struct os_cookie {
+#ifdef RTMP_PCI_SUPPORT
+	struct mutex dma_lifecycle_lock;
+	spinlock_t dma_state_lock;
+#endif
 #ifdef RTMP_MAC_PCI
 	PPCI_DEV pci_dev;
 	PPCI_DEV parent_pci_dev;

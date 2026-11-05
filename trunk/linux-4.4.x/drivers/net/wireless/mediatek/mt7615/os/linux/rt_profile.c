@@ -1487,6 +1487,8 @@ VOID RTMPFreeAdapter(VOID *pAdSrc)
 	POS_COOKIE os_cookie;
 	struct _PCI_HIF_T *hif;
 
+	if (pAd == NULL || !RtmpDmaFinalReleaseCheck(pAd))
+		return;
 #ifdef MULTI_INF_SUPPORT
 	multi_inf_adapt_unreg((VOID *) pAd);
 #endif /* MULTI_INF_SUPPORT */

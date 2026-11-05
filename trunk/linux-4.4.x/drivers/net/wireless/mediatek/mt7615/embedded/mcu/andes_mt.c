@@ -30,7 +30,7 @@ static VOID AndesMTFillTxDHeader(struct cmd_msg *msg, PNDIS_PACKET net_pkt);
 
 
 #if defined(RTMP_PCI_SUPPORT) || defined(RTMP_RBUS_SUPPORT)
-INT32 AndesMTPciKickOutCmdMsg(PRTMP_ADAPTER pAd, struct cmd_msg *msg)
+static INT32 AndesMTPciKickOutCmdMsgOwned(PRTMP_ADAPTER pAd, struct cmd_msg *msg)
 {
 	int ret = NDIS_STATUS_SUCCESS;
 	unsigned long flags = 0;
@@ -119,8 +119,28 @@ INT32 AndesMTPciKickOutCmdMsg(PRTMP_ADAPTER pAd, struct cmd_msg *msg)
 	return ret;
 }
 
+/* Serialize actual packet/descriptor publication with the terminal stop latch. */
+INT32 AndesMTPciKickOutCmdMsg(PRTMP_ADAPTER pAd, struct cmd_msg *msg)
+{
+#if defined(LINUX) && defined(RTMP_PCI_SUPPORT)
+	if (IS_PCI_INF(pAd) || IS_PCIE_INF(pAd)) {
+		ULONG flags;
+		INT32 ret;
+		spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+		if (!pAd->dma_lifecycle_pinned || pAd->dma_stopping || pAd->dma_quarantined) {
+			spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+			return NDIS_STATUS_FAILURE;
+		}
+		ret = AndesMTPciKickOutCmdMsgOwned(pAd, msg);
+		spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+		return ret;
+	}
+#endif
+	return AndesMTPciKickOutCmdMsgOwned(pAd, msg);
+}
+
 #if defined(MT7615) || defined(MT7622) || defined(P18) || defined(MT7663)
-INT32 AndesMTPciKickOutCmdMsgFwDlRing(PRTMP_ADAPTER pAd, struct cmd_msg *msg)
+static INT32 AndesMTPciKickOutCmdMsgFwDlRingOwned(PRTMP_ADAPTER pAd, struct cmd_msg *msg)
 {
 	int ret = NDIS_STATUS_SUCCESS;
 	unsigned long flags = 0;
@@ -140,7 +160,7 @@ INT32 AndesMTPciKickOutCmdMsgFwDlRing(PRTMP_ADAPTER pAd, struct cmd_msg *msg)
 	struct _PCI_HIF_T *hif = hc_get_hif_ctrl(pAd->hdev_ctrl);
 
 	if (!OS_TEST_BIT(MCU_INIT, &ctl->flags))
-		return -1;
+		return NDIS_STATUS_FAILURE;
 
 	pRing = (RTMP_RING *)(&(hif->FwDwloRing));
 	FreeNum = GET_FWDWLORING_FREENO(pRing);
@@ -205,6 +225,26 @@ INT32 AndesMTPciKickOutCmdMsgFwDlRing(PRTMP_ADAPTER pAd, struct cmd_msg *msg)
 	HIF_IO_WRITE32(pAd, pRing->hw_cidx_addr, pRing->TxCpuIdx);
 	RTMP_SPIN_UNLOCK_IRQRESTORE(&pRing->RingLock, &flags);
 	return ret;
+}
+
+/* Serialize actual packet/descriptor publication with the terminal stop latch. */
+INT32 AndesMTPciKickOutCmdMsgFwDlRing(PRTMP_ADAPTER pAd, struct cmd_msg *msg)
+{
+#if defined(LINUX) && defined(RTMP_PCI_SUPPORT)
+	if (IS_PCI_INF(pAd) || IS_PCIE_INF(pAd)) {
+		ULONG flags;
+		INT32 ret;
+		spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+		if (!pAd->dma_lifecycle_pinned || pAd->dma_stopping || pAd->dma_quarantined) {
+			spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+			return NDIS_STATUS_FAILURE;
+		}
+		ret = AndesMTPciKickOutCmdMsgFwDlRingOwned(pAd, msg);
+		spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+		return ret;
+	}
+#endif
+	return AndesMTPciKickOutCmdMsgFwDlRingOwned(pAd, msg);
 }
 #endif /* defined(MT7615) || defined(MT7622) || defined(P18) || defined(MT7663) */
 #endif /* defined(RTMP_PCI_SUPPORT) || defined(RTMP_RBUS_SUPPORT) */

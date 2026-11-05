@@ -196,6 +196,9 @@ VOID AndesForceFreeCmdMsg(struct cmd_msg *msg)
 	OS_SPIN_UNLOCK_IRQRESTORE(&ctl->msg_lock, &flags);
 free_memory:
 
+	if (ad && msg->retry_pkt && msg->retry_pkt != msg->net_pkt)
+		RTMPFreeNdisPacket(ad, msg->retry_pkt);
+	msg->retry_pkt = NULL;
 	if (ad && msg->net_pkt)
 		RTMPFreeNdisPacket(ad, msg->net_pkt);
 
@@ -524,7 +527,7 @@ VOID AndesCmdMsgBh(unsigned long param)
 
 
 
-VOID AndesBhSchedule(RTMP_ADAPTER *ad)
+static VOID AndesBhScheduleOwned(RTMP_ADAPTER *ad)
 {
 	struct MCU_CTRL *ctl = &ad->MCUCtrl;
 
@@ -543,6 +546,32 @@ VOID AndesBhSchedule(RTMP_ADAPTER *ad)
 	}
 }
 
+VOID AndesBhSchedule(RTMP_ADAPTER *ad)
+{
+#if defined(LINUX) && defined(RTMP_PCI_SUPPORT)
+	if (IS_PCI_INF(ad) || IS_PCIE_INF(ad)) {
+		ULONG flags;
+		spin_lock_irqsave(&((POS_COOKIE)ad->OS_Cookie)->dma_state_lock, flags);
+		if (!ad->dma_stopping && !ad->dma_quarantined)
+			AndesBhScheduleOwned(ad);
+		spin_unlock_irqrestore(&((POS_COOKIE)ad->OS_Cookie)->dma_state_lock, flags);
+		return;
+	}
+#endif
+	AndesBhScheduleOwned(ad);
+}
+
+VOID AndesDmaQuiesce(RTMP_ADAPTER *ad)
+{
+	struct MCU_CTRL *ctl = &ad->MCUCtrl;
+
+	if (ad->dma_cmd_task_retired || !OS_TEST_BIT(MCU_INIT, &ctl->flags))
+		return;
+	ad->dma_cmd_task_retired = TRUE;
+	RTMP_OS_TASKLET_KILL(&ctl->cmd_msg_task);
+}
+
+
 
 VOID AndesCleanupCmdMsg(RTMP_ADAPTER *ad, DL_LIST *list)
 {
@@ -557,11 +586,21 @@ VOID AndesCleanupCmdMsg(RTMP_ADAPTER *ad, DL_LIST *list)
 	DlListForEachSafe(msg, msg_tmp, list, struct cmd_msg, list) {
 		_AndesUnlinkCmdMsg(msg, list);
 
-		/*If need wait, clean up need to trigger complete for andes send cmd to free msg*/
-		if (IS_CMD_MSG_NEED_SYNC_WITH_FW_FLAG_SET(msg))
-			RTMP_OS_EXIT_COMPLETION(&msg->ack_done);
-		else
+		/* A completed sender transferred metadata ownership to tx_doneq.
+		 * Pending synchronous queues still belong to their waiting sender.
+		 */
+		if (IS_CMD_MSG_NEED_SYNC_WITH_FW_FLAG_SET(msg) && list != &ctl->tx_doneq) {
+			if (list == &ctl->txq) {
+				msg->state = tx_kickout_fail;
+				msg->retry_times = 0;
+			}
+			RTMP_OS_COMPLETE(&msg->ack_done);
+		} else if (list == &ctl->txq) {
+			/* Pending txq packets have never acquired a ring/DMA owner. */
+			AndesForceFreeCmdMsg(msg);
+		} else {
 			AndesFreeCmdMsg(msg);
+		}
 	}
 	DlListInit(list);
 	if (lock)
@@ -693,22 +732,67 @@ VOID AndesCtrlExit(RTMP_ADAPTER *pAd)
 }
 
 
-static INT32 AndesDequeueAndKickOutCmdMsgs(RTMP_ADAPTER *ad)
+/* A synchronous sender retains the message until its completion is consumed.
+ * A shared queue pump must never free another sender's waiting object.  This
+ * helper is only for a command rejected BEFORE any ring/DMA publication.
+ */
+static VOID AndesRejectUnpublishedCmdMsg(struct cmd_msg *msg, BOOLEAN allow_retry)
+{
+	if (IS_CMD_MSG_NEED_SYNC_WITH_FW_FLAG_SET(msg)) {
+		msg->state = tx_kickout_fail;
+		if (!allow_retry)
+			msg->retry_times = 0;
+		RTMP_OS_COMPLETE(&msg->ack_done);
+	} else {
+		AndesForceFreeCmdMsg(msg);
+	}
+}
+
+/* Take only the caller's queued object.  No sender may pump another sender's
+ * pre-publication message while its owner starts a completion timeout.  This
+ * also safely tolerates controller cleanup having already unlinked it.
+ */
+static BOOLEAN AndesTakeQueuedCmdMsg(struct MCU_CTRL *ctl, DL_LIST *list,
+	struct cmd_msg *pending)
+{
+	NDIS_SPIN_LOCK *lock = AndesGetSpinLock(ctl, list);
+	struct cmd_msg *entry;
+	ULONG flags;
+	BOOLEAN found = FALSE;
+
+	if (!lock)
+		return FALSE;
+	RTMP_SPIN_LOCK_IRQSAVE(lock, &flags);
+	DlListForEach(entry, list, struct cmd_msg, list) {
+		if (entry == pending) {
+			_AndesUnlinkCmdMsg(entry, list);
+			found = TRUE;
+			break;
+		}
+	}
+	RTMP_SPIN_UNLOCK_IRQRESTORE(lock, &flags);
+	return found;
+}
+
+static INT32 AndesDequeueAndKickOutCmdMsgs(RTMP_ADAPTER *ad, struct cmd_msg *pending)
 {
 	struct cmd_msg *msg = NULL;
 	VOID *net_pkt = NULL;
 	struct MCU_CTRL *ctl = &ad->MCUCtrl;
-	int ret = NDIS_STATUS_SUCCESS;
+	int ret = NDIS_STATUS_FAILURE;
 	struct _RTMP_CHIP_OP *chip_ops = hc_get_chip_ops(ad->hdev_ctrl);
 
-	while ((msg = AndesDequeueCmdMsg(ctl, &ctl->txq)) != NULL) {
-		if (!RTMP_TEST_FLAG(ad, fRTMP_ADAPTER_MCU_SEND_IN_BAND_CMD)     ||
+	if (!AndesTakeQueuedCmdMsg(ctl, &ctl->txq, pending))
+		return NDIS_STATUS_FAILURE;
+	msg = pending;
+	do {
+		if (RtmpDmaStopping(ad) ||
+			!RTMP_TEST_FLAG(ad, fRTMP_ADAPTER_MCU_SEND_IN_BAND_CMD)     ||
 			RTMP_TEST_FLAG(ad, fRTMP_ADAPTER_NIC_NOT_EXIST)         ||
 			RTMP_TEST_FLAG(ad, fRTMP_ADAPTER_SUSPEND)) {
-			if (!IS_CMD_MSG_NEED_SYNC_WITH_FW_FLAG_SET(msg))
-				AndesForceFreeCmdMsg(msg);
-
-			continue;
+			AndesRejectUnpublishedCmdMsg(msg, FALSE);
+			ret = NDIS_STATUS_FAILURE;
+			break;
 		}
 
 		net_pkt = (VOID *)msg->net_pkt;
@@ -738,12 +822,17 @@ static INT32 AndesDequeueAndKickOutCmdMsgs(RTMP_ADAPTER *ad)
 			MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 					 ("kick out msg fail\n"));
 
-			if (ret == NDIS_STATUS_FAILURE)
-				AndesForceFreeCmdMsg(msg);
+			if (ret == NDIS_STATUS_FAILURE) {
+				AndesRejectUnpublishedCmdMsg(msg, !RtmpDmaStopping(ad));
+				break;
+			}
 
+			/* Other errors may follow publication to ackq/the DMA ring.
+			 * Preserve that ownership for completion/controller cleanup.
+			 */
 			break;
 		}
-	}
+	} while (FALSE);
 
 	AndesBhSchedule(ad);
 	return ret;
@@ -772,6 +861,11 @@ INT32 AndesSendCmdMsg(PRTMP_ADAPTER ad, struct cmd_msg *msg)
 #endif
 #endif
 
+	/* The send API consumes an unqueued message on every admission failure. */
+	if (RtmpDmaStopping(ad)) {
+		AndesForceFreeCmdMsg(msg);
+		return NDIS_STATUS_FAILURE;
+	}
 	if (in_interrupt() && IS_CMD_MSG_NEED_SYNC_WITH_FW_FLAG_SET(msg)) {
 		MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				 ("BUG: %s is called from invalid context\n",
@@ -815,8 +909,11 @@ INT32 AndesSendCmdMsg(PRTMP_ADAPTER ad, struct cmd_msg *msg)
 	AndesQueueTailCmdMsg(&ctl->txq, msg, tx_start);
 retransmit:
 
-	if (AndesDequeueAndKickOutCmdMsgs(ad) != NDIS_STATUS_SUCCESS)
-		goto bailout;
+	/* The caller kicks only its own queued message.  Synchronous failures
+	 * complete its waiting object; an error after publication retains the
+	 * ack/ring owner until completion or controller cleanup.
+	 */
+	ret = AndesDequeueAndKickOutCmdMsgs(ad, msg);
 
 	/* Wait for response */
 	if (is_cmd_need_wait) {
@@ -827,7 +924,13 @@ retransmit:
 
 		if (!OS_TEST_BIT(MCU_INIT, &ctl->flags)) {
 			/*If need wait, clean up will trigger complete for here to free msg*/
-			AndesFreeCmdMsg(msg);
+			ret = NDIS_STATUS_FAILURE;
+			if (msg->state == tx_kickout_fail)
+				AndesForceFreeCmdMsg(msg);
+			else {
+				AndesTakeQueuedCmdMsg(ctl, &ctl->ackq, msg);
+				AndesFreeCmdMsg(msg);
+			}
 			goto bailout;
 		}
 
@@ -855,9 +958,9 @@ retransmit:
 					 ("rx_done qlen = %d\n", AndesQueueLen(ctl, &ctl->rx_doneq)));
 
 			if (msg->state == wait_cmd_out_and_ack) {
-				AndesUnlinkCmdMsg(msg, &ctl->ackq);
+				AndesTakeQueuedCmdMsg(ctl, &ctl->ackq, msg);
 			} else if (msg->state == wait_ack)
-				AndesUnlinkCmdMsg(msg, &ctl->ackq);
+				AndesTakeQueuedCmdMsg(ctl, &ctl->ackq, msg);
 
 			MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 					 ("%s: msg state = %d\n", __func__, msg->state));
@@ -891,20 +994,28 @@ retransmit:
 #endif
 		} else {
 			if (msg->state == tx_kickout_fail) {
+				ret = NDIS_STATUS_FAILURE;
 				state = tx_kickout_fail;
-				msg->retry_times--;
+				if (msg->retry_times > 0)
+					msg->retry_times--;
 			} else {
+				ret = NDIS_STATUS_SUCCESS;
 				if (msg->state == wait_cmd_out_and_ack) {
-					AndesUnlinkCmdMsg(msg, &ctl->ackq);
+					AndesTakeQueuedCmdMsg(ctl, &ctl->ackq, msg);
 				} else if (msg->state == wait_ack)
-					AndesUnlinkCmdMsg(msg, &ctl->ackq);
+					AndesTakeQueuedCmdMsg(ctl, &ctl->ackq, msg);
 
 				state = tx_done;
 				msg->retry_times = 0;
 			}
 		}
 
-		if (is_cmd_need_wait && (msg->retry_times > 0)) {
+		if (RtmpDmaStopping(ad))
+			msg->retry_times = 0;
+		/* A failed clone cannot supply a retransmission packet. */
+		if (is_cmd_need_wait && (msg->retry_times > 0) && msg->retry_pkt) {
+			if (state == tx_kickout_fail)
+				RTMPFreeNdisPacket(ad, msg->net_pkt);
 			RTMP_OS_EXIT_COMPLETION(&msg->ack_done);
 			RTMP_OS_INIT_COMPLETION(&msg->ack_done);
 			msg->net_pkt = msg->retry_pkt;
@@ -913,7 +1024,14 @@ retransmit:
 			AndesQueueHeadCmdMsg(&ctl->txq, msg, state);
 			goto retransmit;
 		} else {
-			if (msg->attr.ext_type == EXT_CMD_STAREC_UPDATE) {
+			/* No ring owns an unpublished packet.  Its waiting sender
+			 * consumes both packet and any unused retry clone exactly once.
+			 */
+			if (state == tx_kickout_fail) {
+				AndesForceFreeCmdMsg(msg);
+				goto bailout;
+			}
+			if (ret == NDIS_STATUS_SUCCESS && msg->attr.ext_type == EXT_CMD_STAREC_UPDATE) {
 				/* Only StaRec update command read FW's response to minimize the impact.
 				 FW's response will become the final return value.
 				*/

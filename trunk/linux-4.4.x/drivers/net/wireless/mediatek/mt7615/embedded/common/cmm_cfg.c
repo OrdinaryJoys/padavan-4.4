@@ -1121,7 +1121,7 @@ INT RTMP_COM_IoctlHandle(
 
 		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_OFF,
 			("%s -> CMD_RTPRIV_IOCTL_VIRTUAL_INF_UP\n", __func__));
-		pInfConf->virtual_if_up_handler(pInfConf->operation_dev_p);
+		Status = pInfConf->virtual_if_up_handler(pInfConf->operation_dev_p);
 
 	}
 	break;
@@ -1133,8 +1133,12 @@ INT RTMP_COM_IoctlHandle(
 
 		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 			("%s -> CMD_RTPRIV_IOCTL_VIRTUAL_INF_DOWN\n", __func__));
+		if (VIRTUAL_IF_NUM(pAd) == 0) {
+			Status = NDIS_STATUS_FAILURE;
+			break;
+		}
 		VIRTUAL_IF_DEC(pAd);
-		pInfConf->virtual_if_down_handler(pInfConf->operation_dev_p);
+		Status = pInfConf->virtual_if_down_handler(pInfConf->operation_dev_p);
 	}
 	break;
 
@@ -1145,7 +1149,7 @@ INT RTMP_COM_IoctlHandle(
 
 		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 			("%s -> CMD_RTPRIV_IOCTL_VIRTUAL_INF_INIT\n", __func__));
-		pInfConf->virtual_if_init_handler(pInfConf->operation_dev_p);
+		Status = pInfConf->virtual_if_init_handler(pInfConf->operation_dev_p);
 
 	}
 	break;
@@ -1157,7 +1161,7 @@ INT RTMP_COM_IoctlHandle(
 
 		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 			("%s -> CMD_RTPRIV_IOCTL_VIRTUAL_INF_DEINIT\n", __func__));
-		pInfConf->virtual_if_deinit_handler(pInfConf->operation_dev_p);
+		Status = pInfConf->virtual_if_deinit_handler(pInfConf->operation_dev_p);
 	}
 	break;
 

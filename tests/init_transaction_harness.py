@@ -87,6 +87,7 @@ PREFIX=r'''
 typedef void VOID,*PVOID,*PNDIS_PACKET;typedef unsigned char UCHAR,UINT8,*PUCHAR;
 typedef unsigned short UINT16;typedef uint32_t UINT32;typedef unsigned long ULONG;
 typedef int INT,INT32,NTSTATUS,NDIS_STATUS,BOOLEAN,NDIS_SPIN_LOCK;typedef char RTMP_STRING;
+#define RtmpDmaResourcesMayRelease(p) ((void)(p),1)
 #define TRUE 1
 #define FALSE 0
 #define NDIS_STATUS_SUCCESS 0
@@ -131,7 +132,7 @@ typedef struct _RTMP_CHIP_CAP {int qm,qm_tm,hif_tm,tx_delay_support;UINT8 num_of
 typedef struct {int REC_BA_Status;struct reordering_list list;} BA_REC_ENTRY;
 typedef struct {BA_REC_ENTRY BARecEntry[MAX_LEN_OF_BA_REC_TABLE];} BA_TABLE;
 typedef struct {int inert;} MEASURE_REQ_TAB,TPC_REQ_TAB;
-typedef struct _RTMP_ADAPTER {struct tx_rx_ctl tr_ctl;HW_CTRL_T HwCtrl;RTMP_OS_TASK cmdQTask;
+typedef struct _RTMP_ADAPTER {int dma_tasks_retired;struct tx_rx_ctl tr_ctl;HW_CTRL_T HwCtrl;RTMP_OS_TASK cmdQTask;
  HwCmdQ CmdQ;int CmdQLock,BATabLock,cfg_lock,txs_lock,flags,WifiSysInfo,caps,fp_que_max_size;
  struct {int errRecovState,status,queues_retired,recovery_failed;} ErrRecoveryCtl;
  struct {void *pMeasureReqTab,*pTpcReqTab;int MeasureReqTabLock,TpcReqTabLock;} CommonCfg;

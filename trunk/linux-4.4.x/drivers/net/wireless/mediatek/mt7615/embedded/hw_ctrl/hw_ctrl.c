@@ -857,7 +857,7 @@ static void ErrRecoveryEndDriverRestore(RTMP_ADAPTER *pAd)
 #endif /* defined(RTMP_MAC_PCI) || defined(RTMP_MAC_USB) */
 }
 
-NTSTATUS HwRecoveryFromError(RTMP_ADAPTER *pAd)
+static NTSTATUS HwRecoveryFromErrorOwned(RTMP_ADAPTER *pAd)
 {
 	UINT32 Status;
 	UINT32 Stat;
@@ -905,7 +905,7 @@ NTSTATUS HwRecoveryFromError(RTMP_ADAPTER *pAd)
 			RtmpusecDelay(100 * 1000); /* delay for 100 ms to wait reset done. */
 			pAd->bPCIclkOff = FALSE;
 			/*re-call for change status to stop dma0*/
-			HwRecoveryFromError(pAd);
+			HwRecoveryFromErrorOwned(pAd);
 			MtAsicGetTsfTimeByDriver(pAd, &Highpart, &Lowpart, HW_BSSID_0);
 			pSerTimes[SER_TIME_ID_T1] = Lowpart;
 		} else {
@@ -1011,7 +1011,7 @@ NTSTATUS HwRecoveryFromError(RTMP_ADAPTER *pAd)
 			/*print out ser log timing*/
 			SerTimeLogDump(pAd);
 			ErrRecoveryEventReentry(pErrRecoveryCtrl);
-			HwRecoveryFromError(pAd);
+			HwRecoveryFromErrorOwned(pAd);
 		} else {
 			MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 					 ("!!! SER CurStat=%u Event=%x!!!\n", ErrRecoveryCurStat(pErrRecoveryCtrl), Status));
@@ -1030,6 +1030,28 @@ NTSTATUS HwRecoveryFromError(RTMP_ADAPTER *pAd)
 	}
 
 	return NDIS_STATUS_SUCCESS;
+}
+
+/* Never wait on the lifecycle mutex from a worker that close must join. */
+NTSTATUS HwRecoveryFromError(RTMP_ADAPTER *pAd)
+{
+#if defined(LINUX) && defined(RTMP_PCI_SUPPORT)
+	if (pAd && (IS_PCI_INF(pAd) || IS_PCIE_INF(pAd))) {
+		POS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;
+		NTSTATUS ret;
+
+		if (!mutex_trylock(&obj->dma_lifecycle_lock))
+			return NDIS_STATUS_FAILURE;
+		if (RtmpDmaStopping(pAd) || !pAd->dma_lifecycle_pinned) {
+			mutex_unlock(&obj->dma_lifecycle_lock);
+			return NDIS_STATUS_FAILURE;
+		}
+		ret = HwRecoveryFromErrorOwned(pAd);
+		mutex_unlock(&obj->dma_lifecycle_lock);
+		return ret;
+	}
+#endif
+	return HwRecoveryFromErrorOwned(pAd);
 }
 #endif /* ERR_RECOVERY */
 

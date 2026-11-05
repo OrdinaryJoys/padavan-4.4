@@ -2197,6 +2197,21 @@ static INT hif_set_WPDMA(RTMP_ADAPTER *pAd, INT32 TxRx, BOOLEAN enable, UINT8 WP
 #ifdef CONFIG_DELAY_INT
 	UINT32 Value;
 #endif
+#if defined(LINUX) && defined(RTMP_PCI_SUPPORT)
+	ULONG dma_flags = 0;
+	BOOLEAN dma_pci = IS_PCI_INF(pAd) || IS_PCIE_INF(pAd);
+
+	if (dma_pci) {
+		spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, dma_flags);
+		if (enable && (!pAd->dma_lifecycle_pinned ||
+			pAd->dma_stopping || pAd->dma_quarantined)) {
+			spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, dma_flags);
+			return FALSE;
+		}
+		if (enable)
+			pAd->dma_quiesced = FALSE;
+	}
+#endif
 	HIF_IO_READ32(pAd, MT_WPDMA_GLO_CFG, &GloCfg.word);
 	HW_IO_READ32(pAd, 0x7158, &Value1);
 	HW_IO_READ32(pAd, 0x7000, &Value2);
@@ -2331,6 +2346,10 @@ static INT hif_set_WPDMA(RTMP_ADAPTER *pAd, INT32 TxRx, BOOLEAN enable, UINT8 WP
 	HW_IO_WRITE32(pAd, 0x7000, Value2);
 #ifdef CONFIG_DELAY_INT
 	HIF_IO_WRITE32(pAd, MT_DELAY_INT_CFG, Value);
+#endif
+#if defined(LINUX) && defined(RTMP_PCI_SUPPORT)
+	if (dma_pci)
+		spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, dma_flags);
 #endif
 #define WPDMA_DISABLE -1
 

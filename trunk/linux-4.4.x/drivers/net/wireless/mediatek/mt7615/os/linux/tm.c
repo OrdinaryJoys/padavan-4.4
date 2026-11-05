@@ -190,7 +190,7 @@ static INT tm_wq_qm_exit(RTMP_ADAPTER *pAd)
 	return ret;
 }
 
-static INT tm_wq_qm_schedule_task(RTMP_ADAPTER *pAd, enum task_type type)
+static INT tm_wq_qm_schedule_taskOwned(RTMP_ADAPTER *pAd, enum task_type type)
 {
 	INT ret = NDIS_STATUS_SUCCESS;
 
@@ -213,7 +213,26 @@ static INT tm_wq_qm_schedule_task(RTMP_ADAPTER *pAd, enum task_type type)
 	return ret;
 }
 
-static INT tm_wq_hif_schedule_task(RTMP_ADAPTER *pAd, enum task_type type)
+static INT tm_wq_qm_schedule_task(RTMP_ADAPTER *pAd, enum task_type type)
+{
+#if defined(LINUX) && defined(RTMP_PCI_SUPPORT)
+	if (IS_PCI_INF(pAd) || IS_PCIE_INF(pAd)) {
+		ULONG flags;
+		INT ret;
+		spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+		if (pAd->dma_stopping || pAd->dma_quarantined) {
+			spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+			return NDIS_STATUS_FAILURE;
+		}
+		ret = tm_wq_qm_schedule_taskOwned(pAd, type);
+		spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+		return ret;
+	}
+#endif
+	return tm_wq_qm_schedule_taskOwned(pAd, type);
+}
+
+static INT tm_wq_hif_schedule_taskOwned(RTMP_ADAPTER *pAd, enum task_type type)
 {
 	INT ret = NDIS_STATUS_SUCCESS;
 	POS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;
@@ -261,8 +280,27 @@ static INT tm_wq_hif_schedule_task(RTMP_ADAPTER *pAd, enum task_type type)
 	return ret;
 }
 
+static INT tm_wq_hif_schedule_task(RTMP_ADAPTER *pAd, enum task_type type)
+{
+#if defined(LINUX) && defined(RTMP_PCI_SUPPORT)
+	if (IS_PCI_INF(pAd) || IS_PCIE_INF(pAd)) {
+		ULONG flags;
+		INT ret;
+		spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+		if (pAd->dma_stopping || pAd->dma_quarantined) {
+			spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+			return NDIS_STATUS_FAILURE;
+		}
+		ret = tm_wq_hif_schedule_taskOwned(pAd, type);
+		spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+		return ret;
+	}
+#endif
+	return tm_wq_hif_schedule_taskOwned(pAd, type);
+}
 
-static INT tm_wq_qm_schedule_task_on(RTMP_ADAPTER *pAd, INT cpu, enum task_type type)
+
+static INT tm_wq_qm_schedule_task_onOwned(RTMP_ADAPTER *pAd, INT cpu, enum task_type type)
 {
 	INT ret = NDIS_STATUS_SUCCESS;
 
@@ -284,7 +322,26 @@ static INT tm_wq_qm_schedule_task_on(RTMP_ADAPTER *pAd, INT cpu, enum task_type 
 	return ret;
 }
 
-static INT tm_wq_hif_schedule_task_on(RTMP_ADAPTER *pAd, INT cpu, enum task_type type)
+static INT tm_wq_qm_schedule_task_on(RTMP_ADAPTER *pAd, INT cpu, enum task_type type)
+{
+#if defined(LINUX) && defined(RTMP_PCI_SUPPORT)
+	if (IS_PCI_INF(pAd) || IS_PCIE_INF(pAd)) {
+		ULONG flags;
+		INT ret;
+		spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+		if (pAd->dma_stopping || pAd->dma_quarantined) {
+			spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+			return NDIS_STATUS_FAILURE;
+		}
+		ret = tm_wq_qm_schedule_task_onOwned(pAd, cpu, type);
+		spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+		return ret;
+	}
+#endif
+	return tm_wq_qm_schedule_task_onOwned(pAd, cpu, type);
+}
+
+static INT tm_wq_hif_schedule_task_onOwned(RTMP_ADAPTER *pAd, INT cpu, enum task_type type)
 {
 	INT ret = NDIS_STATUS_SUCCESS;
 	POS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;
@@ -330,6 +387,25 @@ static INT tm_wq_hif_schedule_task_on(RTMP_ADAPTER *pAd, INT cpu, enum task_type
 	}
 
 	return ret;
+}
+
+static INT tm_wq_hif_schedule_task_on(RTMP_ADAPTER *pAd, INT cpu, enum task_type type)
+{
+#if defined(LINUX) && defined(RTMP_PCI_SUPPORT)
+	if (IS_PCI_INF(pAd) || IS_PCIE_INF(pAd)) {
+		ULONG flags;
+		INT ret;
+		spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+		if (pAd->dma_stopping || pAd->dma_quarantined) {
+			spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+			return NDIS_STATUS_FAILURE;
+		}
+		ret = tm_wq_hif_schedule_task_onOwned(pAd, cpu, type);
+		spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+		return ret;
+	}
+#endif
+	return tm_wq_hif_schedule_task_onOwned(pAd, cpu, type);
 }
 
 struct tm_ops tm_wq_qm_ops = {
@@ -532,7 +608,7 @@ static INT tm_tasklet_hif_exit(RTMP_ADAPTER *pAd)
 	return ret;
 }
 
-static INT tm_tasklet_qm_schedule_task(RTMP_ADAPTER *pAd, enum task_type type)
+static INT tm_tasklet_qm_schedule_taskOwned(RTMP_ADAPTER *pAd, enum task_type type)
 {
 	INT ret = NDIS_STATUS_SUCCESS;
 
@@ -556,7 +632,26 @@ static INT tm_tasklet_qm_schedule_task(RTMP_ADAPTER *pAd, enum task_type type)
 	return ret;
 }
 
-static INT tm_tasklet_hif_schedule_task(RTMP_ADAPTER *pAd, enum task_type type)
+static INT tm_tasklet_qm_schedule_task(RTMP_ADAPTER *pAd, enum task_type type)
+{
+#if defined(LINUX) && defined(RTMP_PCI_SUPPORT)
+	if (IS_PCI_INF(pAd) || IS_PCIE_INF(pAd)) {
+		ULONG flags;
+		INT ret;
+		spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+		if (pAd->dma_stopping || pAd->dma_quarantined) {
+			spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+			return NDIS_STATUS_FAILURE;
+		}
+		ret = tm_tasklet_qm_schedule_taskOwned(pAd, type);
+		spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+		return ret;
+	}
+#endif
+	return tm_tasklet_qm_schedule_taskOwned(pAd, type);
+}
+
+static INT tm_tasklet_hif_schedule_taskOwned(RTMP_ADAPTER *pAd, enum task_type type)
 {
 	INT ret = NDIS_STATUS_SUCCESS;
 	POS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;
@@ -608,6 +703,25 @@ static INT tm_tasklet_hif_schedule_task(RTMP_ADAPTER *pAd, enum task_type type)
 	return ret;
 }
 
+static INT tm_tasklet_hif_schedule_task(RTMP_ADAPTER *pAd, enum task_type type)
+{
+#if defined(LINUX) && defined(RTMP_PCI_SUPPORT)
+	if (IS_PCI_INF(pAd) || IS_PCIE_INF(pAd)) {
+		ULONG flags;
+		INT ret;
+		spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+		if (pAd->dma_stopping || pAd->dma_quarantined) {
+			spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+			return NDIS_STATUS_FAILURE;
+		}
+		ret = tm_tasklet_hif_schedule_taskOwned(pAd, type);
+		spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+		return ret;
+	}
+#endif
+	return tm_tasklet_hif_schedule_taskOwned(pAd, type);
+}
+
 struct tm_ops tm_tasklet_qm_ops = {
 	.init = tm_tasklet_qm_init,
 	.exit = tm_tasklet_qm_exit,
@@ -657,12 +771,15 @@ INT tm_init(RTMP_ADAPTER *pAd)
 	return NDIS_STATUS_SUCCESS;
 }
 
-INT tm_exit(RTMP_ADAPTER *pAd)
+INT tm_quiesce(RTMP_ADAPTER *pAd)
 {
 	struct tm_ops *qm_ops = pAd->tm_qm_ops;
 	struct tm_ops *hif_ops = pAd->tm_hif_ops;
 	INT ret = NDIS_STATUS_SUCCESS, status;
 
+	if (pAd->dma_tasks_retired)
+		return NDIS_STATUS_SUCCESS;
+	pAd->dma_tasks_retired = TRUE;
 	if (hif_ops)
 		ret = hif_ops->exit(pAd);
 	if (qm_ops) {
@@ -670,7 +787,27 @@ INT tm_exit(RTMP_ADAPTER *pAd)
 		if (ret == NDIS_STATUS_SUCCESS)
 			ret = status;
 	}
+	/* Do not clear the ops: timers/late callers may still query them.
+	 * Their scheduling entries reject the terminal stopping latch.
+	 */
+	return ret;
+}
+
+INT tm_exit(RTMP_ADAPTER *pAd)
+{
+	struct tm_ops *qm_ops = pAd->tm_qm_ops;
+	struct tm_ops *hif_ops = pAd->tm_hif_ops;
+	INT ret = NDIS_STATUS_SUCCESS, status;
+
+	if (hif_ops && !pAd->dma_tasks_retired)
+		ret = hif_ops->exit(pAd);
+	if (qm_ops && !pAd->dma_tasks_retired) {
+		status = qm_ops->exit(pAd);
+		if (ret == NDIS_STATUS_SUCCESS)
+			ret = status;
+	}
 	pAd->tm_qm_ops = NULL;
 	pAd->tm_hif_ops = NULL;
+	pAd->dma_tasks_retired = FALSE;
 	return ret;
 }

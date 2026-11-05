@@ -11,11 +11,11 @@ SOURCE_ONLY_FUNCTION_SOURCES={'ApAutoChannelAtBootUp':'ap','APOverlappingBSSScan
 BODY_ORDER=('WfMcuInit','WfInit','rtmp_ap_init','mt_sys_ready','WfSysPosExit','mt_wifi_init','mt_wifi_open')
 CASE_NAMES=('sys-failure','top-failure','hif-failure','mcu-sys-failure',
  'mcu-hw-failure','eeprom-failure','mac-failure','phy-failure','mlme-failure',
- 'ap-arm-failure','ready-arm-failure','success','unwind-busy-residual','open-irq-failure','open-mlme-failure','open-success')
+ 'ap-arm-failure','ready-arm-failure','success','unwind-busy-retained','open-irq-failure','open-mlme-failure','open-success')
 FIELDS=('result','flags','sys_live','hif_live','mcu_live','eeprom_live',
  'mlme_live','ap_live','tm_live','qm_live','tr_live','ser_live','armed',
  'invalid_operations','unsafe_hif_cleanup','sys_exits','event_count','events...','irq_requests','irq_releases','irq_live','hw_live','mgmt_live','timers_live')
-EXPECTED_ROWS={'sys-failure': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0], 'top-failure': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 8, 1, 2, 20, 25, 26, 17, 21, 20, 0, 0, 0, 0, 0, 0], 'hif-failure': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 9, 1, 2, 3, 20, 25, 26, 17, 21, 20, 0, 0, 0, 0, 0, 0], 'mcu-sys-failure': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 13, 1, 2, 3, 4, 20, 25, 26, 17, 6, 20, 7, 21, 20, 0, 0, 0, 0, 0, 0], 'mcu-hw-failure': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 14, 1, 2, 3, 4, 5, 20, 25, 26, 17, 6, 20, 7, 21, 20, 0, 0, 0, 0, 0, 0], 'eeprom-failure': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 14, 1, 2, 3, 4, 5, 8, 20, 25, 26, 17, 6, 7, 21, 20, 0, 0, 0, 0, 0, 0], 'mac-failure': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 16, 1, 2, 3, 4, 5, 8, 10, 20, 25, 26, 17, 9, 6, 7, 21, 20, 0, 0, 0, 0, 0, 0], 'phy-failure': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 17, 1, 2, 3, 4, 5, 8, 10, 11, 20, 25, 26, 17, 9, 6, 7, 21, 20, 0, 0, 0, 0, 0, 0], 'mlme-failure': [0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 19, 1, 2, 3, 4, 5, 8, 10, 11, 12, 13, 20, 25, 26, 17, 9, 6, 7, 21, 20, 0, 0, 0, 0, 0, 0], 'ap-arm-failure': [0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 22, 1, 2, 3, 4, 5, 8, 10, 11, 12, 14, 15, 16, 13, 20, 25, 26, 17, 9, 6, 7, 21, 20, 0, 0, 0, 0, 0, 0], 'ready-arm-failure': [0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 23, 1, 2, 3, 4, 5, 8, 10, 11, 12, 14, 15, 15, 16, 13, 20, 25, 26, 17, 9, 6, 7, 21, 20, 0, 0, 0, 0, 0, 0], 'success': [1, 285212674, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 12, 1, 2, 3, 4, 5, 8, 10, 11, 12, 14, 15, 15, 0, 0, 0, 1, 1, 1], 'unwind-busy-residual': [0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 19, 1, 2, 3, 4, 5, 8, 10, 11, 12, 13, 20, 25, 26, 17, 9, 6, 7, 21, 20, 0, 0, 0, 0, 0, 0], 'open-mlme-failure': [-1, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 21, 22, 1, 2, 3, 4, 5, 8, 10, 11, 12, 13, 20, 25, 26, 17, 9, 6, 7, 21, 20, 23, 1, 1, 0, 0, 0, 0], 'open-success': [0, 285212674, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 14, 22, 1, 2, 3, 4, 5, 8, 10, 11, 12, 14, 15, 15, 24, 1, 0, 1, 1, 1, 1], 'open-irq-failure': [-16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 22, 1, 0, 0, 0, 0, 0]}
+EXPECTED_ROWS={'sys-failure': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0], 'top-failure': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 8, 1, 2, 20, 25, 26, 17, 21, 20, 0, 0, 0, 0, 0, 0], 'hif-failure': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 9, 1, 2, 3, 20, 25, 26, 17, 21, 20, 0, 0, 0, 0, 0, 0], 'mcu-sys-failure': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 13, 1, 2, 3, 4, 20, 25, 26, 17, 6, 20, 7, 21, 20, 0, 0, 0, 0, 0, 0], 'mcu-hw-failure': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 14, 1, 2, 3, 4, 5, 20, 25, 26, 17, 6, 20, 7, 21, 20, 0, 0, 0, 0, 0, 0], 'eeprom-failure': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 14, 1, 2, 3, 4, 5, 8, 20, 25, 26, 17, 6, 7, 21, 20, 0, 0, 0, 0, 0, 0], 'mac-failure': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 16, 1, 2, 3, 4, 5, 8, 10, 20, 25, 26, 17, 9, 6, 7, 21, 20, 0, 0, 0, 0, 0, 0], 'phy-failure': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 17, 1, 2, 3, 4, 5, 8, 10, 11, 20, 25, 26, 17, 9, 6, 7, 21, 20, 0, 0, 0, 0, 0, 0], 'mlme-failure': [0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 19, 1, 2, 3, 4, 5, 8, 10, 11, 12, 13, 20, 25, 26, 17, 9, 6, 7, 21, 20, 0, 0, 0, 0, 0, 0], 'ap-arm-failure': [0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 22, 1, 2, 3, 4, 5, 8, 10, 11, 12, 14, 15, 16, 13, 20, 25, 26, 17, 9, 6, 7, 21, 20, 0, 0, 0, 0, 0, 0], 'ready-arm-failure': [0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 23, 1, 2, 3, 4, 5, 8, 10, 11, 12, 14, 15, 15, 16, 13, 20, 25, 26, 17, 9, 6, 7, 21, 20, 0, 0, 0, 0, 0, 0], 'success': [1, 285212674, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 12, 1, 2, 3, 4, 5, 8, 10, 11, 12, 14, 15, 15, 0, 0, 0, 1, 1, 1], 'unwind-busy-retained': [0, 16777280, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 9, 1, 2, 3, 4, 5, 8, 10, 11, 12, 0, 0, 0, 1, 1, 1], 'open-mlme-failure': [-1, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 21, 22, 1, 2, 3, 4, 5, 8, 10, 11, 12, 13, 20, 25, 26, 17, 9, 6, 7, 21, 20, 23, 1, 1, 0, 0, 0, 0], 'open-success': [0, 285212674, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 14, 22, 1, 2, 3, 4, 5, 8, 10, 11, 12, 14, 15, 15, 24, 1, 0, 1, 1, 1, 1], 'open-irq-failure': [-16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 22, 1, 0, 0, 0, 0, 0]}
 SOURCE_DECLARATIONS={
  r'^#define NDIS_STATUS_SUCCESS\s+0x[0-9a-fA-F]+\s*$':'os_header',
  r'^#define NDIS_STATUS_FAILURE\s+0x[0-9a-fA-F]+\s*$':'os_header',
@@ -26,6 +26,7 @@ SOURCE_DECLARATIONS={
  r'^#define fRTMP_ADAPTER_INTERRUPT_REGISTER_TO_OS[^\n]*':'flags'}
 PREFIX=r'''
 #include <assert.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 typedef unsigned long ULONG;typedef unsigned int dma_addr_t,ra_dma_addr_t;
@@ -46,7 +47,7 @@ typedef struct {int ChListNum;} CHANNEL_CTRL;
 typedef struct {int ioctl_if,ioctl_if_type;} COOKIE,*POS_COOKIE;
 struct _RTMP_CHIP_CAP {int unused;};
 typedef struct _RTMP_ADAPTER {void *OS_Cookie,*hdev_ctrl,*net_dev;unsigned flags;
- int OpMode;unsigned char CurrentAddress[6];
+ int OpMode,dma_running,dma_irq_registered;unsigned char CurrentAddress[6];
  struct {struct {struct wifi_dev wdev;} MBSSID[1];} ApCfg;
  struct {int ucEDCCACtrl[2];} CommonCfg;
  struct {int Enabled[2];} OneSecMibBucket;
@@ -57,6 +58,7 @@ static char *mac,*hostname;static int irq_requests,irq_releases,irq_live;
 static struct _RTMP_CHIP_CAP cap;static CHANNEL_CTRL channels[2];
 static int hw_live,mgmt_live,timers_live;
 static int stage,busy,events[128],count,invalid,sys_live,hif_live,mcu_live,eeprom_live;
+static int lifetime_quarantined;
 static int mlme_live,ap_live,tm_live,qm_live,tr_live,ser_live,armed,unsafe_hif,sys_exits,rx_calls;
 static void event(int n){assert(count<128);events[count++]=n;}
 #define IS_HIF_TYPE(p,n) ((void)(p),(void)(n),1)
@@ -69,6 +71,15 @@ static void event(int n){assert(count<128);events[count++]=n;}
 #define OPSTATUS_CLEAR_FLAG(p,f) ((void)(p),(void)(f))
 #define RTMP_IRQ_ENABLE(p) ((void)(p))
 #define RTMP_ASIC_INTERRUPT_DISABLE(p) ((void)(p))
+/* Inert lifecycle seam: the full production graph is exercised by the
+ * separate dma_quarantine_harness, including module/PCI refs and real locks. */
+#define RtmpDmaLifecycleLock(p) ((void)(p))
+#define RtmpDmaLifecycleUnlock(p) ((void)(p))
+#define RtmpDmaLifecycleGet(p) ((void)(p),!lifetime_quarantined)
+#define RtmpDmaLifecyclePut(p) ((void)(p))
+static int RtmpDmaTeardownCheck(RTMP_ADAPTER *p){if(busy){lifetime_quarantined=1;
+ RTMP_SET_FLAG(p,fRTMP_ADAPTER_HALT_IN_PROGRESS);RTMP_CLEAR_FLAG(p,fRTMP_ADAPTER_START_UP);return 0;}return !lifetime_quarantined;}
+#define RtmpDmaResourcesMayRelease(p) ((void)(p),!lifetime_quarantined)
 static int HcGetBandByWdev(struct wifi_dev *p){(void)p;return 0;}
 static CHANNEL_CTRL *hc_get_channel_ctrl(void *p,int n){(void)p;return &channels[n];}
 static struct _RTMP_CHIP_CAP *hc_get_chip_cap(void *p){(void)p;return &cap;}
@@ -137,7 +148,7 @@ int main(int argc,char **argv){RTMP_ADAPTER ad;COOKIE cookie;const char *name;in
  else if(!strcmp(name,"mlme-failure"))stage=9;
  else if(!strcmp(name,"ap-arm-failure"))stage=10;
  else if(!strcmp(name,"ready-arm-failure"))stage=11;
- else if(!strcmp(name,"unwind-busy-residual")){stage=9;busy=1;}
+ else if(!strcmp(name,"unwind-busy-retained")){stage=9;busy=1;}
  if(!strncmp(name,"open-",5)){result=mt_wifi_open(&net);}else{result=mt_wifi_init(&ad,NULL,NULL);}
  printf("[%d,%u,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d",
  result,ad.flags,sys_live,hif_live,mcu_live,eeprom_live,mlme_live,ap_live,

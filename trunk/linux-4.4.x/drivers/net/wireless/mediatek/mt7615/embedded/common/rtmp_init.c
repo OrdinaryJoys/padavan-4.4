@@ -103,6 +103,7 @@ NDIS_STATUS RTMPAllocAdapterBlock(VOID *handle, VOID **ppAdapter)
 			initList(&pAd->RscTimerCreateList);
 			pAd->OS_Cookie = handle;
 			((POS_COOKIE)(handle))->pAd_va = (LONG)pAd;
+			RtmpDmaLifecycleInit(pAd);
 		}
 
 		if (RtmpOsStatsAlloc(&pAd->stats, &pAd->iw_stats) == FALSE) {
@@ -462,7 +463,7 @@ INT32 WfHifSysInit(RTMP_ADAPTER *pAd, HIF_INFO_T *pHifInfo)
 	NDIS_STATUS status;
 
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s()-->\n", __func__));
-	if (pAd->PktTokenCb != NULL)
+	if (pAd->PktTokenCb != NULL || !RtmpDmaMarkActive(pAd))
 		return NDIS_STATUS_FAILURE;
 	RT28XXDMADisable(pAd);
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s():Disable WPDMA\n", __func__));
@@ -499,14 +500,13 @@ INT32 WfHifSysExit(RTMP_ADAPTER *pAd)
 {
 	INT32 status = NDIS_STATUS_SUCCESS;
 
-	/* A successful stop/idle/reset must precede ring/token unmapping.
-	 * The legacy outer close/remove APIs still cannot retain all owners
-	 * after a failed stop; report that failure rather than claiming safety.
+	/* Fail closed before the first ring/token unmap. A failed stop retains
+	 * the whole PCI owner graph up to adapter/MMIO/module removal.
 	 */
-	if (!RT28XXDMAReset(pAd)) {
-		status = NDIS_STATUS_FAILURE;
-		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-			("%s: DMA stop/idle/reset failed; outer teardown is not quiesced\n", __func__));
+	if (!RtmpDmaTeardownCheck(pAd) ||
+		((!IS_PCI_INF(pAd) && !IS_PCIE_INF(pAd)) && !RT28XXDMAReset(pAd))) {
+		RtmpDmaQuarantine(pAd);
+		return NDIS_STATUS_FAILURE;
 	}
 	WLAN_HOOK_CALL(WLAN_HOOK_HIF_EXIT, pAd, NULL);
 #ifdef RESOURCE_PRE_ALLOC
@@ -2589,7 +2589,11 @@ BOOLEAN RtmpRaDevCtrlExit(IN VOID *pAdSrc)
 	INT index;
 #ifdef MULTIPLE_CARD_SUPPORT
 	extern UINT8  MC_CardUsed[MAX_NUM_OF_MULTIPLE_CARD];
+#endif
 
+	if (!RtmpDmaFinalReleaseCheck(pAd))
+		return FALSE;
+#ifdef MULTIPLE_CARD_SUPPORT
 	if ((pAd->MC_RowID >= 0) && (pAd->MC_RowID <= MAX_NUM_OF_MULTIPLE_CARD))
 		MC_CardUsed[pAd->MC_RowID] = 0; /* not clear MAC address*/
 

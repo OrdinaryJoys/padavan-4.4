@@ -39,7 +39,7 @@ PREFIX = r'''
 #define VOID void
 #define DEVEXIT
 typedef unsigned long ULONG;
-typedef struct fixture_adapter { int unused; } ADAPTER;
+typedef struct fixture_adapter { int unused; } ADAPTER,RTMP_ADAPTER;
 struct net_device { unsigned long base_addr; ADAPTER *adapter; };
 typedef struct net_device *PNET_DEV;
 struct pci_dev { struct net_device *data; int enabled, master; };
@@ -47,6 +47,9 @@ static struct pci_dev *active;
 static int events[64], count, netdev_live, adapter_live, dma_owned, dma_busy, invalid;
 static void event(int id) { assert(count < 64); events[count++] = id; }
 #define MTWF_LOG(...) do { } while (0)
+#define rtnl_lock() ((void)0)
+#define rtnl_unlock() ((void)0)
+static int RtmpDmaBeginRemove(RTMP_ADAPTER *ad){(void)ad;return !dma_busy;}
 #define GET_PAD_FROM_NET_DEV(p,n) do { (p) = (n)->adapter; } while (0)
 static struct net_device *pci_get_drvdata(struct pci_dev *p) { return p->data; }
 static void pci_set_drvdata(struct pci_dev *p, void *data) {
@@ -66,16 +69,18 @@ static void pci_disable_device(struct pci_dev *p) {
     if (!p->enabled)
         p->master = 0;
 }
-static void RtmpPhyNetDevExit(void *adapter, struct net_device *dev) {
+static int RtmpPhyNetDevExit(void *adapter, struct net_device *dev) {
     event(2);
     if (!adapter || !dev || !netdev_live)
         invalid++;
+    return 1;
 }
-static void RtmpRaDevCtrlExit(void *adapter) {
+static int RtmpRaDevCtrlExit(void *adapter) {
     event(3);
     if (!adapter || !adapter_live || dma_busy)
         invalid++;
     adapter_live = dma_owned = 0;
+    return 1;
 }
 static void RtmpOSNetDevDetach(struct net_device *dev) {
     event(9);

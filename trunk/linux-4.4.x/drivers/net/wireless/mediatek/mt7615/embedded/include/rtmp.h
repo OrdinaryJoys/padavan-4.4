@@ -5656,6 +5656,16 @@ typedef struct _BLACK_STA {
 */
 struct _RTMP_ADAPTER {
 	VOID *OS_Cookie;	/* save specific structure relative to OS */
+	/* PCI DMA owners outlive failed close/remove, including their module code. */
+	BOOLEAN dma_lifecycle_pinned;
+	BOOLEAN dma_quarantined;
+	BOOLEAN dma_stopping;
+	BOOLEAN dma_removing;
+	BOOLEAN dma_running;
+	BOOLEAN dma_quiesced;
+	BOOLEAN dma_irq_registered;
+	BOOLEAN dma_tasks_retired;
+	BOOLEAN dma_cmd_task_retired;
 	PNET_DEV net_dev;
 
 
@@ -11468,6 +11478,38 @@ INT Set_LongRetryLimit_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg);
 INT Set_ShortRetryLimit_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg);
 INT Set_AutoFallBack_Proc(RTMP_ADAPTER *pAd, RTMP_STRING *arg);
 VOID RT28XXDMADisable(RTMP_ADAPTER *pAd);
+#if defined(LINUX) && defined(RTMP_PCI_SUPPORT)
+VOID RtmpDmaLifecycleInit(RTMP_ADAPTER *pAd);
+VOID RtmpDmaLifecycleLock(RTMP_ADAPTER *pAd);
+VOID RtmpDmaLifecycleUnlock(RTMP_ADAPTER *pAd);
+BOOLEAN RtmpDmaLifecycleGet(RTMP_ADAPTER *pAd);
+BOOLEAN RtmpDmaMarkActive(RTMP_ADAPTER *pAd);
+VOID RtmpDmaLifecyclePut(RTMP_ADAPTER *pAd);
+BOOLEAN RtmpDmaTeardownCheck(RTMP_ADAPTER *pAd);
+BOOLEAN RtmpDmaResourcesMayRelease(RTMP_ADAPTER *pAd);
+BOOLEAN RtmpDmaQuarantined(RTMP_ADAPTER *pAd);
+BOOLEAN RtmpDmaStopping(RTMP_ADAPTER *pAd);
+VOID RtmpDmaQuarantine(RTMP_ADAPTER *pAd);
+BOOLEAN RtmpDmaBeginRemove(RTMP_ADAPTER *pAd);
+BOOLEAN RtmpDmaFinalReleaseCheck(RTMP_ADAPTER *pAd);
+INT tm_quiesce(RTMP_ADAPTER *pAd);
+VOID AndesDmaQuiesce(RTMP_ADAPTER *pAd);
+#else
+#define RtmpDmaLifecycleInit(_pAd) do { } while (0)
+#define RtmpDmaLifecycleLock(_pAd) do { } while (0)
+#define RtmpDmaLifecycleUnlock(_pAd) do { } while (0)
+#define RtmpDmaLifecycleGet(_pAd) TRUE
+#define RtmpDmaMarkActive(_pAd) TRUE
+#define RtmpDmaLifecyclePut(_pAd) do { } while (0)
+#define RtmpDmaTeardownCheck(_pAd) TRUE
+#define RtmpDmaResourcesMayRelease(_pAd) TRUE
+#define RtmpDmaQuarantined(_pAd) FALSE
+#define RtmpDmaStopping(_pAd) FALSE
+#define RtmpDmaQuarantine(_pAd) do { } while (0)
+#define RtmpDmaBeginRemove(_pAd) TRUE
+#define RtmpDmaFinalReleaseCheck(_pAd) TRUE
+#endif
+
 BOOLEAN RT28XXDMAEnable(RTMP_ADAPTER *pAd);
 BOOLEAN RT28XXDMAStop(RTMP_ADAPTER *pAd);
 BOOLEAN RT28XXDMAReset(RTMP_ADAPTER *pAd);

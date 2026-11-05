@@ -249,6 +249,8 @@ INT32 WfMcuInit(RTMP_ADAPTER *pAd)
 	return ret;
 err:
 #if !defined(COMPOS_WIN) && !defined(COMPOS_TESTMODE_WIN)
+	if (!RtmpDmaTeardownCheck(pAd))
+		return ret;
 	rtmp_sys_task_exit(pAd);
 #endif
 	WfMcuSysExit(pAd);
@@ -364,6 +366,8 @@ INT32 WfInit(RTMP_ADAPTER *pAd)
 	return ret;
 err0:
 #if !defined(COMPOS_WIN) && !defined(COMPOS_TESTMODE_WIN)
+	if (!RtmpDmaTeardownCheck(pAd))
+		return ret;
 	/* Retire software users before the completed hardware owners unwind. */
 	rtmp_sys_task_exit(pAd);
 	if (eeprom_ready)
@@ -409,6 +413,8 @@ INT32 WfSysPosExit(RTMP_ADAPTER *pAd)
 	INT32 ret = NDIS_STATUS_SUCCESS;
 #if  defined(COMPOS_WIN)  || defined(COMPOS_TESTMODE_WIN)
 #else
+	if (!RtmpDmaTeardownCheck(pAd))
+		return NDIS_STATUS_FAILURE;
 	WfEPROMSysExit(pAd);
 	WfMcuSysExit(pAd);
 	ret = WfHifSysExit(pAd);

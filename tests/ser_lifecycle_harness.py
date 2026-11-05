@@ -13,42 +13,43 @@ SOURCE_PATHS={'basic':BASE+'embedded/hw_ctrl/hw_ctrl_basic.c',
  'header':BASE+'embedded/include/hw_ctrl.h',
  'task_header':BASE+'embedded/include/rtmp_os.h', 'wire_header':BASE+'include/hif/mt_hif_pci.h',
  'flag_header':BASE+'embedded/include/rtmp_def.h', 'os_header':BASE+'include/os/rt_linux.h'}
-FUNCTION_SOURCES={'__RtmpOSTaskKill':'os','HwRecoveryFromError':'recovery',
+FUNCTION_SOURCES={'__RtmpOSTaskKill':'os','HwRecoveryFromErrorOwned':'recovery','HwRecoveryFromError':'recovery',
  'ser_ctrl_task':'basic','ser_init':'basic','HwCtrlSerExit':'basic',
  'ser_exit':'basic','RTMP_MAC_RECOVERY':'command'}
-BODY_ORDER=('__RtmpOSTaskKill', 'HwRecoveryFromError', 'ser_ctrl_task', 'ser_init', 'HwCtrlSerExit', 'ser_exit', 'RTMP_MAC_RECOVERY')
-CASE_NAMES=('hif-failure','hif-failure-repeat','hif-success','recovery-halted',
- 'recovery-failed-entry','producer-running','producer-halted','producer-failed',
- 'producer-stopped','stop-normal','stop-repeat','stop-nonzero-exit',
- 'stop-before-owner-release','ser-reopen-reset','stop-during-recovery',
- 'ser-stop-failure','ser-stop-failure-repeat','ser-idle-failure','ser-arm-failure',
- 'ser-arm-failure-repeat','ser-qm-failure','ser-tm-failure')
+BODY_ORDER=('__RtmpOSTaskKill', 'HwRecoveryFromErrorOwned', 'HwRecoveryFromError', 'ser_ctrl_task', 'ser_init', 'HwCtrlSerExit', 'ser_exit', 'RTMP_MAC_RECOVERY')
+CASE_NAMES=('hif-failure', 'hif-failure-repeat', 'hif-success', 'recovery-halted', 'recovery-failed-entry', 'producer-running',
+ 'producer-halted', 'producer-failed', 'producer-stopped', 'stop-normal', 'stop-repeat', 'stop-nonzero-exit',
+ 'stop-before-owner-release', 'ser-reopen-reset', 'stop-during-recovery', 'ser-stop-failure', 'ser-stop-failure-repeat',
+ 'ser-idle-failure', 'ser-arm-failure', 'ser-arm-failure-repeat', 'ser-qm-failure', 'ser-tm-failure',
+ 'recovery-owner-busy', 'recovery-stopping', 'recovery-unpinned')
 FIELDS=('result','tm_exits','qm_exits','hif_inits','qm_inits','tm_inits',
  'dma_enables','init_done','queues_retired','recovery_failed','wakeups',
  'joins','task_present','ser_state','lock_live','owner_released','invalid_operations')
-EXPECTED_ROWS={
- 'hif-failure':[1,1,1,1,0,0,0,0,1,1,0,0,0,0,1,0,0],
- 'hif-failure-repeat':[1,1,1,1,0,0,0,0,1,1,0,0,0,0,1,0,0],
- 'hif-success':[0,1,1,1,1,1,1,1,0,0,0,0,0,0,1,0,0],
- 'recovery-halted':[1,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0],
- 'recovery-failed-entry':[1,0,0,0,0,0,0,0,0,1,0,0,0,0,1,0,0],
- 'producer-running':[0,0,0,0,0,0,0,0,0,0,1,0,0,2,1,0,0],
- 'producer-halted':[0,0,0,0,0,0,0,0,0,0,0,0,0,2,1,0,0],
- 'producer-failed':[0,0,0,0,0,0,0,0,0,1,0,0,0,2,1,0,0],
- 'producer-stopped':[0,0,0,0,0,0,0,0,0,0,0,0,0,4,1,0,0],
- 'stop-normal':[0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0],
- 'stop-repeat':[0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0],
- 'stop-nonzero-exit':[0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0],
- 'stop-before-owner-release':[0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,1,0],
- 'ser-reopen-reset':[0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,0,0],
- 'stop-during-recovery':[0,1,1,1,0,0,0,0,1,1,1,1,0,0,0,1,0],
- 'ser-stop-failure':[1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0],
- 'ser-stop-failure-repeat':[1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0],
- 'ser-idle-failure':[1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0],
- 'ser-arm-failure':[1, 2, 2, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0],
- 'ser-arm-failure-repeat':[1, 2, 2, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0],
- 'ser-qm-failure':[1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0],
- 'ser-tm-failure':[1, 1, 2, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0]}
+EXPECTED_ROWS={'hif-failure': [1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0],
+ 'hif-failure-repeat': [1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0],
+ 'hif-success': [0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+ 'recovery-halted': [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+ 'recovery-failed-entry': [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0],
+ 'producer-running': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 2, 1, 0, 0],
+ 'producer-halted': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1, 0, 0],
+ 'producer-failed': [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 1, 0, 0],
+ 'producer-stopped': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 1, 0, 0],
+ 'stop-normal': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+ 'stop-repeat': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+ 'stop-nonzero-exit': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
+ 'stop-before-owner-release': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0],
+ 'ser-reopen-reset': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0],
+ 'stop-during-recovery': [0, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 0],
+ 'ser-stop-failure': [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0],
+ 'ser-stop-failure-repeat': [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0],
+ 'ser-idle-failure': [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0],
+ 'ser-arm-failure': [1, 2, 2, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0],
+ 'ser-arm-failure-repeat': [1, 2, 2, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0],
+ 'ser-qm-failure': [1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0],
+ 'ser-tm-failure': [1, 1, 2, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 0, 0],
+ 'recovery-owner-busy': [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+ 'recovery-stopping': [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
+ 'recovery-unpinned': [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0]}
 PREFIX=r'''
 #include <assert.h>
 #include <pthread.h>
@@ -64,6 +65,8 @@ typedef uint32_t UINT32;typedef unsigned long ULONG;
 #define NDIS_STATUS_SUCCESS 0
 #define NDIS_STATUS_FAILURE 1
 #define NDIS_STATUS_INVALID_DATA 2
+#define LINUX
+#define RTMP_PCI_SUPPORT
 #define KTHREAD_SUPPORT
 #define RESOURCE_PRE_ALLOC
 #define RTMP_MAC_PCI
@@ -105,8 +108,14 @@ typedef struct OS_TASK {pthread_t thread;pthread_mutex_t mutex;pthread_cond_t co
 typedef OS_TASK RTMP_OS_TASK;
 typedef struct HW_CTRL_T {OS_TASK ser_task;struct lock ser_lock;int ser_func_state;
  UINT32 ser_status,ser_times[8];BOOLEAN ser_initialized;} HW_CTRL_T;
-typedef struct _RTMP_ADAPTER {HW_CTRL_T HwCtrl;ERR_RECOVERY_CTRL_T ErrRecoveryCtl;
+typedef struct {pthread_mutex_t dma_lifecycle_lock;} COOKIE,*POS_COOKIE;
+typedef struct _RTMP_ADAPTER {void *OS_Cookie;int dma_lifecycle_pinned,dma_stopping;HW_CTRL_T HwCtrl;ERR_RECOVERY_CTRL_T ErrRecoveryCtl;
  int flags;char *net_dev;void *PktTokenCb;int bPCIclkOff;} RTMP_ADAPTER,*PRTMP_ADAPTER;
+#define IS_PCI_INF(p) ((void)(p),0)
+#define IS_PCIE_INF(p) ((void)(p),1)
+#define mutex_trylock(p) (pthread_mutex_trylock(p)==0)
+#define mutex_unlock(p) do{assert(!pthread_mutex_unlock(p));}while(0)
+static int RtmpDmaStopping(RTMP_ADAPTER *p){return p->dma_stopping||RTMP_TEST_FLAG(p,fRTMP_ADAPTER_HALT_IN_PROGRESS);}
 static int tm_exits,qm_exits,hif_inits,qm_inits,tm_inits,dma_enables,init_done,wakeups,joins;
 static int hif_status,exit_code,owner_released,invalid;
 static int stop_ok=TRUE,arm_ok=TRUE,qm_status,tm_status;
@@ -190,8 +199,8 @@ static void wait_running(RTMP_ADAPTER *a){int i;struct timespec pause={0,1000000
 static void task_destroy(OS_TASK *t){assert(!t->kthread_task);assert(!pthread_cond_destroy(&t->cond));assert(!pthread_mutex_destroy(&t->mutex));}
 static void *close_owner(void *p){RTMP_ADAPTER *a=p;a->flags=fRTMP_ADAPTER_HALT_IN_PROGRESS;HwCtrlSerExit(a);assert(!a->HwCtrl.ser_task.kthread_task);
  owner_released=1;return NULL;}
-int main(int argc,char **argv){const char *name;RTMP_ADAPTER ad;int result=0,thread_case=0;pthread_t closer;
- assert(argc==2);name=argv[1];CASE_ADMISSION memset(&ad,0,sizeof(ad));
+int main(int argc,char **argv){const char *name;RTMP_ADAPTER ad;COOKIE cookie;int result=0,thread_case=0;pthread_t closer;
+ assert(argc==2);name=argv[1];CASE_ADMISSION memset(&ad,0,sizeof(ad));memset(&cookie,0,sizeof(cookie));ad.OS_Cookie=&cookie;ad.dma_lifecycle_pinned=1;assert(!pthread_mutex_init(&cookie.dma_lifecycle_lock,NULL));
  alloc_lock(&ad.HwCtrl.ser_lock);
  if(!strncmp(name,"stop-",5)||!strcmp(name,"ser-reopen-reset")) {
   free_lock(&ad.HwCtrl.ser_lock);assert(ser_init(&ad)==NDIS_STATUS_SUCCESS);thread_case=1;wait_running(&ad);
@@ -232,7 +241,11 @@ int main(int argc,char **argv){const char *name;RTMP_ADAPTER ad;int result=0,thr
   if(!strncmp(name,"ser-arm-failure",15))arm_ok=FALSE;
   if(!strcmp(name,"ser-qm-failure"))qm_status=1;
   if(!strcmp(name,"ser-tm-failure"))tm_status=1;
+  if(!strcmp(name,"recovery-owner-busy"))assert(!pthread_mutex_lock(&cookie.dma_lifecycle_lock));
+  if(!strcmp(name,"recovery-stopping"))ad.dma_stopping=1;
+  if(!strcmp(name,"recovery-unpinned"))ad.dma_lifecycle_pinned=0;
   result=HwRecoveryFromError(&ad);
+  if(!strcmp(name,"recovery-owner-busy"))assert(!pthread_mutex_unlock(&cookie.dma_lifecycle_lock));
   if(!strcmp(name,"hif-failure-repeat"))result=HwRecoveryFromError(&ad);
   if(strstr(name,"ser-")&&strstr(name,"-repeat"))result=HwRecoveryFromError(&ad);
  }
@@ -242,7 +255,7 @@ int main(int argc,char **argv){const char *name;RTMP_ADAPTER ad;int result=0,thr
  if(!thread_case) {
   free_lock(&ad.HwCtrl.ser_lock);
  }
- return 0;}
+ assert(!pthread_mutex_destroy(&cookie.dma_lifecycle_lock));return 0;}
 '''
 
 

@@ -49,8 +49,9 @@ class FirstArmUnwindTests(unittest.TestCase):
         self.cases(h.CASE_NAMES[1:8])
 
     def test_first_arm_then_mlme_create_failure_pairs_hardware_and_software_cleanup(self):
-        self.cases(('mlme-failure','unwind-busy-residual'))
-        self.assertEqual(h.EXPECTED_ROWS['unwind-busy-residual'][14],1)
+        self.cases(('mlme-failure','unwind-busy-retained'))
+        self.assertEqual(h.EXPECTED_ROWS['unwind-busy-retained'][14],0)
+        self.assertEqual(h.EXPECTED_ROWS['unwind-busy-retained'][2:6],[1,1,1,1])
 
     def test_ap_or_final_arm_failure_never_publishes_init_success(self):
         self.cases(('ap-arm-failure','ready-arm-failure','success'))

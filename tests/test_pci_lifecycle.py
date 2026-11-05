@@ -130,6 +130,7 @@ static void pci_release_regions(struct pci_dev *p) {
 static void pci_disable_device(struct pci_dev *p) {
     assert(p == &device && enabled); enabled = 0; disables++; event(5);
 }
+static void pci_set_drvdata(struct pci_dev *p,void *data){assert(p==&device&&!data);}
 static int cleanup(int which) {
     struct net_device *net_dev = &netdev;
     struct pci_dev *pdev = &device;

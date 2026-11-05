@@ -69,10 +69,13 @@ class SerLifecycleTests(unittest.TestCase):
         self.cases(('ser-stop-failure','ser-stop-failure-repeat','ser-idle-failure',
                     'ser-arm-failure','ser-arm-failure-repeat','ser-qm-failure','ser-tm-failure'))
 
+    def test_recovery_worker_never_waits_on_closing_owner_or_reenters_stopping_state(self):
+        self.cases(('recovery-owner-busy','recovery-stopping','recovery-unpinned'))
+
     def test_whole_functions_and_actual_close_order_are_bound(self):
-        self.assertEqual(len(h.CASE_NAMES),22)
+        self.assertEqual(len(h.CASE_NAMES),25)
         self.assertEqual(set(h.CASE_NAMES),set(h.EXPECTED_ROWS))
-        self.assertEqual(len(h.function_manifest(self.texts)),7)
+        self.assertEqual(len(h.function_manifest(self.texts)),8)
         for name,key in h.FUNCTION_SOURCES.items():self.assertEqual(self.generated.count(h.function(self.texts[key],name)),1)
         close=h.function(self.texts['close'],'RTMPDrvClose')
         self.assertLess(close.index('RTMP_OS_IRQ_RELEASE'),close.index('HwCtrlSerExit(pAd);'))

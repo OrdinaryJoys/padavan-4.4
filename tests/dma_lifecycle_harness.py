@@ -1,4 +1,4 @@
-"""Whole checked DMA APIs, inert IO; failed-stop legacy cleanup stays visible."""
+"""Whole checked DMA APIs, inert IO; teardown uses the separately tested lifetime-owner seam."""
 import hashlib
 import re
 BASE='trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/'
@@ -27,11 +27,11 @@ CASE_NAMES=('enable-idle','enable-busy','enable-nic-missing','enable-set-failure
  'reset-set-failure','reset-callback-failure','asic-non-mt','fw-init-idle',
  'fw-init-busy','fw-init-set-failure','fw-init-no-callback','fw-init-non-mt',
  'ready-idle','ready-busy','ready-set-failure','rx-filter-idle','rx-filter-busy',
- 'restart-success','restart-failure','teardown-idle','teardown-busy-residual',
- 'teardown-reset-failure-residual','enable-busy-to-idle','enable-nic-vanishes')
+ 'restart-success','restart-failure','teardown-idle','teardown-busy-retained',
+ 'teardown-reset-failure-retained','enable-busy-to-idle','enable-nic-vanishes')
 FIELDS=('result','flags','irq','mcu_inits','ring_live','token_live','unsafe_frees',
  'unsupported','event_count','events...','poll_reads','poll_delays')
-EXPECTED_ROWS={'enable-idle': [1, 0, 0, 0, 1, 1, 0, 0, 2, 1, 2, 1, 0], 'enable-busy': [0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 201, 201], 'enable-nic-missing': [0, 256, 0, 0, 1, 1, 0, 0, 0, 0, 0], 'enable-set-failure': [0, 0, 0, 0, 1, 1, 0, 0, 2, 1, 2, 1, 0], 'stop-idle': [1, 0, 0, 0, 1, 1, 0, 0, 2, 3, 1, 1, 0], 'stop-busy': [0, 0, 0, 0, 1, 1, 0, 0, 2, 3, 1, 201, 201], 'stop-set-failure': [0, 0, 0, 0, 1, 1, 0, 0, 1, 3, 0, 0], 'reset-idle': [1, 0, 0, 0, 1, 1, 0, 0, 3, 3, 1, 4, 1, 0], 'reset-busy': [0, 0, 0, 0, 1, 1, 0, 0, 2, 3, 1, 201, 201], 'reset-set-failure': [0, 0, 0, 0, 1, 1, 0, 0, 1, 3, 0, 0], 'reset-callback-failure': [0, 0, 0, 0, 1, 1, 0, 0, 3, 3, 1, 4, 1, 0], 'asic-non-mt': [0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0], 'fw-init-idle': [0, 285212672, 1, 1, 1, 1, 0, 0, 4, 7, 5, 1, 2, 1, 0], 'fw-init-busy': [1, 0, 0, 1, 1, 1, 0, 0, 4, 7, 5, 1, 6, 201, 201], 'fw-init-set-failure': [1, 0, 0, 1, 1, 1, 0, 0, 5, 7, 5, 1, 2, 6, 1, 0], 'fw-init-no-callback': [1, 0, 0, 1, 1, 1, 0, 0, 1, 7, 0, 0], 'fw-init-non-mt': [1, 0, 0, 1, 1, 1, 0, 0, 1, 7, 0, 0], 'ready-idle': [1, 268435456, 1, 0, 1, 1, 0, 0, 5, 5, 1, 2, 8, 9, 1, 0], 'ready-busy': [0, 0, 0, 0, 1, 1, 0, 0, 3, 5, 1, 6, 201, 201], 'ready-set-failure': [0, 0, 0, 0, 1, 1, 0, 0, 4, 5, 1, 2, 6, 1, 0], 'rx-filter-idle': [1, 0, 0, 0, 1, 1, 0, 0, 4, 1, 2, 8, 9, 1, 0], 'rx-filter-busy': [0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 201, 201], 'restart-success': [0, 0, 0, 0, 1, 1, 0, 0, 1, 10, 0, 0], 'restart-failure': [7, 0, 0, 0, 1, 1, 0, 0, 1, 10, 0, 0], 'teardown-idle': [0, 0, 0, 0, 0, 0, 0, 0, 8, 14, 15, 3, 1, 4, 11, 12, 13, 1, 0], 'teardown-busy-residual': [1, 0, 0, 0, 0, 0, 2, 0, 7, 14, 15, 3, 1, 11, 12, 13, 201, 201], 'teardown-reset-failure-residual': [1, 0, 0, 0, 0, 0, 0, 0, 8, 14, 15, 3, 1, 4, 11, 12, 13, 1, 0], 'enable-busy-to-idle': [1, 0, 0, 0, 1, 1, 0, 0, 2, 1, 2, 3, 2], 'enable-nic-vanishes': [0, 256, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0]}
+EXPECTED_ROWS={'enable-idle': [1, 0, 0, 0, 1, 1, 0, 0, 2, 1, 2, 1, 0], 'enable-busy': [0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 201, 201], 'enable-nic-missing': [0, 256, 0, 0, 1, 1, 0, 0, 0, 0, 0], 'enable-set-failure': [0, 0, 0, 0, 1, 1, 0, 0, 2, 1, 2, 1, 0], 'stop-idle': [1, 0, 0, 0, 1, 1, 0, 0, 2, 3, 1, 1, 0], 'stop-busy': [0, 0, 0, 0, 1, 1, 0, 0, 2, 3, 1, 201, 201], 'stop-set-failure': [0, 0, 0, 0, 1, 1, 0, 0, 1, 3, 0, 0], 'reset-idle': [1, 0, 0, 0, 1, 1, 0, 0, 3, 3, 1, 4, 1, 0], 'reset-busy': [0, 0, 0, 0, 1, 1, 0, 0, 2, 3, 1, 201, 201], 'reset-set-failure': [0, 0, 0, 0, 1, 1, 0, 0, 1, 3, 0, 0], 'reset-callback-failure': [0, 0, 0, 0, 1, 1, 0, 0, 3, 3, 1, 4, 1, 0], 'asic-non-mt': [0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0], 'fw-init-idle': [0, 285212672, 1, 1, 1, 1, 0, 0, 4, 7, 5, 1, 2, 1, 0], 'fw-init-busy': [1, 0, 0, 1, 1, 1, 0, 0, 4, 7, 5, 1, 6, 201, 201], 'fw-init-set-failure': [1, 0, 0, 1, 1, 1, 0, 0, 5, 7, 5, 1, 2, 6, 1, 0], 'fw-init-no-callback': [1, 0, 0, 1, 1, 1, 0, 0, 1, 7, 0, 0], 'fw-init-non-mt': [1, 0, 0, 1, 1, 1, 0, 0, 1, 7, 0, 0], 'ready-idle': [1, 268435456, 1, 0, 1, 1, 0, 0, 5, 5, 1, 2, 8, 9, 1, 0], 'ready-busy': [0, 0, 0, 0, 1, 1, 0, 0, 3, 5, 1, 6, 201, 201], 'ready-set-failure': [0, 0, 0, 0, 1, 1, 0, 0, 4, 5, 1, 2, 6, 1, 0], 'rx-filter-idle': [1, 0, 0, 0, 1, 1, 0, 0, 4, 1, 2, 8, 9, 1, 0], 'rx-filter-busy': [0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 201, 201], 'restart-success': [0, 0, 0, 0, 1, 1, 0, 0, 1, 10, 0, 0], 'restart-failure': [7, 0, 0, 0, 1, 1, 0, 0, 1, 10, 0, 0], 'teardown-idle': [0, 0, 0, 0, 0, 0, 0, 0, 8, 3, 1, 4, 14, 15, 11, 12, 13, 1, 0], 'teardown-busy-retained': [1, 0, 0, 0, 1, 1, 0, 0, 2, 3, 1, 201, 201], 'teardown-reset-failure-retained': [1, 0, 0, 0, 1, 1, 0, 0, 3, 3, 1, 4, 1, 0], 'enable-busy-to-idle': [1, 0, 0, 0, 1, 1, 0, 0, 2, 1, 2, 3, 2], 'enable-nic-vanishes': [0, 256, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0]}
 SOURCE_DECLARATIONS={
  r'^#define NDIS_STATUS_SUCCESS\s+0x[0-9a-fA-F]+\s*$':'os_header',
  r'^#define NDIS_STATUS_FAILURE\s+0x[0-9a-fA-F]+\s*$':'os_header',
@@ -100,6 +100,18 @@ static void cut_through_deinit(PKT_TOKEN_CB **p){event(13);
  if(!idle){unsafe_frees++;}assert(token_live);token_live=0;*p=NULL;}
 static int WfEPROMSysExit(RTMP_ADAPTER *p){(void)p;event(14);return 0;}
 static int WfMcuSysExit(RTMP_ADAPTER *p){(void)p;event(15);return 0;}
+/* Lifecycle state is exercised in dma_quarantine_harness. Here the seam
+ * composes the actual DMA reset implementation and caches its accepted idle. */
+BOOLEAN RT28XXDMAReset(RTMP_ADAPTER *p);
+static int teardown_quiesced,teardown_quarantined;
+#define IS_PCI_INF(p) ((void)(p),0)
+#define IS_PCIE_INF(p) ((void)(p),1)
+static BOOLEAN RtmpDmaTeardownCheck(RTMP_ADAPTER *p){
+ if(teardown_quarantined){return FALSE;}if(teardown_quiesced){return TRUE;}
+ if(!RT28XXDMAReset(p)){teardown_quarantined=1;return FALSE;}
+ teardown_quiesced=1;return TRUE;}
+#define RtmpDmaQuarantine(p) ((void)(p),teardown_quarantined=1)
+
 '''
 SUFFIX=r'''
 int main(int argc,char **argv){RTMP_ADAPTER ad;const char *name;int result=0,i;

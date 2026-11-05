@@ -52,6 +52,13 @@ rt2860_interrupt(int irq, void *dev_instance, struct pt_regs *regs)
 	VOID *pAd = NULL;
 
 	GET_PAD_FROM_NET_DEV(pAd, net_dev);
+	if (pAd == NULL || RtmpDmaQuarantined((RTMP_ADAPTER *)pAd)) {
+#if (KERNEL_VERSION(2, 5, 0) <= LINUX_VERSION_CODE)
+		return IRQ_NONE;
+#else
+		return;
+#endif
+	}
 	isr_handle(pAd);
 #if (KERNEL_VERSION(2, 5, 0) <= LINUX_VERSION_CODE)
 	return  IRQ_HANDLED;

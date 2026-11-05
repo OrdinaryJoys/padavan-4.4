@@ -57,9 +57,10 @@ class DmaLifecycleTests(unittest.TestCase):
     def test_firmware_restart_status_is_preserved(self):
         self.cases(h.CASE_NAMES[22:24])
 
-    def test_successful_teardown_orders_idle_before_free_and_busy_gap_remains_visible(self):
+    def test_teardown_requires_idle_before_free_and_busy_keeps_owners(self):
         self.cases(h.CASE_NAMES[24:27])
-        self.assertEqual(h.EXPECTED_ROWS['teardown-busy-residual'][6],2)
+        self.assertEqual(h.EXPECTED_ROWS['teardown-busy-retained'][4:7],[1,1,0])
+        self.assertEqual(h.EXPECTED_ROWS['teardown-reset-failure-retained'][4:7],[1,1,0])
 
     def test_whole_source_functions_and_status_contract_are_bound(self):
         self.assertEqual(set(h.CASE_NAMES),set(h.EXPECTED_ROWS))
