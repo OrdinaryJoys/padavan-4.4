@@ -16,7 +16,7 @@ class WdevLifecycleTests(unittest.TestCase):
         version=subprocess.run([gcc,'--version'],capture_output=True,text=True,check=True).stdout
         if 'Free Software Foundation'not in version or'clang'in version.lower():raise AssertionError('True GNU GCC required')
         cls.clang=clang;cls.binaries=[]
-        for label,cc,extra in [('gnu',gcc,[]),('asan',clang,['-fsanitize=address,undefined'])]:
+        for label,cc,extra in [('gnu',gcc,[]),('asan',clang,['-fsanitize=address,undefined','-fno-sanitize-recover=all'])]:
             binary=cls.root/label;r=subprocess.run([cc,*FLAGS,*extra,str(cls.source),'-o',str(binary)],capture_output=True,text=True,timeout=60)
             if r.returncode:raise AssertionError(r.stderr)
             cls.binaries.append(binary)
@@ -34,7 +34,7 @@ class WdevLifecycleTests(unittest.TestCase):
     def test_quarantine_keeps_registered_owner_graph(self):self.cases('quarantine')
     def test_vendor_ie_two_allocations_preserve_previous_chain_and_payload(self):self.cases('vie')
     def test_model_full_bodies_manifests_typed_rows_and_explicit_inert_scope(self):
-        self.assertEqual(len(h.CASE_NAMES),50);self.assertEqual(len(h.BODY_ORDER),15)
+        self.assertEqual(len(h.CASE_NAMES),54);self.assertEqual(len(h.BODY_ORDER),15)
         self.assertEqual(set(h.CASE_NAMES),set(h.EXPECTED_ROWS));self.assertEqual(set(h.CASE_NAMES),{n for ns in h.CASE_GROUPS.values()for n in ns})
         self.assertEqual(len(h.function_manifest(self.texts)),15);self.assertEqual(len(h.source_only_manifest(self.texts)),7)
         for n,k in h.FUNCTION_SOURCES.items():self.assertEqual(self.generated.count(h.function(self.texts[k],n)),1)
@@ -50,7 +50,7 @@ class WdevLifecycleTests(unittest.TestCase):
     def reject(self,key,name,before,after,case,label):
         texts=dict(self.texts);original=h.function(texts[key],name);self.assertEqual(original.count(before),1)
         texts[key]=texts[key].replace(original,original.replace(before,after));src=self.root/(label+'.c');src.write_text(h.generate_source(texts));binary=src.with_suffix('')
-        r=subprocess.run([self.clang,*FLAGS,'-fsanitize=address,undefined',str(src),'-o',str(binary)],capture_output=True,text=True,timeout=60)
+        r=subprocess.run([self.clang,*FLAGS,'-fsanitize=address,undefined','-fno-sanitize-recover=all',str(src),'-o',str(binary)],capture_output=True,text=True,timeout=60)
         self.assertEqual(r.returncode,0,r.stderr);r=subprocess.run([str(binary),case],capture_output=True,text=True,timeout=10)
         self.assertNotEqual(r.returncode,0,'Removed protection accepted '+case)
     def test_removed_final_retirement_and_remove_latch_are_detected(self):
@@ -76,3 +76,9 @@ class WdevLifecycleTests(unittest.TestCase):
         current=h.function(self.texts['wdev'],'wdev_init')
         old=subprocess.check_output(['git','-C',str(ROOT),'show','a23aaa4e11894cad9306bc87bbac3ed310dcf3de:'+h.SOURCE_PATHS['wdev']]).decode()
         self.reject('wdev','wdev_init',current,h.function(old,'wdev_init'),'vie-registration-failure-preserves','old-wdev-reg-order')
+
+    def test_actual_exit_releases_main_vie_and_checks_registered_owner_before_deinit(self):
+        self.cases('main_exit')
+        self.assertRegex(self.texts['header'],r'\bCHAR\s+wdev_idx\s*;')
+        self.reject('main','RtmpPhyNetDevExit','wdev_deinit(ad, main_wdev);','(void)main_wdev;','exit-main-vie-owner','no-main-wdev-retirement')
+        self.reject('main','RtmpPhyNetDevExit','(UINT)main_wdev->wdev_idx < WDEV_NUM_MAX','main_wdev->wdev_idx < WDEV_NUM_MAX','exit-main-negative-index','no-unsigned-index-guard')

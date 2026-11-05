@@ -27,7 +27,13 @@ MODEL_VARIANT = {'role': 'private-wdev-netdev-retirement-inert-model',
  'beacon_payloads_symbolic_here_actual_owner_model_in_probe_component': True,
  'vendor_ie_each_target_transactional': True,
  'vendor_multi_frame_atomic_rollback_claimed': False,
- 'vendor_running_reader_concurrency_proved': False}
+ 'vendor_running_reader_concurrency_proved': False,
+ 'one_registered_netdev_one_detach_protocol': True,
+ 'arbitrary_full_Exit_repetition_claimed': False,
+ 'fixture_private_retained_owner_cleanup_after_observation': True,
+ 'model_signed_wdev_index': True,
+ 'actual_CHAR_signedness_not_assumed': True,
+ 'main_VIE_freed_by_actual_Exit': True}
 
 BASE = 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/'
 
@@ -141,7 +147,11 @@ CASE_NAMES = ('main-create-failure',
  'vie-zero-length',
  'vie-repeat-init',
  'vie-repeat-deinit',
- 'vie-registration-failure-preserves')
+ 'vie-registration-failure-preserves',
+ 'exit-main-vie-owner',
+ 'exit-main-unregistered',
+ 'exit-main-negative-index',
+ 'exit-main-wrong-owner')
 
 FIELDS = ('result',
  'net_live',
@@ -201,7 +211,11 @@ CASE_GROUPS = {'main': ('main-create-failure',
          'vie-zero-length',
          'vie-repeat-init',
          'vie-repeat-deinit',
-         'vie-registration-failure-preserves')}
+         'vie-registration-failure-preserves'),
+ 'main_exit': ('exit-main-vie-owner',
+               'exit-main-unregistered',
+               'exit-main-negative-index',
+               'exit-main-wrong-owner')}
 
 EXPECTED_ROWS = {'main-create-failure': [0, 0, 0, 0, 0, 0, 1, 0],
  'main-ops-allocation-failure': [0, 0, 0, 0, 0, 0, 1, 0],
@@ -252,7 +266,11 @@ EXPECTED_ROWS = {'main-create-failure': [0, 0, 0, 0, 0, 0, 1, 0],
  'vie-zero-length': [1, 0, 0, 0, 0, 0, 1, 0],
  'vie-repeat-init': [1, 0, 0, 0, 0, 0, 1, 0],
  'vie-repeat-deinit': [1, 0, 0, 0, 0, 0, 1, 0],
- 'vie-registration-failure-preserves': [0, 0, 0, 0, 0, 0, 1, 0]}
+ 'vie-registration-failure-preserves': [0, 0, 0, 0, 0, 0, 1, 0],
+ 'exit-main-vie-owner': [1, 0, 0, 0, 0, 0, 1, 1],
+ 'exit-main-unregistered': [1, 0, 0, 0, 0, 1, 1, 1],
+ 'exit-main-negative-index': [1, 0, 0, 0, 0, 1, 1, 1],
+ 'exit-main-wrong-owner': [1, 0, 0, 0, 0, 1, 1, 1]}
 
 SOURCE_FIELD_CONSTRAINTS = {}
 
@@ -261,7 +279,7 @@ PREFIX = ('\n'
  '#include <stdio.h>\n'
  '#include <stdlib.h>\n'
  '#include <string.h>\n'
- 'typedef void VOID;typedef int INT,INT32,BOOLEAN,NDIS_STATUS;typedef signed char INT8;\n'
+ 'typedef void VOID;typedef int INT,INT32,BOOLEAN,NDIS_STATUS;typedef signed char INT8,CHAR;\n'
  'typedef unsigned int UINT,UINT32;typedef unsigned long ULONG;typedef unsigned char UCHAR;\n'
  '#define TRUE 1\n'
  '#define FALSE 0\n'
@@ -305,7 +323,8 @@ PREFIX = ('\n'
  'enum WDEV_TYPE {WDEV_TYPE_AP=1};\n'
  'struct _RTMP_ADAPTER;struct net_device;\n'
  'typedef struct net_device *PNET_DEV;\n'
- 'struct wifi_dev {int wdev_type;PNET_DEV if_dev;INT8 func_idx;void *func_dev,*sys_handle;\n'
+ 'struct wifi_dev {CHAR wdev_idx;int wdev_type;PNET_DEV if_dev;INT8 func_idx;void '
+ '*func_dev,*sys_handle;\n'
  ' VIE_CTRL vie_ctrl[VIE_FRM_TYPE_MAX];int '
  'tr_tb_idx,OpStatusFlags,forbid_data_tx,bAllowBeaconing,registered,vie_live,hc_live;\n'
  ' UCHAR bssid[6];struct {void *BeaconPkt;} bcn_buf;};\n'
@@ -332,6 +351,7 @@ PREFIX = ('\n'
  'static int '
  'net_live,ops_live,wdev_live,unsafe_frees,protect,lifecycle,create_calls,reg_calls,ops_calls,attach_calls;\n'
  'static int fail_create,fail_ops_alloc,fail_priv,fail_reg,fail_ops,fail_attach,fail_prefix;\n'
+ 'static int bad_main_owner;\n'
  'static int closes,config_exits,stop_mode,open_rejects,concurrent_open,retention_observed;\n'
  '\n'
  'static int beacon_tags[HW_BEACON_MAX_NUM];\n'
@@ -357,7 +377,7 @@ PREFIX = ('\n'
  'static int wdev_idx_reg(RTMP_ADAPTER *a,struct wifi_dev '
  '*w){reg_calls++;if(fail_reg==reg_calls)return-1;\n'
  ' for(int '
- 'i=0;i<WDEV_NUM_MAX;i++)if(!a->wdev_list[i]){assert(!w->registered);a->wdev_list[i]=w;w->registered=1;wdev_live++;return '
+ 'i=0;i<WDEV_NUM_MAX;i++)if(!a->wdev_list[i]){assert(!w->registered);a->wdev_list[i]=w;w->wdev_idx=(CHAR)i;w->registered=1;wdev_live++;return '
  'i;}\n'
  ' return-1;}\n'
  'static void wdev_idx_unreg(RTMP_ADAPTER *a,struct wifi_dev *w){assert(w->registered);\n'
@@ -367,8 +387,7 @@ PREFIX = ('\n'
  'static void hc_obj_init(struct wifi_dev *w,int '
  'i){assert(w->registered&&i>=0&&!w->hc_live);w->hc_live=1;}\n'
  'static void hc_obj_exit(struct wifi_dev *w){assert(w->hc_live);w->hc_live=0;}\n'
- 'static void wlan_operate_exit(struct wifi_dev '
- '*w){assert(w->registered);if(w->func_idx)assert(!config_exits);}\n'
+ 'static void wlan_operate_exit(struct wifi_dev *w){assert(w->registered);assert(!config_exits);}\n'
  'static int wdev_ops_register(struct wifi_dev *w,enum WDEV_TYPE t,struct wifi_dev_ops *o,UCHAR '
  'm){\n'
  ' (void)t;(void)o;(void)m;assert(w->registered&&w->hc_live);ops_calls++;return '
@@ -393,6 +412,7 @@ PREFIX = ('\n'
  '#define snprintf model_snprintf\n'
  'static char *get_dev_name_prefix(RTMP_ADAPTER *a,int type){(void)a;(void)type;return '
  'fail_prefix?NULL:"inert";}\n'
+ '#define RTMP_OS_NETDEV_GET_WDEV(n) ((n)->wdev)\n'
  '#define RTMP_OS_NETDEV_GET_DEVNAME(n) ((n)->name)\n'
  '#define RTMP_OS_NETDEV_SET_WDEV(n,w) ((n)->wdev=(w))\n'
  '#define RTMP_OS_NETDEV_SET_PRIV(n,a) ((n)->adapter=fail_priv?NULL:(a))\n'
@@ -434,10 +454,10 @@ PREFIX = ('\n'
  ' /* Kernel ignores ndo_stop status; mode10 is status failure with completed retirement. */\n'
  '}\n'
  'static void RtmpOSNetDevDetach(PNET_DEV '
- 'n){assert(protect&&fully_retired(current)&&!(n->flags&IFF_UP)&&!config_exits);\n'
+ 'n){assert(protect&&fully_retired(current)&&!(n->flags&IFF_UP)&&!config_exits&&n->published);\n'
  ' if(n->netdev_ops){vfree(n->netdev_ops);n->netdev_ops=NULL;}n->published=0;}\n'
  'static void wpf_exit(void *v){RTMP_ADAPTER '
- '*a=v;assert(fully_retired(a)&&a->dma_removing&&net_live==1&&wdev_live==1);config_exits++;}\n'
+ '*a=v;assert(fully_retired(a)&&a->dma_removing&&net_live==1&&(wdev_live==0||bad_main_owner));config_exits++;}\n'
  '#define RT28xx_MBSS_Remove(a) MBSS_Remove(a)\n')
 
 SUFFIX = ('\n'
@@ -456,8 +476,8 @@ SUFFIX = ('\n'
  ' for(int '
  'i=0;i<3;i++)if(a->wdev_list[i]&&a->wdev_list[i]->if_dev)a->wdev_list[i]->if_dev->flags&=~IFF_UP;\n'
  ' '
- 'assert(RtmpPhyNetDevExit(a,main));assert(main==a->net_dev);wdev_deinit(a,&a->ApCfg.MBSSID[0].wdev);\n'
- ' a->ApCfg.MBSSID[0].wdev.if_dev=NULL;a->net_dev=NULL;RtmpOSNetDevFree(main);}\n'
+ 'assert(RtmpPhyNetDevExit(a,main));assert(main==a->net_dev&&!main->wdev&&!a->ApCfg.MBSSID[0].wdev.if_dev&&wdev_live==0&&!vie_heap);\n'
+ ' a->net_dev=NULL;RtmpOSNetDevFree(main);}\n'
  'int main(int argc,char **argv){const char *name;RTMP_ADAPTER a;RTMP_OS_NETDEV_OP_HOOK '
  'hook={0};PNET_DEV main=NULL;int result=1;\n'
  ' assert(argc==2);name=argv[1];CASE_ADMISSION initial(&a);\n'
@@ -507,7 +527,8 @@ SUFFIX = ('\n'
  ' '
  'fail_priv=!strcmp(name,"main-private-failure");fail_reg=!strcmp(name,"main-wdev-registration-failure");fail_ops=!strcmp(name,"main-ops-registration-failure");\n'
  ' main=RtmpPhyNetDevInit(&a,&hook);result=main!=NULL;\n'
- ' if(!strcmp(name,"main-success")){assert(main==a.net_dev&&wdev_live==1);cleanup(&a,main);}\n'
+ ' '
+ 'if(!strcmp(name,"main-success")){assert(main==a.net_dev&&wdev_live==1);main->published=1;cleanup(&a,main);}\n'
  ' else assert(!result&&!main&&!a.net_dev&&!wdev_live&&!a.ApCfg.MBSSID[0].wdev.if_dev);\n'
  ' }else{\n'
  ' main=RtmpPhyNetDevInit(&a,&hook);assert(main);main->published=1;\n'
@@ -553,7 +574,30 @@ SUFFIX = ('\n'
  ' }\n'
  ' if(!strcmp(name,"exit-quarantined")){a.quarantined=1;int '
  'n=net_live;result=RtmpPhyNetDevExit(&a,main);assert(!result&&!config_exits&&net_live==n&&!a.dma_removing);retention_observed=1;}\n'
- ' beacons(&a);cleanup(&a,main);\n'
+ '\n'
+ ' if(!strncmp(name,"exit-main-",10)){\n'
+ '  struct wifi_dev *w=&a.ApCfg.MBSSID[0].wdev;struct wifi_dev foreign={0};UCHAR '
+ 'payload[]={9,8,7};\n'
+ '  assert(add_vie(&a,w,1,1,3,payload)==NDIS_STATUS_SUCCESS&&vie_heap==2);\n'
+ '  '
+ 'if(!strcmp(name,"exit-main-vie-owner")){assert(add_vie(&a,&a.ApCfg.MBSSID[2].wdev,1,2,3,payload)==NDIS_STATUS_SUCCESS&&vie_heap==4);prepare_live(&a);}\n'
+ '  else{bad_main_owner=1;\n'
+ '   if(!strcmp(name,"exit-main-unregistered")){a.wdev_list[0]=NULL;w->registered=0;wdev_live--;}\n'
+ '   if(!strcmp(name,"exit-main-negative-index"))w->wdev_idx=(CHAR)-1;\n'
+ '   '
+ 'if(!strcmp(name,"exit-main-wrong-owner")){foreign.registered=1;a.wdev_list[0]=&foreign;w->registered=0;}\n'
+ '  }\n'
+ '  result=RtmpPhyNetDevExit(&a,main);assert(result&&a.dma_removing&&!main->wdev&&!w->if_dev);\n'
+ '  if(bad_main_owner){assert(vie_heap==2&&w->vie_ctrl[0].vie_num==1);retention_observed=1;\n'
+ '   /* Corrupted/unregistered associations are outside the registered owner\n'
+ '    * protocol. Explicit private fixture disposal follows the observation;\n'
+ '    * it is not credited as production cleanup or a recovery guarantee. */\n'
+ '   '
+ 'deinit_vie_ctrl(w);if(a.wdev_list[0]){a.wdev_list[0]->registered=0;a.wdev_list[0]=NULL;wdev_live--;}\n'
+ '  }else assert(!vie_heap&&!wdev_live&&closes==3);\n'
+ '  assert(!vie_heap&&!wdev_live&&config_exits==1);beacons(&a);RtmpOSNetDevFree(main);main=NULL;\n'
+ ' }\n'
+ ' if(main){beacons(&a);cleanup(&a,main);}\n'
  ' }\n'
  ' beacons(&a);assert(net_live==0&&ops_live==0&&wdev_live==0&&!protect&&!lifecycle);\n'
  ' '

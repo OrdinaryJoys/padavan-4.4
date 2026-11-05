@@ -1155,6 +1155,9 @@ static BOOLEAN RtmpPhyNetDevCloseAll(RTMP_ADAPTER *pAd, PNET_DEV net_dev)
 
 BOOLEAN RtmpPhyNetDevExit(VOID *pAd, PNET_DEV net_dev)
 {
+	RTMP_ADAPTER *ad = (RTMP_ADAPTER *)pAd;
+	struct wifi_dev *main_wdev = NULL;
+
 	if (!RtmpDmaResourcesMayRelease((RTMP_ADAPTER *)pAd))
 		return FALSE;
 	if (!RtmpPhyNetDevCloseAll((RTMP_ADAPTER *)pAd, net_dev))
@@ -1197,11 +1200,22 @@ BOOLEAN RtmpPhyNetDevExit(VOID *pAd, PNET_DEV net_dev)
 		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				 ("RtmpOSNetDevDetach(): RtmpOSNetDeviceDetach(), dev->name=%s!\n", net_dev->name));
 		RtmpOSNetDevProtect(1);
+		main_wdev = RTMP_OS_NETDEV_GET_WDEV(net_dev);
 		RtmpOSNetDevDetach(net_dev);
 		RtmpOSNetDevProtect(0);
 #ifdef RT_CFG80211_SUPPORT
 		RTMP_DRIVER_80211_UNREGISTER(pAd, net_dev);
 #endif /* RT_CFG80211_SUPPORT */
+		/* Registered users are drained, but the embedded main wdev and its
+		 * configuration still exist.  Retire its VIE/operate/hdev owners once.
+		 */
+		if (main_wdev && main_wdev->if_dev == net_dev) {
+			if ((UINT)main_wdev->wdev_idx < WDEV_NUM_MAX &&
+				ad->wdev_list[main_wdev->wdev_idx] == main_wdev)
+				wdev_deinit(ad, main_wdev);
+			main_wdev->if_dev = NULL;
+			RTMP_OS_NETDEV_SET_WDEV(net_dev, NULL);
+		}
 	}
 
 	/* Detach drains registered netdev users, and wdev_deinit may still need
