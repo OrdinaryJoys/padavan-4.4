@@ -195,20 +195,25 @@ INT bcn_buf_init(RTMP_ADAPTER *pAd, struct wifi_dev *wdev)
 	NDIS_STATUS Status = NDIS_STATUS_SUCCESS;
 	BCN_BUF_STRUC *bcn_info = &wdev->bcn_buf;
 	struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
-	struct _PCI_HIF_T *hif = hc_get_hif_ctrl(pAd->hdev_ctrl);
+	struct _PCI_HIF_T *hif = &pAd->PciHif;
 
-	bcn_info->cap_ie_pos = 0;
-	bcn_info->pWdev = wdev;
-	NdisAllocateSpinLock(pAd, &bcn_info->BcnContentLock);
+	if (bcn_info->BcnContentLockInitialized)
+		return bcn_info->pWdev == wdev && bcn_info->BeaconPkt != NULL ?
+			NDIS_STATUS_SUCCESS : NDIS_STATUS_FAILURE;
 
 	if (!bcn_info->BeaconPkt) {
 		Status = RTMPAllocateNdisPacket(pAd, &bcn_info->BeaconPkt, NULL, 0, NULL, MAX_BEACON_LENGTH);
 
-		if (Status == NDIS_STATUS_FAILURE)
-			return Status;
+		if (Status != NDIS_STATUS_SUCCESS || bcn_info->BeaconPkt == NULL)
+			return Status != NDIS_STATUS_SUCCESS ? Status : NDIS_STATUS_FAILURE;
 	} else
 		MTWF_LOG(DBG_CAT_TX, DBG_SUBCAT_ALL, DBG_LVL_OFF,
 		("%s():BcnPkt is allocated!, bcn offload=%d\n", __func__, cap->fgBcnOffloadSupport));
+
+	bcn_info->cap_ie_pos = 0;
+	NdisAllocateSpinLock(pAd, &bcn_info->BcnContentLock);
+	bcn_info->BcnContentLockInitialized = TRUE;
+	bcn_info->pWdev = wdev;
 
 #ifdef MT_MAC
 
@@ -234,7 +239,25 @@ INT bcn_buf_init(RTMP_ADAPTER *pAd, struct wifi_dev *wdev)
 INT bcn_buf_deinit(RTMP_ADAPTER *pAd, BCN_BUF_STRUC *bcn_info)
 {
 #ifdef MT_MAC
-	struct _PCI_HIF_T *hif = hc_get_hif_ctrl(pAd->hdev_ctrl);
+	struct _PCI_HIF_T *hif = &pAd->PciHif;
+#endif
+
+	/* The caller has retired beacon producers before final destruction. */
+	if (!bcn_info->BcnContentLockInitialized) {
+		if (bcn_info->BeaconPkt) {
+			RTMPFreeNdisPacket(pAd, bcn_info->BeaconPkt);
+			bcn_info->BeaconPkt = NULL;
+		}
+#ifdef MT_MAC
+		if (bcn_info->tim_buf.TimPkt) {
+			RTMPFreeNdisPacket(pAd, bcn_info->tim_buf.TimPkt);
+			bcn_info->tim_buf.TimPkt = NULL;
+		}
+#endif
+		bcn_info->pWdev = NULL;
+		return TRUE;
+	}
+#ifdef MT_MAC
 
 	if (IS_HIF_TYPE(pAd, HIF_MT)) {
 		RTMP_SEM_LOCK(&hif->BcnRingLock);
@@ -250,20 +273,21 @@ INT bcn_buf_deinit(RTMP_ADAPTER *pAd, BCN_BUF_STRUC *bcn_info)
 
 #endif /* MT_MAC */
 
+	RTMP_SEM_LOCK(&bcn_info->BcnContentLock);
 	if (bcn_info->BeaconPkt) {
-		RTMP_SEM_LOCK(&bcn_info->BcnContentLock);
 		RTMPFreeNdisPacket(pAd, bcn_info->BeaconPkt);
 		bcn_info->BeaconPkt = NULL;
-
-		if (bcn_info->tim_buf.TimPkt) {
-			RTMPFreeNdisPacket(pAd, bcn_info->tim_buf.TimPkt);
-			bcn_info->tim_buf.TimPkt = NULL;
-		}
-
-		RTMP_SEM_UNLOCK(&bcn_info->BcnContentLock);
 	}
-
+#ifdef MT_MAC
+	if (bcn_info->tim_buf.TimPkt) {
+		RTMPFreeNdisPacket(pAd, bcn_info->tim_buf.TimPkt);
+		bcn_info->tim_buf.TimPkt = NULL;
+	}
+#endif
+	RTMP_SEM_UNLOCK(&bcn_info->BcnContentLock);
 	NdisFreeSpinLock(&bcn_info->BcnContentLock);
+	bcn_info->BcnContentLockInitialized = FALSE;
+	bcn_info->pWdev = NULL;
 	return TRUE;
 }
 

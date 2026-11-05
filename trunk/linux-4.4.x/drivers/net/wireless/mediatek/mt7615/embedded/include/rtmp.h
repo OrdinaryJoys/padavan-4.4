@@ -1577,6 +1577,7 @@ typedef struct _BCN_BUF_STRUCT {
 	UINT16 CsaIELocationInBeacon;
 
 	NDIS_SPIN_LOCK BcnContentLock;
+	BOOLEAN BcnContentLockInitialized;
 	UCHAR BcnUpdateMethod;
 } BCN_BUF_STRUC;
 

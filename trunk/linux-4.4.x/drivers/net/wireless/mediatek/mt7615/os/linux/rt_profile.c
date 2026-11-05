@@ -1497,6 +1497,27 @@ VOID RTMPFreeAdapter(VOID *pAdSrc)
 	/* These locks are constructed before hdev_resource_init publishes hif. */
 	hif = &pAd->PciHif;
 	os_cookie = (POS_COOKIE)pAd->OS_Cookie;
+#ifdef MT_MAC
+#ifdef CONFIG_AP_SUPPORT
+
+	if ((IS_HIF_TYPE(pAd, HIF_MT)) && (pAd->OpMode == OPMODE_AP)) {
+		BSS_STRUCT *pMbss;
+
+		pMbss = &pAd->ApCfg.MBSSID[MAIN_MBSSID];
+		ASSERT(pMbss);
+
+		if (pMbss)
+			bcn_buf_deinit(pAd, &pMbss->wdev.bcn_buf);
+		else {
+			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s():func_dev is NULL!\n", __func__));
+			return;
+		}
+	}
+
+#endif
+#endif
+#ifdef CONFIG_ATE
+#endif /* CONFIG_ATE */
 #ifdef RLM_CAL_CACHE_SUPPORT
 	rlmCalCacheDeinit(&pAd->rlmCalCache);
 #endif /* RLM_CAL_CACHE_SUPPORT */
@@ -1567,27 +1588,6 @@ VOID RTMPFreeAdapter(VOID *pAdSrc)
 		pAd->stats = NULL;
 	}
 
-#ifdef MT_MAC
-#ifdef CONFIG_AP_SUPPORT
-
-	if ((IS_HIF_TYPE(pAd, HIF_MT)) && (pAd->OpMode == OPMODE_AP)) {
-		BSS_STRUCT *pMbss;
-
-		pMbss = &pAd->ApCfg.MBSSID[MAIN_MBSSID];
-		ASSERT(pMbss);
-
-		if (pMbss)
-			bcn_buf_deinit(pAd, &pMbss->wdev.bcn_buf);
-		else {
-			MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s():func_dev is NULL!\n", __func__));
-			return;
-		}
-	}
-
-#endif
-#endif
-#ifdef CONFIG_ATE
-#endif /* CONFIG_ATE */
 	RTMP_OS_FREE_TIMER(pAd);
 	RTMP_OS_FREE_LOCK(pAd);
 	RTMP_OS_FREE_TASKLET(pAd);

@@ -26,7 +26,7 @@ class ProbeOOMTests(unittest.TestCase):
         for label,compiler in cls.compilers:
             for msi in (False,True):
                 binary=cls.directory/(label+('-msi'if msi else ''))
-                flags=['-std=gnu99','-Os','-fno-strict-aliasing','-Wall','-Wextra','-Werror','-Wno-unused-parameter']
+                flags=['-std=gnu99','-Os','-fno-strict-aliasing','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unused-variable','-Wno-unused-but-set-variable']
                 if msi:flags+=['-DCONFIG_WIFI_MSI_SUPPORT=1']
                 if label=='clang':flags+=['-fsanitize=address,undefined']
                 result=subprocess.run([compiler,*flags,str(cls.source),'-o',str(binary)],capture_output=True,text=True,timeout=60)
@@ -56,11 +56,11 @@ class ProbeOOMTests(unittest.TestCase):
                     r=subprocess.run([str(binary),name],check=True,capture_output=True,text=True,timeout=10)
                     self.assertEqual(json.loads(r.stdout),h.EXPECTED_ROWS[name])
     def test_complete_functions_and_explicit_variant_are_bound(self):
-        self.assertEqual(len(h.CASE_NAMES),57)
+        self.assertEqual(len(h.CASE_NAMES),75)
         self.assertEqual(set(h.CASE_NAMES),set(h.EXPECTED_ROWS))
         self.assertEqual(set(h.CASE_NAMES),{n for names in h.CASE_GROUPS.values()for n in names})
         self.assertTrue(all(type(row)is list and len(row)==len(h.FIELDS)and all(type(x)is int for x in row)for row in h.EXPECTED_ROWS.values()))
-        self.assertEqual(len(h.function_manifest(self.texts)),15)
+        self.assertEqual(len(h.function_manifest(self.texts)),17)
         self.assertEqual(len(h.source_only_manifest(self.texts)),15)
         for name,key in h.FUNCTION_SOURCES.items():self.assertEqual(self.generated.count(h.function(self.texts[key],name)),1)
         self.assertIn(h.declarations(self.texts),self.generated)
@@ -70,6 +70,31 @@ class ProbeOOMTests(unittest.TestCase):
         self.assertTrue(h.MODEL_VARIANT['native_extra_MSI_variant'])
         with self.assertRaises(ValueError):h.generate_source({})
         with self.assertRaises(ValueError):h.generate_source(self.texts,'legacy')
+    def test_current_beacon_packet_and_lock_owner_states(self):
+        for binary in self.binaries:
+            for name in h.CASE_GROUPS['beacon']:
+                with self.subTest(compiler=binary.name,case=name):
+                    r=subprocess.run([str(binary),name],check=True,capture_output=True,text=True,timeout=10)
+                    self.assertEqual(r.stderr,'');self.assertEqual(json.loads(r.stdout),h.EXPECTED_ROWS[name])
+    def test_current_beacon_field_and_destruction_order_are_source_bound(self):
+        self.assertTrue(h.MODEL_VARIANT['CONFIG_AP_SUPPORT'])
+        self.assertTrue(h.MODEL_VARIANT['model_HIF_MT'])
+        self.assertTrue(h.MODEL_VARIANT['actual_K2P_HIF_MT'])
+        self.assertEqual(len(h.SOURCE_FIELD_CONSTRAINTS),1)
+        field='BOOLEAN BcnContentLockInitialized;'
+        self.assertEqual(self.generated.count(field),1)
+        for name in ('bcn_buf_init','bcn_buf_deinit'):
+            body=h.function(self.texts['bcn'],name);self.assertEqual(self.generated.count(body),1)
+            self.assertIn('struct _PCI_HIF_T *hif = &pAd->PciHif;',body)
+        init=h.function(self.texts['bcn'],'bcn_buf_init')
+        self.assertLess(init.index('RTMPAllocateNdisPacket'),init.index('NdisAllocateSpinLock'))
+        self.assertLess(init.index('NdisAllocateSpinLock'),init.index('BcnContentLockInitialized = TRUE;'))
+        self.assertLess(init.index('BcnContentLockInitialized = TRUE;'),init.index('RTMP_SEM_LOCK(&hif->BcnRingLock);'))
+        free=h.function(self.texts['free'],'RTMPFreeAdapter')
+        self.assertLess(free.index('bcn_buf_deinit('),free.index('NdisFreeSpinLock('))
+        self.assertLess(free.index('bcn_buf_deinit('),free.index('hdev_ctrl_exit(pAd);'))
+        bad=dict(self.texts);bad['header']=bad['header'].replace(field,'UCHAR BcnContentLockInitialized;')
+        with self.assertRaises(ValueError):h.generate_source(bad)
     def test_constructor_publication_and_early_cleanup_are_transactional(self):
         body=h.function(self.texts['init'],'RTMPAllocAdapterBlock');publish='*ppAdapter = (VOID *)pAd;'
         self.assertEqual(body.count(publish),1)
@@ -88,7 +113,7 @@ class ProbeOOMTests(unittest.TestCase):
     def reject(self,texts,name,label):
         source=self.directory/(label+'.c');source.write_text(h.generate_source(texts));binary=source.with_suffix('')
         r=subprocess.run([shutil.which('clang'),'-std=gnu99','-Os','-fno-strict-aliasing','-Wall','-Wextra','-Werror',
-            '-Wno-unused-parameter','-fsanitize=address,undefined',str(source),'-o',str(binary)],capture_output=True,text=True,timeout=60)
+            '-Wno-unused-parameter','-Wno-unused-variable','-Wno-unused-but-set-variable','-fsanitize=address,undefined',str(source),'-o',str(binary)],capture_output=True,text=True,timeout=60)
         self.assertEqual(r.returncode,0,r.stderr)
         r=subprocess.run([str(binary),name],capture_output=True,text=True,timeout=10)
         self.assertNotEqual(r.returncode,0,'Removed protection unexpectedly accepted '+name)
