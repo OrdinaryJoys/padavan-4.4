@@ -758,6 +758,10 @@ static INT tm_tasklet_hif_pci_exit(RTMP_ADAPTER *pAd)
 	RTMP_OS_TASKLET_KILL(&obj->mt_mac_fw_own_task);
 #endif /* CONFIG_FWOWN_SUPPORT */
 
+#ifdef MULTI_LAYER_INTERRUPT
+	RTMP_OS_TASKLET_KILL(&obj->subsys_int_task);
+#endif
+
 	RTMP_OS_TASKLET_KILL(&obj->tx_dma_done_task);
 	RTMP_OS_TASKLET_KILL(&obj->tr_done_task);
 

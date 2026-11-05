@@ -101,6 +101,21 @@ class CmwqLifecycleTests(unittest.TestCase):
         with self.assertRaises(ValueError):h.generate_source(self.texts,'legacy')
         source=self.directory/'wrong-case';shutil.copyfile(self.binaries[0],source);source.chmod(0o700)
         self.assertEqual(subprocess.run([str(source),'undefined-case'],capture_output=True,timeout=5).returncode,91)
+        # Separate native-only TASKLET scenario; not a CMWQ/MIPS case.
+        for compiler,label,flags in ((shutil.which('gcc-16')or shutil.which('gcc'),'gnu',[]),
+                                     (shutil.which('clang'),'asan',['-fsanitize=address,undefined'])):
+            for omitted in (False,True):
+                with self.subTest(tasklet_variant=label,missing_subsys_kill=omitted):
+                    source=self.directory/('tasklet-'+label+('-missing'if omitted else '')+'.c')
+                    source.write_text(tasklet_variant_source(self.texts,omitted));binary=source.with_suffix('')
+                    built=subprocess.run([compiler,*FLAGS,*flags,str(source),'-o',str(binary)],capture_output=True,text=True,timeout=60)
+                    self.assertEqual((built.returncode,built.stderr),(0,''),built.stderr)
+                    run=subprocess.run([str(binary)],capture_output=True,text=True,timeout=10)
+                    if omitted:self.assertNotEqual(run.returncode,0)
+                    else:
+                        self.assertEqual((run.returncode,run.stderr),(0,''),run.stderr)
+                        self.assertEqual(json.loads(run.stdout),[7,7,127])
+
 
     def test_removed_null_stop_retirement_owner_and_dependency_barriers_are_detected(self):
         mutations=(
@@ -127,6 +142,68 @@ class CmwqLifecycleTests(unittest.TestCase):
                 self.assertEqual((built.returncode,built.stderr),(0,''),built.stderr)
                 rejected=subprocess.run([str(binary),selector],capture_output=True,text=True,timeout=10)
                 self.assertNotEqual(rejected.returncode,0)
+
+TASKLET_VARIANT_FUNCTIONS = ('rx_done_tasklet','rx1_done_tasklet',
+    'mt_mac_recovery_tasklet','mt_mac_fw_own_tasklet','subsys_int_tasklet',
+    'tx_dma_done_tasklet','tr_done_tasklet','tm_tasklet_hif_pci_init','tm_tasklet_hif_pci_exit')
+
+
+def tasklet_variant_source(texts, omit_subsys_kill=False):
+    """Native-only variant, separate from42 CMWQ/MIPS cases.
+
+    Tasklet execution/drain is an inert synchronous seam. Whole source
+    callbacks/initializer/destructor do not execute the kernel or prove its
+    scheduling ABI or current shipping configuration selection.
+    """
+    prefix=r"""
+#include <assert.h>
+#include <stdio.h>
+#define VOID void
+#define TRUE 1
+#define FALSE 0
+#define NDIS_STATUS_SUCCESS 0
+#define ERR_RECOVERY 1
+#define CONFIG_FWOWN_SUPPORT 1
+#define MULTI_LAYER_INTERRUPT 1
+#define HIF_RX_IDX0 0
+#define HIF_RX_IDX1 1
+typedef int INT;
+struct model_tasklet {void (*function)(unsigned long);unsigned long data;int initialized,scheduled,retired;};
+struct os_cookie {struct model_tasklet rx_done_task[2],mac_error_recovey_task,mt_mac_fw_own_task,subsys_int_task,tx_dma_done_task,tr_done_task;};
+typedef struct os_cookie *POS_COOKIE;
+typedef struct _RTMP_ADAPTER {void *OS_Cookie;int alive,callbacks,seen;} RTMP_ADAPTER,*PRTMP_ADAPTER;
+static int initialized,killed;
+static void model_init(struct model_tasklet *t,void(*fn)(unsigned long),unsigned long data){
+ assert(!t->initialized&&fn);t->function=fn;t->data=data;t->initialized=1;t->scheduled=1;initialized++;}
+static void model_kill(struct model_tasklet *t){assert(t->initialized&&!t->retired);
+ if(t->scheduled){t->function(t->data);t->scheduled=0;}t->retired=1;killed++;}
+#define RTMP_OS_TASKLET_INIT(ad,t,fn,data) model_init((t),(fn),(data))
+#define RTMP_OS_TASKLET_KILL(t) model_kill(t)
+static void backend(RTMP_ADAPTER *ad,int bit){assert(ad->alive);ad->callbacks++;ad->seen|=bit;}
+static void rx_done_func(RTMP_ADAPTER *ad){backend(ad,1);}
+static void rx1_done_func(RTMP_ADAPTER *ad){backend(ad,2);}
+static void mt_mac_recovery_func(RTMP_ADAPTER *ad){backend(ad,4);}
+static void mt_mac_fw_own_func(RTMP_ADAPTER *ad){backend(ad,8);}
+static void mt_subsys_int_func(RTMP_ADAPTER *ad){backend(ad,16);}
+static void tx_dma_done_func(RTMP_ADAPTER *ad){backend(ad,32);}
+static void tr_done_func(RTMP_ADAPTER *ad){backend(ad,64);}
+"""
+    bodies={name:h.function(texts['tm'],name) for name in TASKLET_VARIANT_FUNCTIONS}
+    needle='RTMP_OS_TASKLET_KILL(&obj->subsys_int_task);'
+    if bodies['tm_tasklet_hif_pci_exit'].count(needle)!=1:
+        raise ValueError('Exactly one subsystem tasklet retirement required')
+    if omit_subsys_kill:bodies['tm_tasklet_hif_pci_exit']=bodies['tm_tasklet_hif_pci_exit'].replace(needle,'(void)obj;')
+    suffix=r"""
+int main(void){struct os_cookie cookie={0};RTMP_ADAPTER ad={.OS_Cookie=&cookie,.alive=1};
+ struct model_tasklet *tasks[]={&cookie.rx_done_task[0],&cookie.rx_done_task[1],&cookie.mac_error_recovey_task,
+ &cookie.mt_mac_fw_own_task,&cookie.subsys_int_task,&cookie.tx_dma_done_task,&cookie.tr_done_task};
+ assert(tm_tasklet_hif_pci_init(&ad)==NDIS_STATUS_SUCCESS&&initialized==7);
+ assert(tm_tasklet_hif_pci_exit(&ad)==NDIS_STATUS_SUCCESS);
+ assert(killed==initialized&&ad.callbacks==7&&ad.seen==127);
+ for(unsigned int i=0;i<sizeof(tasks)/sizeof(tasks[0]);i++)assert(tasks[i]->retired&&!tasks[i]->scheduled);
+ ad.alive=0;printf("[%d,%d,%d]\n",initialized,killed,ad.seen);return 0;}
+"""
+    return prefix+'\n'.join(bodies.values())+suffix
 
 
 if __name__=='__main__':unittest.main()
