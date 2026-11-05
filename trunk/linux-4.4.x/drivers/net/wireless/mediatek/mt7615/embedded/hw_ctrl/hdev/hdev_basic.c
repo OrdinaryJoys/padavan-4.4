@@ -17,17 +17,21 @@
 #include "hdev/hdev.h"
 
 /*Local functions*/
-VOID HdevHwResourceInit(struct hdev_ctrl *ctrl)
+INT HdevHwResourceInit(struct hdev_ctrl *ctrl)
 {
 	HD_RESOURCE_CFG *pHwResourceCfg = &ctrl->HwResourceCfg;
 
+	if (pHwResourceCfg->WmmCtrl.pWmmSet != NULL)
+		return -1;
 	os_zero_mem(pHwResourceCfg, sizeof(HD_RESOURCE_CFG));
 	/*initial radio control*/
 	RcInit(ctrl);
 	/*initial wmm control*/
-	WcInit(ctrl, &pHwResourceCfg->WmmCtrl);
+	if (WcInit(ctrl, &pHwResourceCfg->WmmCtrl) != 0)
+		return -1;
 	/*initial wtbl control*/
 	WtcInit(ctrl);
+	return 0;
 }
 
 VOID HdevHwResourceExit(struct hdev_ctrl *ctrl)

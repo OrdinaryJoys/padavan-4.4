@@ -251,7 +251,8 @@ err:
 #if !defined(COMPOS_WIN) && !defined(COMPOS_TESTMODE_WIN)
 	if (!RtmpDmaTeardownCheck(pAd))
 		return ret;
-	rtmp_sys_task_exit(pAd);
+	if (rtmp_sys_task_exit(pAd) != NDIS_STATUS_SUCCESS)
+		return ret;
 #endif
 	WfMcuSysExit(pAd);
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("<--%s(), Err! status=%d\n", __func__, ret));
@@ -369,7 +370,8 @@ err0:
 	if (!RtmpDmaTeardownCheck(pAd))
 		return ret;
 	/* Retire software users before the completed hardware owners unwind. */
-	rtmp_sys_task_exit(pAd);
+	if (rtmp_sys_task_exit(pAd) != NDIS_STATUS_SUCCESS)
+		return ret;
 	if (eeprom_ready)
 		WfEPROMSysExit(pAd);
 	if (mcu_ready)
@@ -414,6 +416,8 @@ INT32 WfSysPosExit(RTMP_ADAPTER *pAd)
 #if  defined(COMPOS_WIN)  || defined(COMPOS_TESTMODE_WIN)
 #else
 	if (!RtmpDmaTeardownCheck(pAd))
+		return NDIS_STATUS_FAILURE;
+	if (rtmp_sys_task_exit(pAd) != NDIS_STATUS_SUCCESS)
 		return NDIS_STATUS_FAILURE;
 	WfEPROMSysExit(pAd);
 	WfMcuSysExit(pAd);

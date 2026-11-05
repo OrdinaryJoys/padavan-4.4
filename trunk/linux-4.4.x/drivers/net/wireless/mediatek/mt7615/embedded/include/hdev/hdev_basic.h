@@ -162,6 +162,6 @@ INT32 HdevExit(struct hdev_ctrl *hdev_ctrl, UCHAR HdevIdx);
 VOID HdevCfgShow(struct hdev_ctrl *hdev_ctrl);
 VOID HdevObjShow(struct hdev_obj *obj);
 VOID HdevHwResourceExit(struct hdev_ctrl *ctrl);
-VOID HdevHwResourceInit(struct hdev_ctrl *ctrl);
+INT HdevHwResourceInit(struct hdev_ctrl *ctrl);
 
 #endif /*__HDEV_BASIC_H*/

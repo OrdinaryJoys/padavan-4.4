@@ -94,7 +94,8 @@ VOID HcShowGreenAPInfo(RTMP_ADAPTER *pAd);
 
 INT32 hdev_ctrl_init(struct _RTMP_ADAPTER *pAd);
 VOID hdev_ctrl_exit(struct _RTMP_ADAPTER *pAd);
-VOID hdev_resource_init(void *hdev_ctrl);
+INT hdev_resource_init(void *hdev_ctrl);
+VOID hdev_resource_exit(void *hdev_ctrl);
 
 
 /*

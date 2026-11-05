@@ -266,8 +266,16 @@ BOOLEAN RtmpDmaTeardownCheck(RTMP_ADAPTER *pAd)
 	pAd->dma_stopping = TRUE;
 	done = !pAd->dma_lifecycle_pinned || pAd->dma_quiesced;
 	spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
-	if (done)
+	if (done) {
+		/* Cached hardware idle does not retire a partial software stage. */
+		if ((pAd->tm_qm_ops || pAd->tm_hif_ops ||
+			READ_ONCE(pAd->qm_wq_state) || READ_ONCE(pAd->hif_wq_state)) &&
+			tm_quiesce(pAd) != NDIS_STATUS_SUCCESS) {
+			RtmpDmaQuarantine(pAd);
+			return FALSE;
+		}
 		return TRUE;
+	}
 	RTMP_SET_FLAG(pAd, fRTMP_ADAPTER_HALT_IN_PROGRESS);
 	if (pAd->dma_irq_registered) {
 		if (RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_INTERRUPT_ACTIVE))

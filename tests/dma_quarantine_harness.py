@@ -19,7 +19,7 @@ SOURCE_PATHS={
  'chip_cr':BASE+'include/chip/mt7615_cr.h','hif_header':BASE+'include/hif/mt_hif_pci.h',
  'dma_header':BASE+'embedded/include/rtmp_chip.h','tm':BASE+'os/linux/tm.c',
  'andes_core':BASE+'embedded/mcu/andes_core.c','andes_header':BASE+'embedded/include/mcu/andes_core.h'}
-FUNCTION_SOURCES={'tm_exit': 'tm',
+FUNCTION_SOURCES={'rtmp_sys_task_exit':'inf','tm_exit': 'tm',
  'RtmpDmaStopping': 'os',
  'tm_quiesce': 'tm',
  'AndesDmaQuiesce': 'andes_core',
@@ -50,105 +50,76 @@ FUNCTION_SOURCES={'tm_exit': 'tm',
  'rt_pci_remove': 'pci',
  'pci_device_remove': 'kernel_pci'}
 SOURCE_ONLY_FUNCTION_SOURCES={'WfInit': 'hw', 'WfMcuInit': 'hw', 'mt_wifi_init': 'inf', 'RTMPAllocAdapterBlock': 'adapter', 'rt_pci_probe': 'pci'}
-BODY_ORDER=('tm_exit', 'RtmpDmaStopping', 'tm_quiesce', 'AndesDmaQuiesce', 'RtmpDmaMarkActive', 'hif_set_WPDMA', 'MtAsicSetWPDMA',
+BODY_ORDER=('rtmp_sys_task_exit','tm_exit', 'RtmpDmaStopping', 'tm_quiesce', 'AndesDmaQuiesce', 'RtmpDmaMarkActive', 'hif_set_WPDMA', 'MtAsicSetWPDMA',
  'RtmpDmaFinalReleaseCheck', 'RtmpDmaLifecycleInit', 'RtmpDmaLifecycleLock', 'RtmpDmaLifecycleUnlock',
  'RtmpDmaQuarantined', 'RtmpDmaResourcesMayRelease', 'RtmpDmaLifecycleGet', 'RtmpDmaLifecyclePut', 'RtmpDmaQuarantine',
  'RtmpDmaTeardownCheck', 'RtmpDmaBeginRemove', 'AsicSetWPDMA', 'RT28XXDMAStop', 'RT28XXDMAReset', 'WfHifSysExit',
  'WfSysPosExit', 'RTMPDrvClose', 'mt_wifi_open', 'mt_wifi_close', 'RtmpRaDevCtrlExit', 'RTMPFreeAdapter',
  'rt_pci_remove', 'pci_device_remove')
-CASE_GROUPS={'balanced': ('get-put', 'close-idle', 'close-repeat'),
+CASE_GROUPS={'balanced': ('get-put', 'close-idle', 'close-repeat', 'cached-empty', 'cached-active-retire', 'cached-retire-failure'),
  'duplicate': ('get-duplicate',),
  'module-failure': ('get-module-going', 'enable-unpinned', 'open-irq-failure'),
  'busy-close': ('close-busy',),
  'stop-failure': ('close-stop-failure', 'close-reset-failure', 'close-tasklet-failure'),
  'missing-device': ('close-device-missing',),
  'first-enable': ('first-enable-busy', 'first-enable-stop-failure', 'first-enable-idle'),
- 'busy-remove': ('remove-busy', 'remove-stop-failure', 'remove-busy-repeat', 'core-remove-busy',
-                 'core-remove-first-enable-busy'),
+ 'busy-remove': ('remove-busy', 'remove-stop-failure', 'remove-busy-repeat', 'core-remove-busy', 'core-remove-first-enable-busy'),
  'sticky': ('quarantine-retry-idle', 'quarantine-enable', 'quarantine-put'),
  'remove-success': ('remove-idle', 'core-remove-idle', 'remove-never-enabled', 'remove-after-failed-enable'),
  'adapter-guard': ('adapter-exit-quarantine', 'adapter-free-quarantine', 'adapter-exit-active', 'adapter-free-active'),
- 'interleaved': ('concurrent-close-open-idle', 'concurrent-close-open-busy', 'concurrent-remove-close-busy',
-                 'concurrent-stop-denies-enable', 'terminal-release-denies-open')}
-CASE_NAMES=('get-put', 'close-idle', 'close-repeat', 'get-duplicate', 'get-module-going', 'enable-unpinned', 'open-irq-failure',
- 'close-busy', 'close-stop-failure', 'close-reset-failure', 'close-tasklet-failure', 'close-device-missing',
- 'first-enable-busy', 'first-enable-stop-failure', 'first-enable-idle', 'remove-busy', 'remove-stop-failure',
- 'remove-busy-repeat', 'core-remove-busy', 'core-remove-first-enable-busy', 'quarantine-retry-idle',
- 'quarantine-enable', 'quarantine-put', 'remove-idle', 'core-remove-idle', 'remove-never-enabled',
- 'remove-after-failed-enable', 'adapter-exit-quarantine', 'adapter-free-quarantine', 'adapter-exit-active',
- 'adapter-free-active', 'concurrent-close-open-idle', 'concurrent-close-open-busy', 'concurrent-remove-close-busy',
- 'concurrent-stop-denies-enable', 'terminal-release-denies-open')
+ 'interleaved': ('concurrent-close-open-idle', 'concurrent-close-open-busy', 'concurrent-remove-close-busy', 'concurrent-stop-denies-enable',
+                 'terminal-release-denies-open')}
+CASE_NAMES=('get-put', 'close-idle', 'close-repeat', 'get-duplicate', 'get-module-going', 'enable-unpinned', 'open-irq-failure', 'close-busy', 'close-stop-failure',
+ 'close-reset-failure', 'close-tasklet-failure', 'close-device-missing', 'first-enable-busy', 'first-enable-stop-failure', 'first-enable-idle', 'remove-busy',
+ 'remove-stop-failure', 'remove-busy-repeat', 'core-remove-busy', 'core-remove-first-enable-busy', 'quarantine-retry-idle', 'quarantine-enable',
+ 'quarantine-put', 'remove-idle', 'core-remove-idle', 'remove-never-enabled', 'remove-after-failed-enable', 'adapter-exit-quarantine',
+ 'adapter-free-quarantine', 'adapter-exit-active', 'adapter-free-active', 'concurrent-close-open-idle', 'concurrent-close-open-busy',
+ 'concurrent-remove-close-busy', 'concurrent-stop-denies-enable', 'terminal-release-denies-open', 'cached-empty', 'cached-active-retire',
+ 'cached-retire-failure')
 FIELDS=('result', 'pinned', 'quarantined', 'stopping', 'removing', 'running', 'quiesced', 'module_refs', 'pci_refs',
  'adapter_live', 'netdev_live', 'rings_live', 'tokens_live', 'ring_alloc_live', 'mmio_live', 'regions_live', 'irq_live',
  'workers_live', 'unsafe_frees', 'free_count', 'init_calls', 'close_calls', 'unregister_calls', 'enable_calls',
  'disable_calls', 'idle_calls', 'reset_calls', 'module_gets', 'module_puts', 'pci_gets', 'pci_puts', 'core_irq_frees',
  'state_lock_live', 'life_lock_live')
 EXPECTED_ROWS={'get-put': [0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1],
- 'close-idle': [0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 4, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1],
- 'close-repeat': [0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 4, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1],
- 'get-duplicate': [0, 1, 0, 0, 0, 0, 1, 1, 2, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1,
-                   1],
- 'get-module-going': [-16, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0,
-                      1, 1],
- 'enable-unpinned': [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-                     1],
- 'open-irq-failure': [-16, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0,
-                      1, 1],
+ 'close-idle': [0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 4, 1, 2, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1],
+ 'close-repeat': [0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 4, 1, 2, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1],
+ 'get-duplicate': [0, 1, 0, 0, 0, 0, 1, 1, 2, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1],
+ 'get-module-going': [-16, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1],
+ 'enable-unpinned': [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1],
+ 'open-irq-failure': [-16, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1],
  'close-busy': [-5, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1],
- 'close-stop-failure': [-5, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0,
-                        1, 1],
- 'close-reset-failure': [-5, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0, 1, 0,
-                         0, 1, 1],
- 'close-tasklet-failure': [-5, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0,
-                           0, 1, 1],
- 'close-device-missing': [-5, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0,
-                          0, 1, 1],
- 'first-enable-busy': [-5, 1, 1, 1, 0, 0, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0,
-                       1, 1],
- 'first-enable-stop-failure': [-5, 1, 1, 1, 0, 0, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
-                               1, 0, 0, 1, 1],
- 'first-enable-idle': [-1, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 4, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0,
-                       1, 1],
+ 'close-stop-failure': [-5, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 1],
+ 'close-reset-failure': [-5, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0, 1, 0, 0, 1, 1],
+ 'close-tasklet-failure': [-5, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1],
+ 'close-device-missing': [-5, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1],
+ 'first-enable-busy': [-5, 1, 1, 1, 0, 0, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1],
+ 'first-enable-stop-failure': [-5, 1, 1, 1, 0, 0, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 1],
+ 'first-enable-idle': [-1, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 4, 1, 2, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1],
  'remove-busy': [0, 1, 1, 1, 1, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1],
- 'remove-stop-failure': [0, 1, 1, 1, 1, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0,
-                         1, 1],
- 'remove-busy-repeat': [0, 1, 1, 1, 1, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0,
-                        1, 1],
- 'core-remove-busy': [0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1,
-                      1],
- 'core-remove-first-enable-busy': [0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1,
-                                   0, 1, 1, 1, 1, 1],
- 'quarantine-retry-idle': [-16, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1,
-                           0, 0, 1, 1],
- 'quarantine-enable': [0, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0,
-                       1, 1],
- 'quarantine-put': [0, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1,
-                    1],
- 'remove-idle': [0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
- 'core-remove-idle': [0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 0,
-                      0],
- 'remove-never-enabled': [0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
-                          0, 0, 0],
- 'remove-after-failed-enable': [0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-                                1, 1, 0, 0, 0],
- 'adapter-exit-quarantine': [0, 1, 1, 1, 1, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1,
-                             0, 0, 1, 1],
- 'adapter-free-quarantine': [0, 1, 1, 1, 1, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1,
-                             0, 0, 1, 1],
- 'adapter-exit-active': [0, 1, 0, 0, 1, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0,
-                         1, 1],
- 'adapter-free-active': [0, 1, 0, 0, 1, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0,
-                         1, 1],
- 'concurrent-close-open-idle': [0, 1, 0, 0, 0, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 4, 2, 1, 0, 2, 1, 1, 1, 2, 1,
-                                2, 1, 0, 1, 1],
- 'concurrent-close-open-busy': [-16, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0,
-                                1, 0, 0, 1, 1],
- 'concurrent-remove-close-busy': [-5, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1,
-                                  0, 1, 1, 1, 1, 1],
- 'concurrent-stop-denies-enable': [0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 4, 1, 1, 0, 1, 1, 1, 1, 1,
-                                   1, 1, 1, 0, 1, 1],
- 'terminal-release-denies-open': [-16, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                                  0, 0, 0, 0, 1, 1]}
+ 'remove-stop-failure': [0, 1, 1, 1, 1, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 1],
+ 'remove-busy-repeat': [0, 1, 1, 1, 1, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1],
+ 'core-remove-busy': [0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1],
+ 'core-remove-first-enable-busy': [0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1],
+ 'quarantine-retry-idle': [-16, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1],
+ 'quarantine-enable': [0, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1],
+ 'quarantine-put': [0, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1],
+ 'remove-idle': [0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
+ 'core-remove-idle': [0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 0, 0],
+ 'remove-never-enabled': [0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+ 'remove-after-failed-enable': [0, 0, 0, 1, 1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0],
+ 'adapter-exit-quarantine': [0, 1, 1, 1, 1, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1],
+ 'adapter-free-quarantine': [0, 1, 1, 1, 1, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1],
+ 'adapter-exit-active': [0, 1, 0, 0, 1, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1],
+ 'adapter-free-active': [0, 1, 0, 0, 1, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1],
+ 'concurrent-close-open-idle': [0, 1, 0, 0, 0, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 4, 2, 2, 0, 2, 1, 1, 1, 2, 1, 2, 1, 0, 1, 1],
+ 'concurrent-close-open-busy': [-16, 1, 1, 1, 0, 1, 0, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1],
+ 'concurrent-remove-close-busy': [-5, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1],
+ 'concurrent-stop-denies-enable': [0, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 4, 1, 2, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1],
+ 'terminal-release-denies-open': [-16, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1],
+ 'cached-empty': [1, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1],
+ 'cached-active-retire': [1, 0, 0, 1, 0, 0, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1],
+ 'cached-retire-failure': [0, 1, 1, 1, 0, 0, 1, 1, 2, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, 1]}
 SOURCE_DECLARATIONS={'^#define NDIS_STATUS_SUCCESS\\s+0x[0-9a-fA-F]+\\s*$': 'os_header',
  '^#define NDIS_STATUS_FAILURE\\s+0x[0-9a-fA-F]+\\s*$': 'os_header',
  '^#define fRTMP_ADAPTER_NIC_NOT_EXIST[^\\n]*': 'flags',
@@ -209,7 +180,7 @@ struct device {struct pci_dev *pci;};
 struct pci_driver {void (*remove)(struct pci_dev *);};
 struct pci_dev {struct device dev;struct net_device *data;struct pci_driver *driver;
  int enabled,master,current_state;};
-typedef struct {pthread_mutex_t dma_lifecycle_lock,dma_state_lock;struct pci_dev *pci_dev;} COOKIE,*POS_COOKIE;
+typedef struct {pthread_mutex_t dma_lifecycle_lock,dma_state_lock;struct pci_dev *pci_dev;ULONG pAd_va;} COOKIE,*POS_COOKIE;
 struct _PCI_HIF_T {int MgmtRingLock,TxBmcRingLock,BcnRingLock,CtrlRingLock;struct {int RingLock;} FwDwloRing;};
 struct MCU_CTRL {unsigned long flags;int cmd_msg_task;};
 struct tm_ops {int (*exit)(struct _RTMP_ADAPTER *);};
@@ -217,9 +188,11 @@ struct _RTMP_CHIP_CAP {int WPDMABurstSIZE;};
 typedef struct _RTMP_ADAPTER {
  void *OS_Cookie,*hdev_ctrl,*PktTokenCb,*iw_stats,*stats,*EEPROMImage;struct net_device *net_dev;struct tm_ops *tm_qm_ops,*tm_hif_ops;
  int dma_lifecycle_pinned,dma_quarantined,dma_stopping,dma_removing,dma_running,dma_quiesced,dma_tasks_retired,dma_cmd_task_retired,dma_irq_registered;
+ UINT8 qm_wq_state,hif_wq_state;
  unsigned flags;struct MCU_CTRL MCUCtrl;struct {int bCountryFlag;} CommonCfg;
  int infType,DeQueueRunning[2],MacTab,CmdQLock,TimerQLock,AutoRateLock,BssInfoIdxBitMapLock,WdevListLock;
- int irq_lock,McuCmdLock,LockInterrupt,tssi_lock;
+ int irq_lock,McuCmdLock,LockInterrupt,tssi_lock,VirtualIfLock,TimerSemLock;
+ struct _PCI_HIF_T PciHif;struct {int lock;} WifiSysInfo;
  struct {int queues_retired;} ErrRecoveryCtl;
  struct {void *pIe;} ProbeRespIE[MAX_LEN_OF_BSS_TABLE];
  int Avg_NF[2],Avg_NFx16[2];
@@ -236,6 +209,8 @@ static int idle_ok=1,disable_ok=1,reset_ok=1,init_ok=1,request_ok=1,core_irq_fre
 static int state_lock_live,life_lock_live,final_release_authorized;
 static int retire_ok=1,retire_calls,command_retire_calls,irq_synchronizes;
 static int fixture_task_exit(RTMP_ADAPTER *ad){assert(ad==active_ad);retire_calls++;return retire_ok?0:1;}
+/* CMWQ initialization/drain states execute in the separate cmwq component. */
+static int tm_wq_retirement_check(RTMP_ADAPTER *ad){assert(ad==active_ad);return 0;}
 static struct tm_ops fixture_qm_ops={fixture_task_exit},fixture_hif_ops={fixture_task_exit};
 #define OS_TEST_BIT(n,p) (((*(p))&(1UL<<(n)))!=0)
 #define RTMP_OS_TASKLET_KILL(p) ((void)(p),command_retire_calls++)
@@ -296,7 +271,7 @@ static void netif_carrier_off(struct net_device *n){assert(n==active_ad->net_dev
 static void interrupt_disable(RTMP_ADAPTER *ad){assert(ad==active_ad);event(12);RTMP_CLEAR_FLAG(ad,fRTMP_ADAPTER_INTERRUPT_ACTIVE);}
 #define RTMP_ASIC_INTERRUPT_DISABLE(p) interrupt_disable(p)
 static struct _RTMP_CHIP_CAP *hc_get_chip_cap(void *p){(void)p;return &chipcap;}
-static struct _PCI_HIF_T *hc_get_hif_ctrl(void *p){(void)p;return &hif;}
+#define hc_get_hif_ctrl(p) ((void)(p),&active_ad->PciHif)
 struct _RTMP_CHIP_OP {int (*hif_set_dma)(RTMP_ADAPTER *,INT32,BOOLEAN,UINT8);};
 static struct _RTMP_CHIP_OP chipops;
 static struct _RTMP_CHIP_OP *hc_get_chip_ops(void *p){(void)p;return &chipops;}
@@ -335,7 +310,7 @@ static void software_exit(RTMP_ADAPTER *p){assert(p==active_ad);close_calls++;if
 #define HwCtrlExit(p) ((void)(p))
 #define HwCtrlSerExit(p) ((void)(p))
 #define qm_exit(p) ((void)(p))
-#define tr_ctl_exit(p) ((void)(p))
+#define tr_ctl_exit(p) ((void)(p),0)
 #define RTMP_AllTimerListRelease(p) ((void)(p))
 #define ba_reordering_resource_release(p) ((void)(p))
 #define rtmp_cfg_exit(p) ((void)(p))
@@ -392,8 +367,8 @@ static void retained(void){
  assert(active_ad->dma_lifecycle_pinned&&active_ad->dma_quarantined&&active_ad->dma_stopping);
  assert(module_refs==1&&pci_refs>=1&&unsafe_frees==0&&free_count==0);
  assert(!active_pci->master&&active_pci->data==active_ad->net_dev);
- assert(irq_synchronizes==1&&retire_calls==2);
- assert(active_ad->dma_irq_registered&&active_ad->dma_tasks_retired);
+ assert(irq_synchronizes==1&&retire_calls==(retire_ok?2:1));
+ assert(active_ad->dma_irq_registered&&active_ad->dma_tasks_retired==(retire_ok?1:0));
  assert(active_ad->tm_qm_ops==&fixture_qm_ops&&active_ad->tm_hif_ops==&fixture_hif_ops);
  assert(!RTMP_TEST_FLAG(active_ad,fRTMP_ADAPTER_INTERRUPT_ACTIVE));
  if(retire_ok)assert(command_retire_calls==1);else assert(command_retire_calls==0);
@@ -443,7 +418,21 @@ int main(int argc,char **argv){
  net.adapter=&ad;net.irq=3;net.base_addr=0x1000;pci.data=&net;pci.dev.pci=&pci;pci.driver=&driver;
  pci.enabled=pci.master=1;pci.current_state=PCI_D0;pci_refs=1;driver.remove=rt_pci_remove;
  chipops.hif_set_dma=fixture_set_dma;RtmpDmaLifecycleInit(&ad);
- if(!strcmp(name,"get-put")){
+ if(!strcmp(name,"cached-empty")){
+  acquired();result=RtmpDmaTeardownCheck(&ad);assert(result&&ad.dma_quiesced&&ad.dma_stopping&&!ad.dma_tasks_retired&&!retire_calls);
+  RtmpDmaLifecyclePut(&ad);assert(!module_refs&&pci_refs==1&&!ad.dma_lifecycle_pinned);
+ }else if(!strcmp(name,"cached-active-retire")){
+  acquired();ad.tm_qm_ops=&fixture_qm_ops;ad.tm_hif_ops=&fixture_hif_ops;workers_live=1;
+  result=RtmpDmaTeardownCheck(&ad);assert(result&&ad.dma_quiesced&&ad.dma_tasks_retired&&retire_calls==2&&!idle_calls&&!reset_calls);
+  assert(rtmp_sys_task_exit(&ad)==0&&!ad.tm_qm_ops&&!ad.tm_hif_ops&&!workers_live);RtmpDmaLifecyclePut(&ad);assert(!module_refs&&pci_refs==1);
+ }else if(!strcmp(name,"cached-retire-failure")){
+  acquired();ad.tm_qm_ops=&fixture_qm_ops;ad.tm_hif_ops=&fixture_hif_ops;workers_live=1;retire_ok=0;
+  ad.dma_irq_registered=TRUE;irq_live=1;RTMP_SET_FLAG(&ad,fRTMP_ADAPTER_INTERRUPT_ACTIVE);
+  result=RtmpDmaTeardownCheck(&ad);assert(!result&&ad.dma_quiesced&&ad.dma_quarantined&&ad.dma_stopping&&!ad.dma_tasks_retired);
+  assert(ad.tm_qm_ops==&fixture_qm_ops&&ad.tm_hif_ops==&fixture_hif_ops&&workers_live&&irq_live&&ad.dma_irq_registered);
+  assert(module_refs==1&&pci_refs==2&&adapter_live&&netdev_live&&rings_live&&ring_alloc_live&&mmio_live&&regions_live&&!tokens_live);
+  assert(!free_count&&!unregister_calls&&!idle_calls&&!reset_calls&&retire_calls==1&&!pci.master&&!unsafe_frees);
+ }else if(!strcmp(name,"get-put")){
   acquired();assert(RtmpDmaTeardownCheck(&ad));RtmpDmaLifecyclePut(&ad);
   assert(module_refs==0&&pci_refs==1&&!ad.dma_lifecycle_pinned&&ad.dma_quiesced);
  }else if(!strcmp(name,"get-duplicate")){

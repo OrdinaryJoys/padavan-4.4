@@ -78,6 +78,7 @@ static int DEVINIT mt_rbus_probe(struct pci_dev *pdev, const struct pci_device_i
 	INT rv;
 	void *handle = NULL;
 	RTMP_ADAPTER *pAd;
+	BOOLEAN radev_initialized = FALSE;
 	RTMP_OS_NETDEV_OP_HOOK netDevHook;
 	UINT32 Value;
 
@@ -128,7 +129,9 @@ static int DEVINIT mt_rbus_probe(struct pci_dev *pdev, const struct pci_device_i
 	/*is not a regular method*/
 	((POS_COOKIE)handle)->pci_dev = (VOID *)pdev;
 	((POS_COOKIE)handle)->pDev = &pdev->dev;
-	RtmpRaDevCtrlInit(pAd, RTMP_DEV_INF_RBUS);
+	if (RtmpRaDevCtrlInit(pAd, RTMP_DEV_INF_RBUS) != NDIS_STATUS_SUCCESS)
+		goto err_out_free_radev;
+	radev_initialized = TRUE;
 	net_dev = RtmpPhyNetDevInit(pAd, &netDevHook);
 
 	if (net_dev == NULL)
@@ -179,8 +182,11 @@ err_out_free_netdev:
 	}
 #endif /* MEM_ALLOC_INFO_SUPPORT */
 err_out_free_radev:
-	/* free RTMP_ADAPTER strcuture and os_cookie*/
-	RTMPFreeAdapter(pAd);
+	/* Match the completed device resource transaction, if any. */
+	if (radev_initialized)
+		RtmpRaDevCtrlExit(pAd);
+	else
+		RTMPFreeAdapter(pAd);
 err_out:
 	return -ENODEV;
 }

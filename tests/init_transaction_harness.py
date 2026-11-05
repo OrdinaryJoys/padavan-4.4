@@ -13,7 +13,8 @@ SOURCE_PATHS={'tr':BASE+'embedded/common/cmm_data.c',
  'free':BASE+'os/linux/rt_profile.c','tr_header':BASE+'embedded/include/tr.h',
  'hw_header':BASE+'embedded/include/hw_ctrl.h','rtmp_header':BASE+'embedded/include/rtmp.h',
  'task_header':BASE+'embedded/include/rtmp_os.h','os_header':BASE+'include/os/rt_linux.h',
- 'chip_header':BASE+'include/hw_ctrl/cmm_chip.h','qm_header':BASE+'embedded/include/qm.h'}
+ 'chip_header':BASE+'include/hw_ctrl/cmm_chip.h','qm_header':BASE+'embedded/include/qm.h',
+ 'lifetime':BASE+'os/linux/rt_main_dev.c'}
 FUNCTION_SOURCES={'tr_ctl_init':'tr','tr_ctl_exit':'tr','ser_init':'basic',
  'HwCtrlSerExit':'basic','ser_exit':'basic','HwCtrlInit':'basic','HwCtrlExit':'basic',
  'RtmpMgmtTaskInit':'mgmt','RtmpMgmtTaskExit':'mgmt',
@@ -21,7 +22,8 @@ FUNCTION_SOURCES={'tr_ctl_init':'tr','tr_ctl_exit':'tr','ser_init':'basic',
  'MeasureReqTabInit':'spectrum','MeasureReqTabExit':'spectrum',
  'TpcReqTabInit':'spectrum','TpcReqTabExit':'spectrum','qm_init':'qm','qm_exit':'qm',
  'tm_init':'tm','tm_exit':'tm','rtmp_sys_task_exit':'sys','rtmp_sys_init':'sys','rtmp_sys_exit':'sys'}
-SOURCE_ONLY_FUNCTION_SOURCES={'RTMPAllocAdapterBlock':'adapter','RTMPFreeAdapter':'free'}
+SOURCE_ONLY_FUNCTION_SOURCES={'RTMPAllocAdapterBlock':'adapter','RTMPFreeAdapter':'free',
+ 'RtmpDmaStopping':'lifetime','RtmpDmaTeardownCheck':'lifetime','RtmpDmaQuarantine':'lifetime'}
 BODY_ORDER=('tr_ctl_init','tr_ctl_exit','ser_init','HwCtrlSerExit','ser_exit','HwCtrlInit',
  'HwCtrlExit','RtmpMgmtTaskInit','RtmpMgmtTaskExit','ba_reordering_resource_init',
  'ba_reordering_resource_release','MeasureReqTabInit','MeasureReqTabExit','TpcReqTabInit',
@@ -53,10 +55,19 @@ CASE_NAMES=('tr-oom1','tr-oom2','tr-oom3','tr-normal','tr-owner','tr-partial','t
  'sys-ser-init-failure','sys-ser-attach-failure','sys-config-failure','sys-ba-oom','sys-measure-oom',
  'sys-tpc-oom','sys-tr-oom1','sys-tr-oom2','sys-tr-oom3','sys-qm-failure','sys-tm-qm-failure',
  'sys-tm-hif-failure','sys-normal','sys-owner','sys-reopen',
- 'sys-old-ser','sys-old-ba','sys-old-measure','sys-old-tpc','sys-old-tr','sys-retired')
+ 'sys-old-ser','sys-old-ba','sys-old-measure','sys-old-tpc','sys-old-tr','sys-retired',
+ 'tm-stop-refusal','tm-retired-refusal','tm-hif-rollback-failure','tm-exit-qm-failure','tm-exit-hif-failure',
+ 'sys-tm-rollback-failure','sys-task-exit-failure','sys-exit-failure','sys-init-retirement-failure','sys-stop-refusal','sys-tr-release-failure')
 FIELDS=('result','preserved','retry_result','source_owned_released','adapter_lock_retained',
         'final_allocations','final_locks','invalid_operations')
 EXPECTED_ROWS={
+ 'sys-tr-release-failure':[0,1,-1,0,1,0,0,0],
+ 'sys-stop-refusal':[0,1,1,1,1,0,0,0],
+ 'tm-stop-refusal':[1,1,0,1,1,0,0,0], 'tm-retired-refusal':[1,1,0,1,1,0,0,0],
+ 'tm-hif-rollback-failure':[3,1,0,1,1,0,0,0], 'tm-exit-qm-failure':[1,1,0,1,1,0,0,0], 'tm-exit-hif-failure':[1,1,0,1,1,0,0,0],
+ 'sys-tm-rollback-failure':[0,1,-1,0,1,0,0,0], 'sys-task-exit-failure':[1,1,-1,0,1,0,0,0],
+ 'sys-exit-failure':[0,1,-1,0,1,0,0,0], 'sys-init-retirement-failure':[0,1,-1,0,1,0,0,0],
+
  'tr-oom1':[3,1,0,1,1,0,0,0], 'tr-oom2':[3,1,0,1,1,0,0,0], 'tr-oom3':[3,1,0,1,1,0,0,0],
  'tr-normal':[0,1,-1,1,1,0,0,0], 'tr-owner':[1,1,-1,1,1,0,0,0], 'tr-partial':[1,1,-1,1,1,0,0,0], 'tr-reopen':[0,1,0,1,1,0,0,0],
  'ser-init-failure':[3,1,0,1,1,0,0,0], 'ser-attach-failure':[3,1,0,1,1,0,0,0], 'ser-normal':[0,1,-1,1,1,0,0,0],
@@ -132,7 +143,7 @@ typedef struct _RTMP_CHIP_CAP {int qm,qm_tm,hif_tm,tx_delay_support;UINT8 num_of
 typedef struct {int REC_BA_Status;struct reordering_list list;} BA_REC_ENTRY;
 typedef struct {BA_REC_ENTRY BARecEntry[MAX_LEN_OF_BA_REC_TABLE];} BA_TABLE;
 typedef struct {int inert;} MEASURE_REQ_TAB,TPC_REQ_TAB;
-typedef struct _RTMP_ADAPTER {int dma_tasks_retired;struct tx_rx_ctl tr_ctl;HW_CTRL_T HwCtrl;RTMP_OS_TASK cmdQTask;
+typedef struct _RTMP_ADAPTER {int dma_tasks_retired,dma_stopping,dma_quarantined;struct tx_rx_ctl tr_ctl;HW_CTRL_T HwCtrl;RTMP_OS_TASK cmdQTask;
  HwCmdQ CmdQ;int CmdQLock,BATabLock,cfg_lock,txs_lock,flags,WifiSysInfo,caps,fp_que_max_size;
  struct {int errRecovState,status,queues_retired,recovery_failed;} ErrRecoveryCtl;
  struct {void *pMeasureReqTab,*pTpcReqTab;int MeasureReqTabLock,TpcReqTabLock;} CommonCfg;
@@ -143,6 +154,13 @@ typedef struct _RTMP_ADAPTER {int dma_tasks_retired;struct tx_rx_ctl tr_ctl;HW_C
 static int live,locks,tasks,timers,invalid,attempts,fail_at,init_attempts,attach_attempts;
 static int init_fail_at,attach_fail_at,cfg_fail,qm_fail,notify_fail,tm_qm_fail,tm_hif_fail;
 static int qm_live,notify_live,tm_qm_live,tm_hif_live,software_stage;
+static int tm_qm_exit_fail,tm_hif_exit_fail,tm_retirement_fail,tm_qm_joined,tm_hif_joined;
+/* The full DMA parent runs in quarantine; these explicit seams model an
+ * unarmed transport and injectable task join outcomes for software stages. */
+static int RtmpDmaStopping(RTMP_ADAPTER *ad){return ad->dma_stopping||ad->dma_quarantined;}
+static int RtmpDmaTeardownCheck(RTMP_ADAPTER *ad){ad->dma_stopping=1;return !ad->dma_quarantined;}
+static void RtmpDmaQuarantine(RTMP_ADAPTER *ad){ad->dma_quarantined=1;}
+static int tm_wq_retirement_check(RTMP_ADAPTER *ad){(void)ad;return tm_retirement_fail?1:0;}
 static void *objects[64];
 static void alloc(UCHAR **out,size_t n){int i;*out=NULL;attempts++;if(attempts==fail_at)return;
  *out=calloc(1,n);assert(*out);for(i=0;i<64;i++)if(!objects[i]){objects[i]=*out;live++;return;}abort();}
@@ -192,10 +210,10 @@ static struct qm_ops ge_qm_ops={qminit,qmexit},fp_qm_ops={qminit,qmexit},ge_fair
 static int qm_notify_register(RTMP_ADAPTER *ad){assert(ad->qm_ops&&qm_live&&!notify_live);if(notify_fail)return -1;notify_live=1;return 0;}
 static void qm_notify_unregister(RTMP_ADAPTER *ad){assert(ad->qm_ops&&notify_live);notify_live=0;}
 static void MtCmdCr4Set(RTMP_ADAPTER *ad,int n,int k,int v){(void)ad;(void)n;(void)k;(void)v;}
-static int tmqinit(RTMP_ADAPTER *ad){(void)ad;assert(!tm_qm_live);if(tm_qm_fail)return 3;tm_qm_live=1;return 0;}
-static int tmqexit(RTMP_ADAPTER *ad){(void)ad;assert(tm_qm_live&&!tm_hif_live);tm_qm_live=0;return 0;}
-static int tmhinit(RTMP_ADAPTER *ad){(void)ad;assert(tm_qm_live&&!tm_hif_live);if(tm_hif_fail)return 3;tm_hif_live=1;return 0;}
-static int tmhexit(RTMP_ADAPTER *ad){(void)ad;assert(tm_hif_live);tm_hif_live=0;return 0;}
+static int tmqinit(RTMP_ADAPTER *ad){(void)ad;assert(!tm_qm_live);if(tm_qm_fail)return 3;tm_qm_live=1;tm_qm_joined=0;return 0;}
+static int tmqexit(RTMP_ADAPTER *ad){(void)ad;assert(tm_qm_live||tm_qm_joined);assert(!tm_hif_live);if(tm_qm_exit_fail)return 1;tm_qm_live=0;tm_qm_joined=1;return 0;}
+static int tmhinit(RTMP_ADAPTER *ad){(void)ad;assert(tm_qm_live&&!tm_hif_live);if(tm_hif_fail)return 3;tm_hif_live=1;tm_hif_joined=0;return 0;}
+static int tmhexit(RTMP_ADAPTER *ad){(void)ad;assert(tm_hif_live||tm_hif_joined);if(tm_hif_exit_fail)return 1;tm_hif_live=0;tm_hif_joined=1;return 0;}
 static struct tm_ops tm_tasklet_qm_ops={tmqinit,tmqexit},tm_tasklet_hif_ops={tmhinit,tmhexit};
 static struct tm_ops tm_wq_qm_ops={tmqinit,tmqexit},tm_wq_hif_ops={tmhinit,tmhexit};
 static void wifi_sys_reset(int *p){assert(!*p);*p=1;}
@@ -209,7 +227,7 @@ static void RTMP_AllTimerListRelease(RTMP_ADAPTER *ad){(void)ad;assert(timers==0
 '''
 
 SUFFIX=r'''
-static void reset_faults(void){fail_at=init_fail_at=attach_fail_at=cfg_fail=qm_fail=notify_fail=tm_qm_fail=tm_hif_fail=0;}
+static void reset_faults(void){fail_at=init_fail_at=attach_fail_at=cfg_fail=qm_fail=notify_fail=tm_qm_fail=tm_hif_fail=tm_qm_exit_fail=tm_hif_exit_fail=tm_retirement_fail=0;}
 static void tr_clear(RTMP_ADAPTER *ad){assert(tr_ctl_exit(ad)==0);assert(tr_ctl_exit(ad)==0);}
 static void mgmt_clear(RTMP_ADAPTER *ad){RtmpMgmtTaskExit(ad);NdisFreeSpinLock(&ad->CmdQLock);}
 static int tr_owned(RTMP_ADAPTER *ad){struct tr_flow_control *f=&ad->tr_ctl.tr_flow_ctl;return f->TxFlowBlockState!=NULL||f->TxBlockLock!=NULL||f->TxBlockDevList!=NULL;}
@@ -217,7 +235,7 @@ static void clean_check(RTMP_ADAPTER *ad){assert(live==0&&locks==1&&tasks==0&&ti
  assert(!ad->HwCtrl.ser_initialized&&!ad->HwCtrl.HwCtrlTask.kthread_task&&!ad->HwCtrl.ser_task.kthread_task);
  assert(!ad->qm_ops&&!ad->tm_qm_ops&&!ad->tm_hif_ops&&!qm_live&&!notify_live&&!tm_qm_live&&!tm_hif_live);}
 int main(int argc,char **argv){RTMP_ADAPTER ad;RTMP_CHIP_CAP cap={FAST_PATH_QM,TASKLET_METHOD,TASKLET_METHOD,1,3};
- const char *name;int result=0,preserved=1,retry=-1,before,phase;void *owner;
+ const char *name;int result=0,preserved=1,retry=-1,before,phase,source_owned_released=1;void *owner;
  assert(argc==2);name=argv[1];CASE_ADMISSION
  memset(&ad,0,sizeof(ad));ad.hdev_ctrl=&cap;ad.caps=fASIC_CAP_MCU_OFFLOAD;alloc_lock(&ad.mpdu_blk_pool.lock);
  if(!strncmp(name,"tr-",3)){
@@ -253,11 +271,48 @@ int main(int argc,char **argv){RTMP_ADAPTER ad;RTMP_CHIP_CAP cap={FAST_PATH_QM,T
   if(!strcmp(name,"qm-init-failure"))qm_fail=1;
   if(!strcmp(name,"qm-notify-failure"))notify_fail=1;
   result=qm_init(&ad);if(result){assert(!ad.qm_ops&&!qm_live&&!notify_live);reset_faults();retry=qm_init(&ad);}if(!strcmp(name,"qm-owner")){owner=ad.qm_ops;result=qm_init(&ad);preserved=(owner==ad.qm_ops&&notify_live==1);}assert(qm_exit(&ad)==0);assert(qm_exit(&ad)==0);
+ }else if(!strcmp(name,"tm-stop-refusal")||!strcmp(name,"tm-retired-refusal")){
+  if(strstr(name,"stop"))ad.dma_stopping=1;else ad.dma_tasks_retired=1;
+  result=tm_init(&ad);assert(result==1&&!ad.tm_qm_ops&&!ad.tm_hif_ops&&!tm_qm_live&&!tm_hif_live);
+  ad.dma_stopping=0;ad.dma_tasks_retired=0;retry=tm_init(&ad);assert(retry==0);assert(tm_exit(&ad)==0);
+ }else if(!strcmp(name,"tm-hif-rollback-failure")){
+  tm_hif_fail=tm_qm_exit_fail=1;result=tm_init(&ad);assert(result==3&&ad.tm_qm_ops&&!ad.tm_hif_ops&&tm_qm_live&&!tm_hif_live);
+  assert(tm_exit(&ad)==1&&ad.tm_qm_ops&&tm_qm_live);reset_faults();retry=tm_exit(&ad);assert(retry==0);
+  assert(tm_init(&ad)==0&&tm_exit(&ad)==0);
+ }else if(!strcmp(name,"tm-exit-qm-failure")||!strcmp(name,"tm-exit-hif-failure")){
+  assert(tm_init(&ad)==0);if(strstr(name,"qm-failure"))tm_qm_exit_fail=1;else tm_hif_exit_fail=1;
+  result=tm_exit(&ad);assert(result==1&&ad.tm_qm_ops&&ad.tm_hif_ops&&tm_qm_live&&!ad.dma_tasks_retired);
+  if(tm_hif_exit_fail)assert(tm_hif_live);else assert(!tm_hif_live&&tm_hif_joined);
+  reset_faults();retry=tm_exit(&ad);assert(retry==0&&!tm_qm_live&&!tm_hif_live);
  }else if(!strncmp(name,"tm-",3)){
   if(!strcmp(name,"tm-qm-failure"))tm_qm_fail=1;
   if(!strcmp(name,"tm-hif-failure"))tm_hif_fail=1;
   if(!strcmp(name,"tm-invalid-method"))cap.qm_tm=99;
   result=tm_init(&ad);if(result){assert(!ad.tm_qm_ops&&!ad.tm_hif_ops&&!tm_qm_live&&!tm_hif_live);reset_faults();cap.qm_tm=TASKLET_METHOD;retry=tm_init(&ad);}if(!strcmp(name,"tm-owner")){owner=ad.tm_qm_ops;result=tm_init(&ad);preserved=(owner==ad.tm_qm_ops&&tm_hif_live==1);}assert(tm_exit(&ad)==0);assert(tm_exit(&ad)==0);
+ }else if(!strcmp(name,"sys-tr-release-failure")){
+  assert(rtmp_sys_init(&ad,NULL)==TRUE);owner=ad.tr_ctl.tr_flow_ctl.TxBlockDevList;
+  /* Deliberate invariant fault: exercise the real TR partial-owner refusal. */
+  ad.tr_ctl.tr_flow_ctl.TxBlockDevList=NULL;result=rtmp_sys_exit(&ad);
+  assert(result==FALSE&&ad.dma_quarantined&&ad.dma_stopping&&!ad.tm_qm_ops&&!ad.tm_hif_ops&&!ad.qm_ops&&tr_owned(&ad)&&software_stage&&tasks==0&&live==6&&locks==10&&timers==1);
+  source_owned_released=0;
+  /* Restore only the private fixture's removed pointer for leak-free process teardown. */
+  ad.tr_ctl.tr_flow_ctl.TxBlockDevList=owner;ad.dma_quarantined=0;assert(rtmp_sys_exit(&ad)==TRUE);
+ }else if(!strcmp(name,"sys-stop-refusal")){
+  ad.dma_stopping=1;result=rtmp_sys_init(&ad,NULL);clean_check(&ad);assert(result==FALSE&&ad.WifiSysInfo==0&&!attempts&&!init_attempts);
+  ad.dma_stopping=0;retry=rtmp_sys_init(&ad,NULL);assert(retry==TRUE);assert(rtmp_sys_exit(&ad)==TRUE);
+ }else if(!strcmp(name,"sys-tm-rollback-failure")||!strcmp(name,"sys-task-exit-failure")||!strcmp(name,"sys-exit-failure")||!strcmp(name,"sys-init-retirement-failure")){
+  if(!strcmp(name,"sys-tm-rollback-failure")){tm_hif_fail=tm_qm_exit_fail=1;result=rtmp_sys_init(&ad,NULL);}
+  else if(!strcmp(name,"sys-init-retirement-failure")){tm_hif_fail=tm_retirement_fail=1;result=rtmp_sys_init(&ad,NULL);}
+  else {assert(rtmp_sys_init(&ad,NULL));if(!strcmp(name,"sys-task-exit-failure")){tm_hif_exit_fail=1;result=rtmp_sys_task_exit(&ad);}else{tm_qm_exit_fail=1;result=rtmp_sys_exit(&ad);}}
+  assert(ad.dma_quarantined&&ad.dma_stopping&&!ad.dma_tasks_retired&&qm_live&&tr_owned(&ad)&&software_stage&&tasks==3&&live==6&&locks==12&&timers==1);
+  if(!strcmp(name,"sys-tm-rollback-failure"))assert(ad.tm_qm_ops&&!ad.tm_hif_ops&&tm_qm_live&&!tm_hif_live);
+  if(!strcmp(name,"sys-task-exit-failure"))assert(ad.tm_qm_ops&&ad.tm_hif_ops&&tm_qm_live&&tm_hif_live);
+  if(!strcmp(name,"sys-exit-failure"))assert(ad.tm_qm_ops&&ad.tm_hif_ops&&tm_qm_live&&!tm_hif_live);
+  if(!strcmp(name,"sys-init-retirement-failure"))assert(!ad.tm_qm_ops&&!ad.tm_hif_ops&&!tm_qm_live&&!tm_hif_live);
+  source_owned_released=0;
+  /* Private inert fixture hygiene after the retained observation. This is
+   * deliberately not a production reset, recovery or hardware-drain proof. */
+  reset_faults();ad.dma_quarantined=0;assert(rtmp_sys_exit(&ad)==TRUE);
  }else if(!strncmp(name,"sys-old-",8)){
   if(!strcmp(name,"sys-old-ser")){assert(ser_init(&ad)==0);owner=ad.HwCtrl.ser_task.kthread_task;before=init_attempts;result=rtmp_sys_init(&ad,NULL);preserved=(ad.HwCtrl.ser_task.kthread_task==owner&&before==init_attempts&&ad.WifiSysInfo==0);assert(ser_exit(&ad)==0);}
   if(!strcmp(name,"sys-old-ba")){alloc_lock(&ad.BATabLock);assert(ba_reordering_resource_init(&ad,4));owner=ad.mpdu_blk_pool.mem;before=attempts;result=rtmp_sys_init(&ad,NULL);preserved=(ad.mpdu_blk_pool.mem==owner&&attempts==before&&ad.WifiSysInfo==0);ba_reordering_resource_release(&ad);free_lock(&ad.BATabLock);}
@@ -280,13 +335,13 @@ int main(int argc,char **argv){RTMP_ADAPTER ad;RTMP_CHIP_CAP cap={FAST_PATH_QM,T
   if(!strcmp(name,"sys-qm-failure"))qm_fail=1;
   if(!strcmp(name,"sys-tm-qm-failure"))tm_qm_fail=1;
   if(!strcmp(name,"sys-tm-hif-failure"))tm_hif_fail=1;
-  result=rtmp_sys_init(&ad,NULL);if(!result){clean_check(&ad);reset_faults();ad.WifiSysInfo=0;retry=rtmp_sys_init(&ad,NULL);assert(retry==TRUE);}assert(tasks==3&&live==6&&locks==12&&timers==1&&software_stage&&qm_live&&tm_qm_live&&tm_hif_live);
+  result=rtmp_sys_init(&ad,NULL);if(!result){clean_check(&ad);reset_faults();assert(!ad.dma_quarantined);/* Fresh enclosing lifecycle acquisition after complete software rollback. */ad.dma_stopping=0;ad.WifiSysInfo=0;retry=rtmp_sys_init(&ad,NULL);assert(retry==TRUE);}assert(tasks==3&&live==6&&locks==12&&timers==1&&software_stage&&qm_live&&tm_qm_live&&tm_hif_live);
   if(!strcmp(name,"sys-owner")){owner=ad.tr_ctl.tr_flow_ctl.TxBlockLock;before=init_attempts;result=rtmp_sys_init(&ad,NULL);preserved=(owner==ad.tr_ctl.tr_flow_ctl.TxBlockLock&&before==init_attempts&&ad.WifiSysInfo==1);}
   if(!strcmp(name,"sys-retired")){rtmp_sys_task_exit(&ad);assert(tasks==0&&!qm_live&&!tm_qm_live&&!tm_hif_live&&!tr_owned(&ad)&&timers==0);rtmp_sys_task_exit(&ad);}
-  rtmp_sys_exit(&ad);if(!strcmp(name,"sys-reopen")){clean_check(&ad);retry=rtmp_sys_init(&ad,NULL);assert(retry==TRUE);rtmp_sys_exit(&ad);}
+  rtmp_sys_exit(&ad);if(!strcmp(name,"sys-reopen")){clean_check(&ad);assert(!ad.dma_quarantined);/* Fresh parent lifetime after complete exit. */ad.dma_stopping=0;retry=rtmp_sys_init(&ad,NULL);assert(retry==TRUE);rtmp_sys_exit(&ad);}
  }
  clean_check(&ad);phase=(ad.mpdu_blk_pool.lock==1);free_lock(&ad.mpdu_blk_pool.lock);
- printf("[%d,%d,%d,1,%d,%d,%d,%d]\n",result,preserved,retry,phase,live,locks,invalid);assert(live==0&&locks==0&&tasks==0&&timers==0&&invalid==0);return 0;
+ printf("[%d,%d,%d,%d,%d,%d,%d,%d]\n",result,preserved,retry,source_owned_released,phase,live,locks,invalid);assert(live==0&&locks==0&&tasks==0&&timers==0&&invalid==0);return 0;
 }
 '''
 

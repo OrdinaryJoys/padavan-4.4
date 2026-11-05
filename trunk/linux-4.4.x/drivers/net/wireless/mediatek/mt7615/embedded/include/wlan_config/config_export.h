@@ -72,7 +72,7 @@ struct vht_cfg {
 VOID wpf_init(struct _RTMP_ADAPTER *ad);
 VOID wpf_exit(struct _RTMP_ADAPTER *ad);
 VOID wpf_config_exit(struct _RTMP_ADAPTER *ad);
-VOID wpf_config_init(struct _RTMP_ADAPTER *ad);
+NDIS_STATUS wpf_config_init(struct _RTMP_ADAPTER *ad);
 
 /*
 * Configure Get

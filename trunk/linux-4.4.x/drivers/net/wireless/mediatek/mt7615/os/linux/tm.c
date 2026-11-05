@@ -19,6 +19,125 @@
 
 #ifndef CONFIG_PROPRIETARY_DRIVER
 
+enum tm_wq_state {
+	TM_WQ_IDLE,
+	TM_WQ_INITIALIZING,
+	TM_WQ_ACTIVE,
+	TM_WQ_EXITING,
+	TM_WQ_CANCELLED,
+};
+
+/* PCI scheduling may already own dma_state_lock: never acquire it from
+ * tm_wq_lock. Allocation and destroy_workqueue must run outside both locks.
+ */
+static DEFINE_SPINLOCK(tm_wq_lock);
+
+static INT tm_wq_prepare(struct workqueue_struct **owner, UINT8 *state,
+	BOOLEAN *enabled)
+{
+	ULONG flags;
+	INT ret = NDIS_STATUS_FAILURE;
+
+	spin_lock_irqsave(&tm_wq_lock, flags);
+	if (!*owner && *state == TM_WQ_IDLE) {
+		*state = TM_WQ_INITIALIZING;
+		if (enabled)
+			*enabled = FALSE;
+		ret = NDIS_STATUS_SUCCESS;
+	}
+	spin_unlock_irqrestore(&tm_wq_lock, flags);
+	return ret;
+}
+
+static VOID tm_wq_abort(UINT8 *state)
+{
+	ULONG flags;
+
+	spin_lock_irqsave(&tm_wq_lock, flags);
+	*state = TM_WQ_IDLE;
+	spin_unlock_irqrestore(&tm_wq_lock, flags);
+}
+
+static INT tm_wq_publish(RTMP_ADAPTER *pAd, struct workqueue_struct **owner,
+	UINT8 *state, struct workqueue_struct *wq, BOOLEAN *enabled)
+{
+	ULONG flags;
+	INT ret = NDIS_STATUS_FAILURE;
+#if defined(LINUX) && defined(RTMP_PCI_SUPPORT)
+	ULONG dma_flags = 0;
+	BOOLEAN pci = IS_PCI_INF(pAd) || IS_PCIE_INF(pAd);
+
+	if (pci)
+		spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, dma_flags);
+#endif
+	spin_lock_irqsave(&tm_wq_lock, flags);
+	if (*state == TM_WQ_INITIALIZING && !*owner &&
+		!RtmpDmaStopping(pAd)) {
+		*owner = wq;
+		*state = TM_WQ_ACTIVE;
+		if (enabled)
+			*enabled = TRUE;
+		ret = NDIS_STATUS_SUCCESS;
+	}
+	spin_unlock_irqrestore(&tm_wq_lock, flags);
+#if defined(LINUX) && defined(RTMP_PCI_SUPPORT)
+	if (pci)
+		spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, dma_flags);
+#endif
+	return ret;
+}
+
+static INT tm_wq_destroy(struct workqueue_struct **owner, UINT8 *state,
+	BOOLEAN *enabled)
+{
+	struct workqueue_struct *wq;
+	ULONG flags;
+
+	spin_lock_irqsave(&tm_wq_lock, flags);
+	if (*state == TM_WQ_INITIALIZING) {
+		/* The allocator retains its private queue until publication fails. */
+		*state = TM_WQ_CANCELLED;
+		spin_unlock_irqrestore(&tm_wq_lock, flags);
+		return NDIS_STATUS_FAILURE;
+	}
+	if ((*state != TM_WQ_IDLE && *state != TM_WQ_ACTIVE) ||
+		((*state == TM_WQ_IDLE) != (*owner == NULL))) {
+		spin_unlock_irqrestore(&tm_wq_lock, flags);
+		return NDIS_STATUS_FAILURE;
+	}
+	if (enabled)
+		*enabled = FALSE;
+	wq = *owner;
+	*owner = NULL;
+	*state = wq ? TM_WQ_EXITING : TM_WQ_IDLE;
+	spin_unlock_irqrestore(&tm_wq_lock, flags);
+	if (wq) {
+		destroy_workqueue(wq);
+		/* A fresh INIT_WORK may not replace work owned by the drain. */
+		spin_lock_irqsave(&tm_wq_lock, flags);
+		*state = TM_WQ_IDLE;
+		spin_unlock_irqrestore(&tm_wq_lock, flags);
+	}
+	return NDIS_STATUS_SUCCESS;
+}
+
+static INT tm_wq_retirement_check(RTMP_ADAPTER *pAd)
+{
+	ULONG flags;
+	INT ret = NDIS_STATUS_SUCCESS;
+
+	spin_lock_irqsave(&tm_wq_lock, flags);
+	if (pAd->qm_wq_state == TM_WQ_INITIALIZING)
+		pAd->qm_wq_state = TM_WQ_CANCELLED;
+	if (pAd->hif_wq_state == TM_WQ_INITIALIZING)
+		pAd->hif_wq_state = TM_WQ_CANCELLED;
+	if ((pAd->qm_wq_state != TM_WQ_IDLE && pAd->qm_wq_state != TM_WQ_ACTIVE) ||
+		(pAd->hif_wq_state != TM_WQ_IDLE && pAd->hif_wq_state != TM_WQ_ACTIVE))
+		ret = NDIS_STATUS_FAILURE;
+	spin_unlock_irqrestore(&tm_wq_lock, flags);
+	return ret;
+}
+
 static VOID ge_tx_pkt_deq_work(struct work_struct *work)
 {
 	RTMP_ADAPTER *pAd = container_of(work, struct _RTMP_ADAPTER, tx_deq_work);
@@ -42,26 +161,41 @@ static VOID fp_fair_tx_pkt_deq_work(struct work_struct *work)
 
 static INT tm_wq_qm_init(RTMP_ADAPTER *pAd)
 {
-	INT ret = NDIS_STATUS_SUCCESS;
-
+	struct workqueue_struct *wq;
 	RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
+	UINT8 qm = cap->qm;
 
-	pAd->tx_dequeue_scheduable = TRUE;
+	if (qm != FAST_PATH_QM && qm != FAST_PATH_FAIR_QM &&
+		qm != GENERIC_QM && qm != GENERIC_FAIR_QM)
+		return NDIS_STATUS_FAILURE;
+	if (tm_wq_prepare(&pAd->qm_wq, &pAd->qm_wq_state,
+		&pAd->tx_dequeue_scheduable) != NDIS_STATUS_SUCCESS)
+		return NDIS_STATUS_FAILURE;
 
 #if (KERNEL_VERSION(2, 6, 37) <= LINUX_VERSION_CODE)
-	pAd->qm_wq = alloc_workqueue("qm_wq", WQ_MEM_RECLAIM | WQ_UNBOUND, 0);
+	wq = alloc_workqueue("qm_wq", WQ_MEM_RECLAIM | WQ_UNBOUND, 0);
 #else
-	pAd->qm_wq = create_singlethread_workqueue("qm_wq");
+	wq = create_singlethread_workqueue("qm_wq");
 #endif
+	if (!wq) {
+		tm_wq_abort(&pAd->qm_wq_state);
+		return NDIS_STATUS_RESOURCES;
+	}
 
-	if (cap->qm == FAST_PATH_QM) {
+	if (qm == FAST_PATH_QM) {
 		INIT_WORK(&pAd->tx_deq_work, fp_tx_pkt_deq_work);
-	} else if (cap->qm == FAST_PATH_FAIR_QM) {
+	} else if (qm == FAST_PATH_FAIR_QM) {
 		INIT_WORK(&pAd->tx_deq_work, fp_fair_tx_pkt_deq_work);
-	} else if ((cap->qm == GENERIC_QM) || (cap->qm == GENERIC_FAIR_QM)) {
+	} else if ((qm == GENERIC_QM) || (qm == GENERIC_FAIR_QM)) {
 		INIT_WORK(&pAd->tx_deq_work, ge_tx_pkt_deq_work);
 	}
-	return ret;
+	if (tm_wq_publish(pAd, &pAd->qm_wq, &pAd->qm_wq_state, wq,
+		&pAd->tx_dequeue_scheduable) != NDIS_STATUS_SUCCESS) {
+		destroy_workqueue(wq);
+		tm_wq_abort(&pAd->qm_wq_state);
+		return NDIS_STATUS_FAILURE;
+	}
+	return NDIS_STATUS_SUCCESS;
 }
 
 static VOID tx_dma_done_work(struct work_struct *work)
@@ -120,13 +254,21 @@ static VOID mt_subsys_int_work(struct work_struct *work)
 
 static INT tm_wq_hif_pci_init(RTMP_ADAPTER *pAd)
 {
-	INT ret = NDIS_STATUS_SUCCESS;
+	struct workqueue_struct *wq;
 	POS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;
+
+	if (tm_wq_prepare(&obj->hif_wq, &pAd->hif_wq_state, NULL) !=
+		NDIS_STATUS_SUCCESS)
+		return NDIS_STATUS_FAILURE;
 #if (KERNEL_VERSION(2, 6, 37) <= LINUX_VERSION_CODE)
-	obj->hif_wq = alloc_workqueue("hif_wq", WQ_MEM_RECLAIM | WQ_UNBOUND, 0);
+	wq = alloc_workqueue("hif_wq", WQ_MEM_RECLAIM | WQ_UNBOUND, 0);
 #else
-	obj->hif_wq = create_singlethread_workqueue("hif_wq");
+	wq = create_singlethread_workqueue("hif_wq");
 #endif
+	if (!wq) {
+		tm_wq_abort(&pAd->hif_wq_state);
+		return NDIS_STATUS_RESOURCES;
+	}
 
 	INIT_WORK(&obj->tx_dma_done_work, tx_dma_done_work);
 	INIT_WORK(&obj->rx_done_work[HIF_RX_IDX0], rx_done_work);
@@ -144,14 +286,20 @@ static INT tm_wq_hif_pci_init(RTMP_ADAPTER *pAd)
 	INIT_WORK(&obj->subsys_int_work, mt_subsys_int_work);
 #endif
 
-	return ret;
+	if (tm_wq_publish(pAd, &obj->hif_wq, &pAd->hif_wq_state, wq, NULL) !=
+		NDIS_STATUS_SUCCESS) {
+		destroy_workqueue(wq);
+		tm_wq_abort(&pAd->hif_wq_state);
+		return NDIS_STATUS_FAILURE;
+	}
+	return NDIS_STATUS_SUCCESS;
 }
 
 static INT tm_wq_hif_init(RTMP_ADAPTER *pAd)
 {
-	INT ret = NDIS_STATUS_SUCCESS;
+	INT ret = NDIS_STATUS_FAILURE;
 
-	if (IS_PCI_INF(pAd) || IS_RBUS_INF(pAd)) {
+	if (IS_PCI_INF(pAd) || IS_PCIE_INF(pAd) || IS_RBUS_INF(pAd)) {
 		ret = tm_wq_hif_pci_init(pAd);
 	}
 
@@ -160,20 +308,16 @@ static INT tm_wq_hif_init(RTMP_ADAPTER *pAd)
 
 static INT tm_wq_hif_pci_exit(RTMP_ADAPTER *pAd)
 {
-	INT ret = NDIS_STATUS_SUCCESS;
-
 	POS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;
 
-	destroy_workqueue(obj->hif_wq);
-
-	return ret;
+	return tm_wq_destroy(&obj->hif_wq, &pAd->hif_wq_state, NULL);
 }
 
 static INT tm_wq_hif_exit(RTMP_ADAPTER *pAd)
 {
 	INT ret = NDIS_STATUS_SUCCESS;
 
-	if (IS_PCI_INF(pAd) || IS_RBUS_INF(pAd)) {
+	if (IS_PCI_INF(pAd) || IS_PCIE_INF(pAd) || IS_RBUS_INF(pAd)) {
 		ret = tm_wq_hif_pci_exit(pAd);
 	}
 
@@ -182,17 +326,20 @@ static INT tm_wq_hif_exit(RTMP_ADAPTER *pAd)
 
 static INT tm_wq_qm_exit(RTMP_ADAPTER *pAd)
 {
-	INT ret = NDIS_STATUS_SUCCESS;
-
-	pAd->tx_dequeue_scheduable = FALSE;
-	destroy_workqueue(pAd->qm_wq);
-
-	return ret;
+	return tm_wq_destroy(&pAd->qm_wq, &pAd->qm_wq_state,
+		&pAd->tx_dequeue_scheduable);
 }
 
 static INT tm_wq_qm_schedule_taskOwned(RTMP_ADAPTER *pAd, enum task_type type)
 {
 	INT ret = NDIS_STATUS_SUCCESS;
+	ULONG flags;
+
+	spin_lock_irqsave(&tm_wq_lock, flags);
+	if (pAd->qm_wq_state != TM_WQ_ACTIVE || !pAd->qm_wq) {
+		spin_unlock_irqrestore(&tm_wq_lock, flags);
+		return NDIS_STATUS_FAILURE;
+	}
 
 	switch (type) {
 	case TX_DEQ_TASK:
@@ -210,6 +357,7 @@ static INT tm_wq_qm_schedule_taskOwned(RTMP_ADAPTER *pAd, enum task_type type)
 
 	}
 
+	spin_unlock_irqrestore(&tm_wq_lock, flags);
 	return ret;
 }
 
@@ -236,6 +384,13 @@ static INT tm_wq_hif_schedule_taskOwned(RTMP_ADAPTER *pAd, enum task_type type)
 {
 	INT ret = NDIS_STATUS_SUCCESS;
 	POS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;
+	ULONG flags;
+
+	spin_lock_irqsave(&tm_wq_lock, flags);
+	if (pAd->hif_wq_state != TM_WQ_ACTIVE || !obj->hif_wq) {
+		spin_unlock_irqrestore(&tm_wq_lock, flags);
+		return NDIS_STATUS_FAILURE;
+	}
 
 	switch (type) {
 	case CMD_MSG_TASK:
@@ -277,6 +432,7 @@ static INT tm_wq_hif_schedule_taskOwned(RTMP_ADAPTER *pAd, enum task_type type)
 		break;
 	}
 
+	spin_unlock_irqrestore(&tm_wq_lock, flags);
 	return ret;
 }
 
@@ -303,6 +459,13 @@ static INT tm_wq_hif_schedule_task(RTMP_ADAPTER *pAd, enum task_type type)
 static INT tm_wq_qm_schedule_task_onOwned(RTMP_ADAPTER *pAd, INT cpu, enum task_type type)
 {
 	INT ret = NDIS_STATUS_SUCCESS;
+	ULONG flags;
+
+	spin_lock_irqsave(&tm_wq_lock, flags);
+	if (pAd->qm_wq_state != TM_WQ_ACTIVE || !pAd->qm_wq) {
+		spin_unlock_irqrestore(&tm_wq_lock, flags);
+		return NDIS_STATUS_FAILURE;
+	}
 
 	switch (type) {
 	case TX_DEQ_TASK:
@@ -319,6 +482,7 @@ static INT tm_wq_qm_schedule_task_onOwned(RTMP_ADAPTER *pAd, INT cpu, enum task_
 		break;
 	}
 
+	spin_unlock_irqrestore(&tm_wq_lock, flags);
 	return ret;
 }
 
@@ -345,6 +509,13 @@ static INT tm_wq_hif_schedule_task_onOwned(RTMP_ADAPTER *pAd, INT cpu, enum task
 {
 	INT ret = NDIS_STATUS_SUCCESS;
 	POS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;
+	ULONG flags;
+
+	spin_lock_irqsave(&tm_wq_lock, flags);
+	if (pAd->hif_wq_state != TM_WQ_ACTIVE || !obj->hif_wq) {
+		spin_unlock_irqrestore(&tm_wq_lock, flags);
+		return NDIS_STATUS_FAILURE;
+	}
 
 	switch (type) {
 	case CMD_MSG_TASK:
@@ -386,6 +557,7 @@ static INT tm_wq_hif_schedule_task_onOwned(RTMP_ADAPTER *pAd, INT cpu, enum task
 		break;
 	}
 
+	spin_unlock_irqrestore(&tm_wq_lock, flags);
 	return ret;
 }
 
@@ -741,7 +913,8 @@ INT tm_init(RTMP_ADAPTER *pAd)
 	struct tm_ops *qm_ops = NULL, *hif_ops = NULL;
 	INT ret;
 
-	if (pAd->tm_qm_ops || pAd->tm_hif_ops)
+	if (pAd->tm_qm_ops || pAd->tm_hif_ops || pAd->dma_tasks_retired ||
+		RtmpDmaStopping(pAd))
 		return NDIS_STATUS_FAILURE;
 	if (cap->qm_tm == TASKLET_METHOD)
 		qm_ops = &tm_tasklet_qm_ops;
@@ -761,12 +934,13 @@ INT tm_init(RTMP_ADAPTER *pAd)
 	ret = qm_ops->init(pAd);
 	if (ret != NDIS_STATUS_SUCCESS)
 		return ret;
+	pAd->tm_qm_ops = qm_ops;
 	ret = hif_ops->init(pAd);
 	if (ret != NDIS_STATUS_SUCCESS) {
-		qm_ops->exit(pAd);
+		if (qm_ops->exit(pAd) == NDIS_STATUS_SUCCESS)
+			pAd->tm_qm_ops = NULL;
 		return ret;
 	}
-	pAd->tm_qm_ops = qm_ops;
 	pAd->tm_hif_ops = hif_ops;
 	return NDIS_STATUS_SUCCESS;
 }
@@ -777,16 +951,25 @@ INT tm_quiesce(RTMP_ADAPTER *pAd)
 	struct tm_ops *hif_ops = pAd->tm_hif_ops;
 	INT ret = NDIS_STATUS_SUCCESS, status;
 
+#ifndef CONFIG_PROPRIETARY_DRIVER
+	ret = tm_wq_retirement_check(pAd);
+#endif
 	if (pAd->dma_tasks_retired)
-		return NDIS_STATUS_SUCCESS;
-	pAd->dma_tasks_retired = TRUE;
-	if (hif_ops)
-		ret = hif_ops->exit(pAd);
+		return ret;
+	if (hif_ops) {
+		status = hif_ops->exit(pAd);
+		if (ret == NDIS_STATUS_SUCCESS)
+			ret = status;
+		if (status != NDIS_STATUS_SUCCESS)
+			return ret;
+	}
 	if (qm_ops) {
 		status = qm_ops->exit(pAd);
 		if (ret == NDIS_STATUS_SUCCESS)
 			ret = status;
 	}
+	if (ret == NDIS_STATUS_SUCCESS)
+		pAd->dma_tasks_retired = TRUE;
 	/* Do not clear the ops: timers/late callers may still query them.
 	 * Their scheduling entries reject the terminal stopping latch.
 	 */
@@ -799,13 +982,23 @@ INT tm_exit(RTMP_ADAPTER *pAd)
 	struct tm_ops *hif_ops = pAd->tm_hif_ops;
 	INT ret = NDIS_STATUS_SUCCESS, status;
 
-	if (hif_ops && !pAd->dma_tasks_retired)
-		ret = hif_ops->exit(pAd);
+#ifndef CONFIG_PROPRIETARY_DRIVER
+	ret = tm_wq_retirement_check(pAd);
+#endif
+	if (hif_ops && !pAd->dma_tasks_retired) {
+		status = hif_ops->exit(pAd);
+		if (ret == NDIS_STATUS_SUCCESS)
+			ret = status;
+		if (status != NDIS_STATUS_SUCCESS)
+			return ret;
+	}
 	if (qm_ops && !pAd->dma_tasks_retired) {
 		status = qm_ops->exit(pAd);
 		if (ret == NDIS_STATUS_SUCCESS)
 			ret = status;
 	}
+	if (ret != NDIS_STATUS_SUCCESS)
+		return ret;
 	pAd->tm_qm_ops = NULL;
 	pAd->tm_hif_ops = NULL;
 	pAd->dma_tasks_retired = FALSE;

@@ -228,9 +228,13 @@ static int DEVINIT rt_pci_probe(struct pci_dev *pdev, const struct pci_device_id
 	char *print_name;
 	unsigned long csr_addr;
 	int rv = 0;
+	BOOLEAN radev_initialized = FALSE;
 	RTMP_OS_NETDEV_OP_HOOK netDevHook;
 	unsigned long OpMode;
 	RT_CMD_PCIE_INIT pci_config;
+#ifdef CONFIG_WIFI_MSI_SUPPORT
+	BOOLEAN msi_owned = FALSE;
+#endif
 
 	MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_TRACE, ("===> %s()\n", __func__));
 	/* A prior failed remove retains drvdata and every dependent owner. */
@@ -285,7 +289,8 @@ static int DEVINIT rt_pci_probe(struct pci_dev *pdev, const struct pci_device_id
 	if (RtmpOsPciMsiEnable(pdev) != 0) {
 		MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_ERROR,
 		 ("Request MSI resource failed, use INTx!\n"));
-	}
+	} else
+		msi_owned = TRUE;
 #endif /*CONFIG_WIFI_MSI_SUPPORT*/
 	rv = pci_request_regions(pdev, print_name);
 
@@ -338,14 +343,18 @@ static int DEVINIT rt_pci_probe(struct pci_dev *pdev, const struct pci_device_id
 	/* we may need the pdev for allocate structure of "RTMP_ADAPTER" */
 	rv = RTMPAllocAdapterBlock(handle, &pAd);
 
-	if (rv != NDIS_STATUS_SUCCESS)
+	if (rv != NDIS_STATUS_SUCCESS) {
+		/* Failed construction leaves cookie ownership with this caller. */
+		os_free_mem(handle);
 		goto err_out_iounmap;
+	}
 
 	RTMP_DRIVER_PCI_CSR_SET(pAd, csr_addr);
 	RTMP_DRIVER_PCIE_INIT(pAd, &pci_config, pdev);
 
 	if (pci_config.pci_init_succeed != TRUE)
 		goto err_out_free_radev;
+	radev_initialized = TRUE;
 
 	/*NetDevInit============================================== */
 	net_dev = RtmpPhyNetDevInit(pAd, &netDevHook);
@@ -424,13 +433,21 @@ err_out_free_netdev:
 	}
 #endif /* MEM_ALLOC_INFO_SUPPORT */
 err_out_free_radev:
-	/* free RTMP_ADAPTER strcuture and os_cookie*/
-	RTMPFreeAdapter(pAd);
+	/* Successful device initialization also owns chipcap/ring/semaphore state. */
+	if (radev_initialized)
+		RtmpRaDevCtrlExit(pAd);
+	else
+		RTMPFreeAdapter(pAd);
 err_out_iounmap:
+	pci_clear_master(pdev);
 	iounmap((void *)(csr_addr));
 err_out_free_res:
 	pci_release_regions(pdev);
 err_out:
+#ifdef CONFIG_WIFI_MSI_SUPPORT
+	if (msi_owned)
+		RtmpOsPciMsiDisable(pdev);
+#endif
 	pci_disable_device(pdev);
 	MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_ERROR, ("<=== %s() failed with rv = %d!\n",
 			 __func__, rv));

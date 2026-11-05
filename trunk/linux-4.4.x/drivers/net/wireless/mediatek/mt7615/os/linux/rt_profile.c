@@ -1486,6 +1486,7 @@ VOID RTMPFreeAdapter(VOID *pAdSrc)
 	PRTMP_ADAPTER pAd = (PRTMP_ADAPTER)pAdSrc;
 	POS_COOKIE os_cookie;
 	struct _PCI_HIF_T *hif;
+	INT index;
 
 	if (pAd == NULL || !RtmpDmaFinalReleaseCheck(pAd))
 		return;
@@ -1493,7 +1494,8 @@ VOID RTMPFreeAdapter(VOID *pAdSrc)
 	multi_inf_adapt_unreg((VOID *) pAd);
 #endif /* MULTI_INF_SUPPORT */
 
-	hif = hc_get_hif_ctrl(pAd->hdev_ctrl);
+	/* These locks are constructed before hdev_resource_init publishes hif. */
+	hif = &pAd->PciHif;
 	os_cookie = (POS_COOKIE)pAd->OS_Cookie;
 #ifdef RLM_CAL_CACHE_SUPPORT
 	rlmCalCacheDeinit(&pAd->rlmCalCache);
@@ -1593,8 +1595,20 @@ VOID RTMPFreeAdapter(VOID *pAdSrc)
 	RTMP_OS_FREE_SEM(pAd);
 	RTMP_OS_FREE_ATOMIC(pAd);
 	RTMPFreeHifAdapterBlock(pAd);
+	/* Constructor-owned allocations also belong to early probe rollback. */
+	for (index = MAX_LEN_OF_BSS_TABLE - 1; index >= 0; index--) {
+		if (pAd->ProbeRespIE[index].pIe)
+			os_free_mem(pAd->ProbeRespIE[index].pIe);
+		pAd->ProbeRespIE[index].pIe = NULL;
+	}
+	wpf_config_exit(pAd);
 	/*remove chipcap*/
 	hdev_ctrl_exit(pAd);
+	NdisFreeSpinLock(&pAd->WifiSysInfo.lock);
+	NdisFreeSpinLock(&pAd->VirtualIfLock);
+	NdisFreeSpinLock(&pAd->TimerSemLock);
+	if (os_cookie)
+		os_cookie->pAd_va = 0;
 	RtmpOsVfree(pAd); /* pci_free_consistent(os_cookie->pci_dev,sizeof(RTMP_ADAPTER),pAd,os_cookie->pAd_pa); */
 
 	if (os_cookie)

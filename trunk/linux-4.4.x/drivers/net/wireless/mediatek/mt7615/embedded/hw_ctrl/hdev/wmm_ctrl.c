@@ -247,6 +247,8 @@ INT32 WcInit(struct hdev_ctrl *ctrl, WMM_CTRL_T *pWmmCtrl)
 	EDCA_PARM *pEdcaArray = NULL;
 	INT32 i = 0;
 
+	if (NumOfWmm <= 0 || pWmmCtrl->pWmmSet != NULL)
+		return -1;
 	os_alloc_mem(NULL, (UCHAR **)&pEdcaArray, sizeof(EDCA_PARM)*NumOfWmm);
 
 	if (pEdcaArray == NULL)

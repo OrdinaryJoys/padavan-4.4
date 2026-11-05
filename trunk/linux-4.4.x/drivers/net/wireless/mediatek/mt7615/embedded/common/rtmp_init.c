@@ -75,282 +75,390 @@ NDIS_STATUS RTMPAllocGlobalUtility(VOID)
 
 	========================================================================
 */
+/* Only an unpublished constructor may use this rollback: no HIF DMA or
+ * hardware resource initialization has run, and the caller still owns cookie. */
+static VOID RTMPFreeAdapterBlockInit(RTMP_ADAPTER *pAd, BOOLEAN locks_initialized)
+{
+	INT index;
+
+	if (locks_initialized) {
+		NdisFreeSpinLock(&pAd->WifiSysInfo.lock);
+		NdisFreeSpinLock(&pAd->PciHif.MgmtRingLock);
+#ifdef MT_MAC
+		NdisFreeSpinLock(&pAd->PciHif.BcnRingLock);
+#endif
+		NdisFreeSpinLock(&pAd->PciHif.TxBmcRingLock);
+#ifdef CONFIG_ANDES_SUPPORT
+#if defined(MT7615) || defined(MT7622) || defined(P18) || defined(MT7663)
+		NdisFreeSpinLock(&pAd->PciHif.FwDwloRing.RingLock);
+#endif
+		NdisFreeSpinLock(&pAd->PciHif.CtrlRingLock);
+#endif
+		NdisFreeSpinLock(&pAd->VirtualIfLock);
+		NdisFreeSpinLock(&pAd->LockInterrupt);
+		NdisFreeSpinLock(&pAd->tssi_lock);
+#ifdef GREENAP_SUPPORT
+		NdisFreeSpinLock(&pAd->ApCfg.greenap.lock);
+#endif
+#ifdef CONFIG_AP_SUPPORT
+#ifdef APCLI_SUPPORT
+#ifdef MAC_REPEATER_SUPPORT
+		NdisFreeSpinLock(&pAd->ApCfg.CliLinkMapLock);
+		NdisFreeSpinLock(&pAd->ApCfg.ReptCliEntryLock);
+#endif
+#endif
+#endif
+#ifdef CONFIG_FWOWN_SUPPORT
+		NdisFreeSpinLock(&pAd->DriverOwnLock);
+#endif
+#ifdef DOT11_N_SUPPORT
+		NdisFreeSpinLock(&pAd->mpdu_blk_pool.lock);
+#endif
+		NdisFreeSpinLock(&pAd->irq_lock);
+		NdisFreeSpinLock(&pAd->BssInfoIdxBitMapLock);
+		NdisFreeSpinLock(&pAd->WdevListLock);
+		NdisFreeSpinLock(&pAd->TimerSemLock);
+	}
+	wpf_config_exit(pAd);
+	for (index = MAX_LEN_OF_BSS_TABLE - 1; index >= 0; index--) {
+		if (pAd->ProbeRespIE[index].pIe)
+			os_free_mem(pAd->ProbeRespIE[index].pIe);
+		pAd->ProbeRespIE[index].pIe = NULL;
+	}
+#ifdef RLM_CAL_CACHE_SUPPORT
+	rlmCalCacheDeinit(&pAd->rlmCalCache);
+#endif
+	/* hdev_resource_init is not reached before constructor publication. */
+	if (pAd->hdev_ctrl)
+		os_free_mem(pAd->hdev_ctrl);
+	pAd->hdev_ctrl = NULL;
+	if (pAd->iw_stats)
+		os_free_mem(pAd->iw_stats);
+	if (pAd->stats)
+		os_free_mem(pAd->stats);
+	((POS_COOKIE)pAd->OS_Cookie)->pAd_va = 0;
+	RtmpOsVfree(pAd);
+}
+
 NDIS_STATUS RTMPAllocAdapterBlock(VOID *handle, VOID **ppAdapter)
 {
 	RTMP_ADAPTER *pAd = NULL;
-	NDIS_STATUS	 Status;
+	NDIS_STATUS Status = NDIS_STATUS_FAILURE;
 	INT index;
+	BOOLEAN locks_initialized = FALSE;
 
+	if (ppAdapter == NULL)
+		return NDIS_STATUS_FAILURE;
+	*ppAdapter = NULL;
+	if (handle == NULL || ((POS_COOKIE)handle)->pAd_va != 0)
+		return NDIS_STATUS_FAILURE;
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("--> RTMPAllocAdapterBlock\n"));
 	RTMPAllocGlobalUtility();
-	*ppAdapter = NULL;
+	Status = AdapterBlockAllocateMemory(handle, (PVOID *)&pAd, sizeof(RTMP_ADAPTER));
+	if (Status != NDIS_STATUS_SUCCESS || pAd == NULL)
+		return NDIS_STATUS_FAILURE;
 
-	do {
-		/* Allocate RTMP_ADAPTER memory block*/
-		Status = AdapterBlockAllocateMemory(handle, (PVOID *)&pAd, sizeof(RTMP_ADAPTER));
+	initList(&pAd->RscTimerMemList);
+	initList(&pAd->RscTaskMemList);
+	initList(&pAd->RscLockMemList);
+	initList(&pAd->RscTaskletMemList);
+	initList(&pAd->RscSemMemList);
+	initList(&pAd->RscAtomicMemList);
+	initList(&pAd->RscTimerCreateList);
+	pAd->OS_Cookie = handle;
+	((POS_COOKIE)handle)->pAd_va = (LONG)pAd;
+	RtmpDmaLifecycleInit(pAd);
 
-		if (Status != NDIS_STATUS_SUCCESS) {
-			MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("Failed to allocate memory - ADAPTER\n"));
-			break;
-		} else {
-			/* init resource list (must be after pAd allocation) */
-			initList(&pAd->RscTimerMemList);
-			initList(&pAd->RscTaskMemList);
-			initList(&pAd->RscLockMemList);
-			initList(&pAd->RscTaskletMemList);
-			initList(&pAd->RscSemMemList);
-			initList(&pAd->RscAtomicMemList);
-			initList(&pAd->RscTimerCreateList);
-			pAd->OS_Cookie = handle;
-			((POS_COOKIE)(handle))->pAd_va = (LONG)pAd;
-			RtmpDmaLifecycleInit(pAd);
-		}
+	/* Complete all fallible heap stages before creating any adapter locks. */
+	if (RtmpOsStatsAlloc(&pAd->stats, &pAd->iw_stats) == FALSE)
+		goto fail;
+	if (hdev_ctrl_init(pAd) != 0)
+		goto fail;
+#ifdef RLM_CAL_CACHE_SUPPORT
+	if (rlmCalCacheInit(pAd, &pAd->rlmCalCache) == FALSE)
+		goto fail;
+#endif
+	for (index = 0; index < MAX_LEN_OF_BSS_TABLE; index++) {
+		if (os_alloc_mem(pAd, &pAd->ProbeRespIE[index].pIe, MAX_VIE_LEN) != NDIS_STATUS_SUCCESS)
+			goto fail;
+		RTMPZeroMemory(pAd->ProbeRespIE[index].pIe, MAX_VIE_LEN);
+	}
+	if (wpf_config_init(pAd) != NDIS_STATUS_SUCCESS)
+		goto fail;
 
-		if (RtmpOsStatsAlloc(&pAd->stats, &pAd->iw_stats) == FALSE) {
-			Status = NDIS_STATUS_FAILURE;
-			break;
-		}
-
-		/*Allocate Timer Lock*/
-		NdisAllocateSpinLock(pAd, &pAd->TimerSemLock);
-		/* Init spin locks*/
-		NdisAllocateSpinLock(pAd, &pAd->WdevListLock);
-		NdisAllocateSpinLock(pAd, &pAd->BssInfoIdxBitMapLock);
-		NdisAllocateSpinLock(pAd, &pAd->irq_lock);
+	/*Allocate Timer Lock*/
+	NdisAllocateSpinLock(pAd, &pAd->TimerSemLock);
+	/* Init spin locks*/
+	NdisAllocateSpinLock(pAd, &pAd->WdevListLock);
+	NdisAllocateSpinLock(pAd, &pAd->BssInfoIdxBitMapLock);
+	NdisAllocateSpinLock(pAd, &pAd->irq_lock);
 #ifdef DOT11_N_SUPPORT
-		/* Paired with RTMPFreeAdapter, including a failed/retried open. */
-		NdisAllocateSpinLock(pAd, &pAd->mpdu_blk_pool.lock);
+	/* Paired with RTMPFreeAdapter, including a failed/retried open. */
+	NdisAllocateSpinLock(pAd, &pAd->mpdu_blk_pool.lock);
 #endif
 #ifdef CONFIG_FWOWN_SUPPORT
-		NdisAllocateSpinLock(pAd, &pAd->DriverOwnLock);
+	NdisAllocateSpinLock(pAd, &pAd->DriverOwnLock);
 #endif /* CONFIG_FWOWN_SUPPORT */
 #ifdef CONFIG_AP_SUPPORT
 #ifdef APCLI_SUPPORT
 #ifdef MAC_REPEATER_SUPPORT
-		NdisAllocateSpinLock(pAd, &pAd->ApCfg.ReptCliEntryLock);
-		NdisAllocateSpinLock(pAd, &pAd->ApCfg.CliLinkMapLock);
+	NdisAllocateSpinLock(pAd, &pAd->ApCfg.ReptCliEntryLock);
+	NdisAllocateSpinLock(pAd, &pAd->ApCfg.CliLinkMapLock);
 #endif
 #endif
 #endif
 #ifdef GREENAP_SUPPORT
-		NdisAllocateSpinLock(pAd, &pAd->ApCfg.greenap.lock);
+	NdisAllocateSpinLock(pAd, &pAd->ApCfg.greenap.lock);
 #endif /* GREENAP_SUPPORT */
-		NdisAllocateSpinLock(pAd, &pAd->tssi_lock);
-		NdisAllocateSpinLock(pAd, &pAd->LockInterrupt);
-		/*Allocate interface lock*/
-		NdisAllocateSpinLock(pAd, &pAd->VirtualIfLock);
-		/*HIF related initial for pAd*/
-		RTMPInitHifAdapterBlock(pAd);
-#ifdef RLM_CAL_CACHE_SUPPORT
-		rlmCalCacheInit(pAd, &pAd->rlmCalCache);
-#endif /* RLM_CAL_CACHE_SUPPORT */
-		*ppAdapter = (VOID *)pAd;
-	} while (FALSE);
-
-	if (Status != NDIS_STATUS_SUCCESS) {
-		if (pAd) {
-			if (pAd->stats) {
-				os_free_mem(pAd->stats);
-				pAd->stats = NULL;
-			}
-
-			if (pAd->iw_stats) {
-				os_free_mem(pAd->iw_stats);
-				pAd->iw_stats = NULL;
-			}
-
-			RtmpOsVfree(pAd);
-		}
-
-		return Status;
-	}
-
-	/* Init ProbeRespIE Table */
-	for (index = 0; index < MAX_LEN_OF_BSS_TABLE; index++) {
-		if (os_alloc_mem(pAd, &pAd->ProbeRespIE[index].pIe, MAX_VIE_LEN) == NDIS_STATUS_SUCCESS)
-			RTMPZeroMemory(pAd->ProbeRespIE[index].pIe, MAX_VIE_LEN);
-		else
-			pAd->ProbeRespIE[index].pIe = NULL;
-	}
-
-	/*allocate hdev_ctrl struct for prepare chip_cap & chip_ops */
-	hdev_ctrl_init(pAd);
-	/*init WifiSys information structure*/
+	NdisAllocateSpinLock(pAd, &pAd->tssi_lock);
+	NdisAllocateSpinLock(pAd, &pAd->LockInterrupt);
+	/*Allocate interface lock*/
+	NdisAllocateSpinLock(pAd, &pAd->VirtualIfLock);
+	/*HIF related initial for pAd*/
+	RTMPInitHifAdapterBlock(pAd);
 	wifi_sys_init(pAd);
-	/*allocate wpf related memory*/
-	wpf_config_init(pAd);
+	locks_initialized = TRUE;
 #ifndef INTELP6_SUPPORT
 #ifdef MULTI_INF_SUPPORT
-	Status = multi_inf_adapt_reg((VOID *) pAd);
-#endif /* MULTI_INF_SUPPORT */
+	if (multi_inf_adapt_reg((VOID *)pAd) != NDIS_STATUS_SUCCESS)
+		goto fail;
 #endif
-	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("\n== pAd = %p, size = %zu, Status=%x ==\n", pAd,
-			 sizeof(RTMP_ADAPTER), Status));
-	return Status;
+#endif
+	/* Cookie/adapter ownership transfers only after the complete transaction. */
+	*ppAdapter = (VOID *)pAd;
+	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_OFF,
+		("\n== pAd = %p, size = %zu ==\n", pAd, sizeof(RTMP_ADAPTER)));
+	return NDIS_STATUS_SUCCESS;
+fail:
+	RTMPFreeAdapterBlockInit(pAd, locks_initialized);
+	return NDIS_STATUS_FAILURE;
 }
 
 NDIS_STATUS alloc_chip_cap_dep_data(RTMP_ADAPTER *pAd)
 {
+	NDIS_STATUS status;
 #ifdef RTMP_MAC_PCI
-
-	if (IS_RBUS_INF(pAd) || IS_PCI_INF(pAd)) {
-		if (alloc_chip_cap_dep_data_pci(pAd->hdev_ctrl) != NDIS_STATUS_SUCCESS)
-			return NDIS_STATUS_FAILURE;
-	}
-
+	BOOLEAN pci_owned = FALSE;
 #endif
 
-	if (alloc_chip_cap_dep_data_cmm(pAd) != NDIS_STATUS_SUCCESS)
+	if (pAd == NULL || pAd->hdev_ctrl == NULL)
 		return NDIS_STATUS_FAILURE;
-
+#ifdef RTMP_MAC_PCI
+	if (IS_RBUS_INF(pAd) || IS_PCI_INF(pAd)) {
+		status = alloc_chip_cap_dep_data_pci(pAd->hdev_ctrl);
+		if (status != NDIS_STATUS_SUCCESS)
+			return status;
+		pci_owned = TRUE;
+	}
+#endif
+	status = alloc_chip_cap_dep_data_cmm(pAd);
+	if (status != NDIS_STATUS_SUCCESS) {
+#ifdef RTMP_MAC_PCI
+		if (pci_owned)
+			free_chip_cap_dep_data_pci(pAd->hdev_ctrl);
+#endif
+		return status;
+	}
 	return NDIS_STATUS_SUCCESS;
 }
 
 VOID free_chip_cap_dep_data(RTMP_ADAPTER *pAd)
 {
+	if (pAd == NULL || pAd->hdev_ctrl == NULL)
+		return;
+	free_chip_cap_dep_data_cmm(pAd);
 #ifdef RTMP_MAC_PCI
-
 	if (IS_RBUS_INF(pAd) || IS_PCI_INF(pAd))
 		free_chip_cap_dep_data_pci(pAd->hdev_ctrl);
-
 #endif
-	free_chip_cap_dep_data_cmm(pAd);
 }
 
 NDIS_STATUS alloc_chip_cap_dep_data_cmm(RTMP_ADAPTER *pAd)
 {
 	INT index;
-	struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
-	UINT8 num_of_tx_ring = GET_NUM_OF_TX_RING(cap);
+	struct _RTMP_CHIP_CAP *cap;
+	UINT8 num_of_tx_ring;
 	BOOLEAN *pDeQueueRunning = NULL;
 	NDIS_SPIN_LOCK *pDeQueueLock = NULL;
 	QUEUE_HEADER *pTxSwQueue = NULL;
 	NDIS_SPIN_LOCK *pTxSwQueueLock = NULL;
 #if defined(MT_MAC) && defined(IP_ASSEMBLY)
 	DL_LIST *pAssebQueue = NULL;
+	VOID *pCurIpAssemData = NULL;
 #endif
 #ifdef BLOCK_NET_IF
-	BLOCK_QUEUE_ENTRY *pBlockQueueTab;
-#endif /* BLOCK_NET_IF */
-#ifdef COMPOS_TESTMODE_WIN
-	ULONG *pOneSecOsTxCount;
-	ULONG *pOneSecDmaDoneCount;
+	BLOCK_QUEUE_ENTRY *pBlockQueueTab = NULL;
 #endif
-	os_alloc_mem(pAd, (UCHAR **)&pDeQueueRunning, (num_of_tx_ring)*sizeof(BOOLEAN));
+#ifdef COMPOS_TESTMODE_WIN
+	ULONG *pOneSecOsTxCount = NULL;
+	ULONG *pOneSecDmaDoneCount = NULL;
+#endif
 
-	if (pDeQueueRunning == NULL)
+	if (pAd == NULL || pAd->hdev_ctrl == NULL)
 		return NDIS_STATUS_FAILURE;
-
-	NdisZeroMemory(pDeQueueRunning, (num_of_tx_ring)*sizeof(BOOLEAN));
-	pAd->DeQueueRunning = pDeQueueRunning;
-
-	for (index = 0; index < num_of_tx_ring; index++)
-		pAd->DeQueueRunning[index] = FALSE;
-
-	os_alloc_mem(pAd, (UCHAR **)&pDeQueueLock, (num_of_tx_ring)*sizeof(NDIS_SPIN_LOCK));
-
-	if (pDeQueueLock == NULL)
+	cap = hc_get_chip_cap(pAd->hdev_ctrl);
+	if (cap == NULL)
 		return NDIS_STATUS_FAILURE;
-
-	NdisZeroMemory(pDeQueueLock, (num_of_tx_ring)*sizeof(NDIS_SPIN_LOCK));
-	pAd->DeQueueLock = pDeQueueLock;
-
-	for (index = 0; index < num_of_tx_ring; index++)
-		NdisAllocateSpinLock(pAd, &pAd->DeQueueLock[index]);
-
-	os_alloc_mem(pAd, (UCHAR **)&pTxSwQueue, (num_of_tx_ring)*sizeof(QUEUE_HEADER));
-
-	if (pTxSwQueue == NULL)
-		return NDIS_STATUS_FAILURE;
-
-	NdisZeroMemory(pTxSwQueue, (num_of_tx_ring)*sizeof(QUEUE_HEADER));
-	pAd->TxSwQueue = pTxSwQueue;
-	os_alloc_mem(pAd, (UCHAR **)&pTxSwQueueLock, (num_of_tx_ring)*sizeof(NDIS_SPIN_LOCK));
-
-	if (pTxSwQueueLock == NULL)
-		return NDIS_STATUS_FAILURE;
-
-	NdisZeroMemory(pTxSwQueueLock, (num_of_tx_ring)*sizeof(NDIS_SPIN_LOCK));
-	pAd->TxSwQueueLock = pTxSwQueueLock;
-
-	for (index = 0; index < num_of_tx_ring; index++)
-		NdisAllocateSpinLock(pAd, &pAd->TxSwQueueLock[index]);
-
+	num_of_tx_ring = GET_NUM_OF_TX_RING(cap);
+	if (!num_of_tx_ring || pAd->DeQueueRunning || pAd->DeQueueLock ||
+		pAd->TxSwQueue || pAd->TxSwQueueLock
 #if defined(MT_MAC) && defined(IP_ASSEMBLY)
-	os_alloc_mem(pAd, (UCHAR **)&pAssebQueue, (num_of_tx_ring)*sizeof(DL_LIST));
-
-	if (pAssebQueue == NULL)
-		return NDIS_STATUS_FAILURE;
-
-	NdisZeroMemory(pAssebQueue, (num_of_tx_ring)*sizeof(DL_LIST));
-	pAd->assebQueue = pAssebQueue;
-	os_alloc_mem(
-		pAd,
-		(UCHAR **)&pAd->cur_ip_assem_data,
-		(num_of_tx_ring)*sizeof(struct ip_assemble_data *));
-
-	if (pAd->cur_ip_assem_data == NULL)
-		return NDIS_STATUS_FAILURE;
-
-	for (index = 0; index < num_of_tx_ring; index++)
-		DlListInit(&pAd->assebQueue[index]);
-
+		|| pAd->assebQueue || pAd->cur_ip_assem_data
 #endif
 #ifdef BLOCK_NET_IF
-	os_alloc_mem(pAd, (UCHAR **)&pBlockQueueTab, (num_of_tx_ring)*sizeof(BLOCK_QUEUE_ENTRY));
-
-	if (pBlockQueueTab == NULL)
-		return NDIS_STATUS_FAILURE;
-
-	NdisZeroMemory(pBlockQueueTab, (num_of_tx_ring)*sizeof(BLOCK_QUEUE_ENTRY));
-	pAd->blockQueueTab = pBlockQueueTab;
-#endif /* BLOCK_NET_IF */
+		|| pAd->blockQueueTab
+#endif
 #ifdef COMPOS_TESTMODE_WIN
-	os_alloc_mem(pAd, (UCHAR **)&pOneSecOsTxCount, (num_of_tx_ring)*sizeof(ULONG));
-
-	if (pOneSecOsTxCount == NULL)
+		|| pAd->RalinkCounters.OneSecOsTxCount || pAd->RalinkCounters.OneSecDmaDoneCount
+#endif
+		)
 		return NDIS_STATUS_FAILURE;
 
-	NdisZeroMemory(pOneSecOsTxCount, (num_of_tx_ring)*sizeof(ULONG));
+	/* Keep every fallible allocation private until the complete set exists. */
+	if (os_alloc_mem(pAd, (UCHAR **)&pDeQueueRunning,
+		num_of_tx_ring * sizeof(*pDeQueueRunning)) != NDIS_STATUS_SUCCESS || !pDeQueueRunning)
+		goto fail;
+	NdisZeroMemory(pDeQueueRunning, num_of_tx_ring * sizeof(*pDeQueueRunning));
+	if (os_alloc_mem(pAd, (UCHAR **)&pDeQueueLock,
+		num_of_tx_ring * sizeof(*pDeQueueLock)) != NDIS_STATUS_SUCCESS || !pDeQueueLock)
+		goto fail;
+	NdisZeroMemory(pDeQueueLock, num_of_tx_ring * sizeof(*pDeQueueLock));
+	if (os_alloc_mem(pAd, (UCHAR **)&pTxSwQueue,
+		num_of_tx_ring * sizeof(*pTxSwQueue)) != NDIS_STATUS_SUCCESS || !pTxSwQueue)
+		goto fail;
+	NdisZeroMemory(pTxSwQueue, num_of_tx_ring * sizeof(*pTxSwQueue));
+	if (os_alloc_mem(pAd, (UCHAR **)&pTxSwQueueLock,
+		num_of_tx_ring * sizeof(*pTxSwQueueLock)) != NDIS_STATUS_SUCCESS || !pTxSwQueueLock)
+		goto fail;
+	NdisZeroMemory(pTxSwQueueLock, num_of_tx_ring * sizeof(*pTxSwQueueLock));
+#if defined(MT_MAC) && defined(IP_ASSEMBLY)
+	if (os_alloc_mem(pAd, (UCHAR **)&pAssebQueue,
+		num_of_tx_ring * sizeof(*pAssebQueue)) != NDIS_STATUS_SUCCESS || !pAssebQueue)
+		goto fail;
+	NdisZeroMemory(pAssebQueue, num_of_tx_ring * sizeof(*pAssebQueue));
+	if (os_alloc_mem(pAd, (UCHAR **)&pCurIpAssemData,
+		num_of_tx_ring * sizeof(struct ip_assemble_data *)) != NDIS_STATUS_SUCCESS || !pCurIpAssemData)
+		goto fail;
+	NdisZeroMemory(pCurIpAssemData, num_of_tx_ring * sizeof(struct ip_assemble_data *));
+	for (index = 0; index < num_of_tx_ring; index++)
+		DlListInit(&pAssebQueue[index]);
+#endif
+#ifdef BLOCK_NET_IF
+	if (os_alloc_mem(pAd, (UCHAR **)&pBlockQueueTab,
+		num_of_tx_ring * sizeof(*pBlockQueueTab)) != NDIS_STATUS_SUCCESS || !pBlockQueueTab)
+		goto fail;
+	NdisZeroMemory(pBlockQueueTab, num_of_tx_ring * sizeof(*pBlockQueueTab));
+#endif
+#ifdef COMPOS_TESTMODE_WIN
+	if (os_alloc_mem(pAd, (UCHAR **)&pOneSecOsTxCount,
+		num_of_tx_ring * sizeof(*pOneSecOsTxCount)) != NDIS_STATUS_SUCCESS || !pOneSecOsTxCount)
+		goto fail;
+	NdisZeroMemory(pOneSecOsTxCount, num_of_tx_ring * sizeof(*pOneSecOsTxCount));
+	if (os_alloc_mem(pAd, (UCHAR **)&pOneSecDmaDoneCount,
+		num_of_tx_ring * sizeof(*pOneSecDmaDoneCount)) != NDIS_STATUS_SUCCESS || !pOneSecDmaDoneCount)
+		goto fail;
+	NdisZeroMemory(pOneSecDmaDoneCount, num_of_tx_ring * sizeof(*pOneSecDmaDoneCount));
+#endif
+	/* Current Linux lock initialization cannot fail. No fallible stage follows. */
+	for (index = 0; index < num_of_tx_ring; index++) {
+		NdisAllocateSpinLock(pAd, &pDeQueueLock[index]);
+		NdisAllocateSpinLock(pAd, &pTxSwQueueLock[index]);
+	}
+	pAd->DeQueueRunning = pDeQueueRunning;
+	pAd->DeQueueLock = pDeQueueLock;
+	pAd->TxSwQueue = pTxSwQueue;
+	pAd->TxSwQueueLock = pTxSwQueueLock;
+#if defined(MT_MAC) && defined(IP_ASSEMBLY)
+	pAd->assebQueue = pAssebQueue;
+	pAd->cur_ip_assem_data = pCurIpAssemData;
+#endif
+#ifdef BLOCK_NET_IF
+	pAd->blockQueueTab = pBlockQueueTab;
+#endif
+#ifdef COMPOS_TESTMODE_WIN
 	pAd->RalinkCounters.OneSecOsTxCount = pOneSecOsTxCount;
-	os_alloc_mem(pAd, (UCHAR **)&pOneSecDmaDoneCount, (num_of_tx_ring)*sizeof(ULONG));
-
-	if (pOneSecDmaDoneCount == NULL)
-		return NDIS_STATUS_FAILURE;
-
-	NdisZeroMemory(pOneSecDmaDoneCount, (num_of_tx_ring)*sizeof(ULONG));
 	pAd->RalinkCounters.OneSecDmaDoneCount = pOneSecDmaDoneCount;
 #endif
 	return NDIS_STATUS_SUCCESS;
+fail:
+#ifdef COMPOS_TESTMODE_WIN
+	if (pOneSecDmaDoneCount)
+		os_free_mem(pOneSecDmaDoneCount);
+	if (pOneSecOsTxCount)
+		os_free_mem(pOneSecOsTxCount);
+#endif
+#ifdef BLOCK_NET_IF
+	if (pBlockQueueTab)
+		os_free_mem(pBlockQueueTab);
+#endif
+#if defined(MT_MAC) && defined(IP_ASSEMBLY)
+	if (pCurIpAssemData)
+		os_free_mem(pCurIpAssemData);
+	if (pAssebQueue)
+		os_free_mem(pAssebQueue);
+#endif
+	if (pTxSwQueueLock)
+		os_free_mem(pTxSwQueueLock);
+	if (pTxSwQueue)
+		os_free_mem(pTxSwQueue);
+	if (pDeQueueLock)
+		os_free_mem(pDeQueueLock);
+	if (pDeQueueRunning)
+		os_free_mem(pDeQueueRunning);
+	return NDIS_STATUS_RESOURCES;
 }
 
 VOID free_chip_cap_dep_data_cmm(RTMP_ADAPTER *pAd)
 {
 	INT index;
-	struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(pAd->hdev_ctrl);
-	UINT8 num_of_tx_ring = GET_NUM_OF_TX_RING(cap);
+	struct _RTMP_CHIP_CAP *cap;
+	UINT8 num_of_tx_ring;
 
-	/* spinlock must be freed before its data structure is freed */
-	for (index = 0; index < num_of_tx_ring; index++)
-		NdisFreeSpinLock(&pAd->DeQueueLock[index]);
-
-	for (index = 0; index < num_of_tx_ring; index++)
-		NdisFreeSpinLock(&pAd->TxSwQueueLock[index]);
-
-	os_free_mem(pAd->DeQueueRunning);
-	os_free_mem(pAd->DeQueueLock);
-	os_free_mem(pAd->TxSwQueue);
-	os_free_mem(pAd->TxSwQueueLock);
+	if (pAd == NULL || pAd->hdev_ctrl == NULL)
+		return;
+	cap = hc_get_chip_cap(pAd->hdev_ctrl);
+	if (cap == NULL)
+		return;
+	num_of_tx_ring = GET_NUM_OF_TX_RING(cap);
+	/* Only complete lock arrays are ever published by the allocator. */
+	if (pAd->DeQueueLock)
+		for (index = 0; index < num_of_tx_ring; index++)
+			NdisFreeSpinLock(&pAd->DeQueueLock[index]);
+	if (pAd->TxSwQueueLock)
+		for (index = 0; index < num_of_tx_ring; index++)
+			NdisFreeSpinLock(&pAd->TxSwQueueLock[index]);
+	if (pAd->DeQueueRunning)
+		os_free_mem(pAd->DeQueueRunning);
+	pAd->DeQueueRunning = NULL;
+	if (pAd->DeQueueLock)
+		os_free_mem(pAd->DeQueueLock);
+	pAd->DeQueueLock = NULL;
+	if (pAd->TxSwQueue)
+		os_free_mem(pAd->TxSwQueue);
+	pAd->TxSwQueue = NULL;
+	if (pAd->TxSwQueueLock)
+		os_free_mem(pAd->TxSwQueueLock);
+	pAd->TxSwQueueLock = NULL;
 #if defined(MT_MAC) && defined(IP_ASSEMBLY)
-	os_free_mem(pAd->assebQueue);
-	os_free_mem(pAd->cur_ip_assem_data);
+	if (pAd->assebQueue)
+		os_free_mem(pAd->assebQueue);
+	pAd->assebQueue = NULL;
+	if (pAd->cur_ip_assem_data)
+		os_free_mem(pAd->cur_ip_assem_data);
+	pAd->cur_ip_assem_data = NULL;
 #endif
 #ifdef BLOCK_NET_IF
-	os_free_mem(pAd->blockQueueTab);
+	if (pAd->blockQueueTab)
+		os_free_mem(pAd->blockQueueTab);
+	pAd->blockQueueTab = NULL;
 #endif
 #ifdef COMPOS_TESTMODE_WIN
-	os_free_mem(pAd->RalinkCounters.OneSecOsTxCount);
-	os_free_mem(pAd->RalinkCounters.OneSecDmaDoneCount);
+	if (pAd->RalinkCounters.OneSecOsTxCount)
+		os_free_mem(pAd->RalinkCounters.OneSecOsTxCount);
+	pAd->RalinkCounters.OneSecOsTxCount = NULL;
+	if (pAd->RalinkCounters.OneSecDmaDoneCount)
+		os_free_mem(pAd->RalinkCounters.OneSecDmaDoneCount);
+	pAd->RalinkCounters.OneSecDmaDoneCount = NULL;
 #endif
 }
 
@@ -2490,6 +2598,11 @@ PNET_DEV get_netdev_from_bssid(RTMP_ADAPTER *pAd, UCHAR wdev_idx)
 INT RtmpRaDevCtrlInit(VOID *pAdSrc, RTMP_INF_TYPE infType)
 {
 	RTMP_ADAPTER *pAd = (PRTMP_ADAPTER)pAdSrc;
+	BOOLEAN chip_data = FALSE;
+
+	if (pAd == NULL || pAd->hdev_ctrl == NULL ||
+		((struct hdev_ctrl *)pAd->hdev_ctrl)->cookie != NULL)
+		return NDIS_STATUS_FAILURE;
 #ifdef FW_DUMP_SUPPORT
 	pAd->fw_dump_max_size = MAX_FW_DUMP_SIZE;
 	RTMP_OS_FWDUMP_PROCINIT(pAd);
@@ -2517,10 +2630,11 @@ INT RtmpRaDevCtrlInit(VOID *pAdSrc, RTMP_INF_TYPE infType)
 #endif /* MULTIPLE_CARD_SUPPORT */
 
 	if (RtmpChipOpsRegister(pAd, infType))
-		return FALSE;
+		goto fail;
 
 	/*prepeare hw resource depend on chipcap*/
-	hdev_resource_init(pAd->hdev_ctrl);
+	if (hdev_resource_init(pAd->hdev_ctrl) != 0)
+		goto fail;
 
 	AsicGetMacInfo(pAd, &pAd->ChipID, &pAd->HWVersion, &pAd->FWVersion);
 	/*initial wlan hook module*/
@@ -2530,8 +2644,10 @@ INT RtmpRaDevCtrlInit(VOID *pAdSrc, RTMP_INF_TYPE infType)
 	if (alloc_chip_cap_dep_data(pAd) != NDIS_STATUS_SUCCESS) {
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				 ("Failed to allocate memory - ChipCap-dependent data structure\n"));
-		return FALSE;
+		goto fail;
 	}
+
+	chip_data = TRUE;
 
 #ifdef RESOURCE_PRE_ALLOC
 
@@ -2541,7 +2657,7 @@ INT RtmpRaDevCtrlInit(VOID *pAdSrc, RTMP_INF_TYPE infType)
 	*/
 	if (RTMPAllocTxRxRingMemory(pAd) != NDIS_STATUS_SUCCESS) {
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("Failed to allocate memory - TxRxRing\n"));
-		return FALSE;
+		goto fail;
 	}
 
 #endif /* RESOURCE_PRE_ALLOC */
@@ -2579,14 +2695,26 @@ INT RtmpRaDevCtrlInit(VOID *pAdSrc, RTMP_INF_TYPE infType)
 
 #endif /* MCS_LUT_SUPPORT */
 
-	return 0;
+	return NDIS_STATUS_SUCCESS;
+fail:
+	if (chip_data) {
+#ifdef RESOURCE_PRE_ALLOC
+		RTMPFreeTxRxRingMemory(pAd);
+#endif
+		free_chip_cap_dep_data(pAd);
+	}
+	hdev_resource_exit(pAd->hdev_ctrl);
+	RTMP_SEM_EVENT_DESTORY(&(pAd->AutoRateLock));
+#ifdef FW_DUMP_SUPPORT
+	RTMP_OS_FWDUMP_PROCREMOVE(pAd);
+#endif
+	return NDIS_STATUS_FAILURE;
 }
 
 
 BOOLEAN RtmpRaDevCtrlExit(IN VOID *pAdSrc)
 {
 	RTMP_ADAPTER *pAd = (RTMP_ADAPTER *)pAdSrc;
-	INT index;
 #ifdef MULTIPLE_CARD_SUPPORT
 	extern UINT8  MC_CardUsed[MAX_NUM_OF_MULTIPLE_CARD];
 #endif
@@ -2599,14 +2727,6 @@ BOOLEAN RtmpRaDevCtrlExit(IN VOID *pAdSrc)
 
 #endif /* MULTIPLE_CARD_SUPPORT */
 	RTMP_SEM_EVENT_DESTORY(&(pAd->AutoRateLock));
-
-	/*
-		Free ProbeRespIE Table
-	*/
-	for (index = 0; index < MAX_LEN_OF_BSS_TABLE; index++) {
-		if (pAd->ProbeRespIE[index].pIe)
-			os_free_mem(pAd->ProbeRespIE[index].pIe);
-	}
 
 #ifdef RESOURCE_PRE_ALLOC
 	RTMPFreeTxRxRingMemory(pAd);
@@ -2624,7 +2744,6 @@ BOOLEAN RtmpRaDevCtrlExit(IN VOID *pAdSrc)
 
 #endif
 	free_chip_cap_dep_data(pAd);
-	wpf_config_exit(pAd);
 	RTMPFreeAdapter(pAd);
 	return TRUE;
 }

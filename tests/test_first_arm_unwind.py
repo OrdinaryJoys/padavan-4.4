@@ -60,7 +60,7 @@ class FirstArmUnwindTests(unittest.TestCase):
         self.cases(('open-irq-failure','open-mlme-failure','open-success'))
 
     def test_whole_source_chain_and_ap_caller_guards_are_bound(self):
-        self.assertEqual(len(h.CASE_NAMES),16)
+        self.assertEqual(len(h.CASE_NAMES),22)
         self.assertEqual(set(h.CASE_NAMES),set(h.EXPECTED_ROWS))
         self.assertEqual(len(h.function_manifest(self.texts)),7)
         for name,key in h.FUNCTION_SOURCES.items():
@@ -72,5 +72,26 @@ class FirstArmUnwindTests(unittest.TestCase):
         self.assertLess(scan.index('if (!RTMPEnableRxTx(pAd))'),scan.index('RTMP_SET_FLAG(pAd, fRTMP_ADAPTER_START_UP);'))
         with self.assertRaises(ValueError):h.generate_source({})
         with self.assertRaises(ValueError):h.generate_source(self.texts,'legacy')
+
+
+    def test_retirement_failure_preserves_completed_software_and_hardware_dependencies(self):
+        self.cases(('top-retire-failure','mcu-retire-failure','armed-retire-failure','pos-retire-failure','open-retire-failure','hw-retire-failure'))
+
+    def test_removed_checked_retirement_in_each_parent_is_detected(self):
+        controls=(('WfInit','hw-retire-failure'),('WfMcuInit','mcu-retire-failure'),
+                  ('mt_wifi_init','pos-retire-failure'),('WfSysPosExit','pos-retire-failure'))
+        for index,(name,case)in enumerate(controls):
+            with self.subTest(function=name):
+                key=h.FUNCTION_SOURCES[name];body=h.function(self.texts[key],name)
+                before='if (rtmp_sys_task_exit(pAd) != NDIS_STATUS_SUCCESS)'
+                self.assertEqual(body.count(before),1)
+                texts=dict(self.texts);texts[key]=texts[key].replace(body,body.replace(before,'if (FALSE)'))
+                source=self.directory/('removed-retirement-'+str(index)+'.c');source.write_text(h.generate_source(texts));binary=source.with_suffix('')
+                built=subprocess.run([shutil.which('clang'),'-std=gnu99','-Os','-Wall','-Wextra','-Werror',
+                    '-Wno-unused-variable','-Wno-unused-parameter','-Wno-unused-but-set-variable',
+                    '-fsanitize=address,undefined',str(source),'-o',str(binary)],capture_output=True,text=True,timeout=60)
+                self.assertEqual((built.returncode,built.stderr),(0,''),built.stderr)
+                rejected=subprocess.run([str(binary),case],capture_output=True,text=True,timeout=10)
+                self.assertNotEqual(rejected.returncode,0)
 
 if __name__=='__main__':unittest.main()

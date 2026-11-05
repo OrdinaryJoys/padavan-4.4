@@ -5804,6 +5804,8 @@ struct _RTMP_ADAPTER {
 #endif
 	RTMP_NET_TASK_STRUCT tx_deque_tasklet;
 	struct workqueue_struct *qm_wq;
+	UINT8 qm_wq_state;
+	UINT8 hif_wq_state;
 	struct work_struct tx_deq_work;
 	struct work_struct cmd_msg_work;
 
@@ -11536,7 +11538,7 @@ void CfgInitHook(RTMP_ADAPTER *pAd);
 
 NDIS_STATUS RtmpMgmtTaskInit(RTMP_ADAPTER *pAd);
 
-VOID rtmp_sys_task_exit(RTMP_ADAPTER *pAd);
+INT rtmp_sys_task_exit(RTMP_ADAPTER *pAd);
 VOID mtd_net_tasklet_exit(RTMP_ADAPTER *pAd);
 VOID RtmpMgmtTaskExit(RTMP_ADAPTER *pAd);
 

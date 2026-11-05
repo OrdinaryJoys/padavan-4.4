@@ -67,9 +67,13 @@ INT32 hdev_ctrl_init(RTMP_ADAPTER *pAd)
 	struct hdev_ctrl  *ctrl = NULL;
 	UINT32  ret;
 
+	if (pAd->hdev_ctrl != NULL)
+		return -1;
 	ret  =  os_alloc_mem(NULL, (UCHAR **)&ctrl, sizeof(struct hdev_ctrl));
 
-	if (ctrl == NULL) {
+	if (ret != NDIS_STATUS_SUCCESS || ctrl == NULL) {
+		if (ctrl)
+			os_free_mem(ctrl);
 		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 				 ("%s(): Allocate Hardware device Configure  fail!!\n", __func__));
 		return -1;
@@ -84,13 +88,20 @@ INT32 hdev_ctrl_init(RTMP_ADAPTER *pAd)
 /*
 *
 */
-VOID hdev_resource_init(void *hdev_ctrl)
+INT hdev_resource_init(void *hdev_ctrl)
 {
 	struct hdev_ctrl *ctrl = hdev_ctrl;
-	struct _RTMP_ADAPTER *ad = ctrl->priv;
+	struct _RTMP_ADAPTER *ad;
+
+	if (ctrl == NULL || ctrl->cookie != NULL)
+		return -1;
+	ad = ctrl->priv;
+	if (ad == NULL)
+		return -1;
 
 	/*initial hardware resource*/
-	HdevHwResourceInit(ctrl);
+	if (HdevHwResourceInit(ctrl) != 0)
+		return -1;
 	/*initial resource*/
 	/*hook hif*/
 #if defined(RTMP_MAC_PCI)
@@ -100,6 +111,20 @@ VOID hdev_resource_init(void *hdev_ctrl)
 	ctrl->cookie = ad->OS_Cookie;
 	ctrl->mcu_ctrl = &ad->MCUCtrl;
 	ctrl->arch_ops = &ad->archOps;
+	return 0;
+}
+
+VOID hdev_resource_exit(void *hdev_ctrl)
+{
+	struct hdev_ctrl *ctrl = hdev_ctrl;
+
+	if (ctrl == NULL || ctrl->cookie == NULL)
+		return;
+	HdevHwResourceExit(ctrl);
+	ctrl->cookie = NULL;
+	ctrl->hif = NULL;
+	ctrl->mcu_ctrl = NULL;
+	ctrl->arch_ops = NULL;
 }
 
 /*
@@ -108,8 +133,10 @@ VOID hdev_resource_init(void *hdev_ctrl)
 VOID hdev_ctrl_exit(RTMP_ADAPTER *pAd)
 {
 	struct hdev_ctrl *ctrl = pAd->hdev_ctrl;
-	/*exist hw resource*/
-	HdevHwResourceExit(ctrl);
+	if (ctrl == NULL)
+		return;
+	/* Only a completely initialized resource transaction may be retired. */
+	hdev_resource_exit(ctrl);
 	/*exist hdevcfg*/
 	pAd->hdev_ctrl = NULL;
 	os_free_mem(ctrl);

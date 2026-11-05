@@ -86,29 +86,34 @@ static INT32 wpf_config_release(struct _RTMP_ADAPTER *ad, struct wifi_dev *wdev)
 	return 0;
 }
 
-VOID wpf_config_init(struct _RTMP_ADAPTER *ad)
+NDIS_STATUS wpf_config_init(struct _RTMP_ADAPTER *ad)
 {
 	int i;
 	struct wpf_ctrl *ctrl = &ad->wpf;
 	struct wpf_data *pf;
 
+	/* A second initialization must not erase live configuration owners. */
+	for (i = 0; i < WDEV_NUM_MAX; i++)
+		if (ctrl->pf[i].conf || ctrl->pf[i].oper || ctrl->pf[i].dev)
+			return NDIS_STATUS_FAILURE;
 	os_zero_mem(ctrl->pf, sizeof(ctrl->pf));
-
 	for (i = 0; i < WDEV_NUM_MAX; i++) {
 		pf = &ctrl->pf[i];
 		pf->idx = i;
 		os_alloc_mem(NULL, (UCHAR **)&pf->conf, sizeof(struct wlan_config));
-
-		if (pf->conf) {
-			os_zero_mem(pf->conf, sizeof(struct wlan_config));
-			wlan_config_init(pf->conf);
-		}
-
+		if (pf->conf == NULL)
+			goto fail;
+		os_zero_mem(pf->conf, sizeof(struct wlan_config));
+		wlan_config_init(pf->conf);
 		os_alloc_mem(NULL, (UCHAR **)&pf->oper, sizeof(struct wlan_operate));
-
-		if (pf->oper)
-			os_zero_mem(pf->oper, sizeof(struct wlan_operate));
+		if (pf->oper == NULL)
+			goto fail;
+		os_zero_mem(pf->oper, sizeof(struct wlan_operate));
 	}
+	return NDIS_STATUS_SUCCESS;
+fail:
+	wpf_config_exit(ad);
+	return NDIS_STATUS_FAILURE;
 }
 
 VOID wpf_config_exit(struct _RTMP_ADAPTER *ad)
@@ -117,9 +122,13 @@ VOID wpf_config_exit(struct _RTMP_ADAPTER *ad)
 	struct wpf_ctrl *ctrl = &ad->wpf;
 	struct wpf_data *pf;
 
-	for (i = 0; i < WDEV_NUM_MAX; i++) {
+	for (i = WDEV_NUM_MAX - 1; i >= 0; i--) {
 		pf = &ctrl->pf[i];
 		pf->idx = i;
+
+		if (pf->oper)
+			os_free_mem(pf->oper);
+		pf->oper = NULL;
 
 		if (pf->conf) {
 			wlan_config_exit(pf->conf);
@@ -127,11 +136,6 @@ VOID wpf_config_exit(struct _RTMP_ADAPTER *ad)
 		}
 
 		pf->conf = NULL;
-
-		if (pf->oper)
-			os_free_mem(pf->oper);
-
-		pf->oper = NULL;
 	}
 
 	os_zero_mem(ctrl->pf, sizeof(ctrl->pf));

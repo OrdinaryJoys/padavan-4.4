@@ -124,6 +124,9 @@ class DmaQuarantineTests(unittest.TestCase):
             ('rt_pci_remove', 'pci',
              'if (!RtmpDmaBeginRemove((RTMP_ADAPTER *)pAd)) {',
              'if (FALSE) {', 'remove-busy'),
+            ('RtmpDmaTeardownCheck','os',
+             'if ((pAd->tm_qm_ops || pAd->tm_hif_ops ||\n\t\t\tREAD_ONCE(pAd->qm_wq_state) || READ_ONCE(pAd->hif_wq_state)) &&\n\t\t\ttm_quiesce(pAd) != NDIS_STATUS_SUCCESS) {',
+             'if (FALSE) {','cached-retire-failure'),
         )
         for index, (name, key, before, after, selector) in enumerate(mutations):
             with self.subTest(function=name):

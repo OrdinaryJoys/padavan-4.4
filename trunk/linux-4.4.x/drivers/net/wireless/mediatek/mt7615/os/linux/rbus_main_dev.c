@@ -53,6 +53,7 @@ int __init wbsys_module_init(void)
 	INT rv;
 	void *handle = NULL;
 	RTMP_ADAPTER *pAd;
+	BOOLEAN radev_initialized = FALSE;
 	unsigned int dev_irq;
 	RTMP_OS_NETDEV_OP_HOOK netDevHook;
 	UINT32 Value;
@@ -92,7 +93,9 @@ int __init wbsys_module_init(void)
 	RTMP_IO_READ32(pAd, TOP_HCR, &Value);
 	pAd->ChipID = Value;
 	/*assign pdev to handle before RtmpRaDevCtrlInit*/
-	RtmpRaDevCtrlInit(pAd, RTMP_DEV_INF_RBUS);
+	if (RtmpRaDevCtrlInit(pAd, RTMP_DEV_INF_RBUS) != NDIS_STATUS_SUCCESS)
+		goto err_out_free_radev;
+	radev_initialized = TRUE;
 	/*NetDevInit============================================== */
 	net_dev = RtmpPhyNetDevInit(pAd, &netDevHook);
 
@@ -148,8 +151,11 @@ err_out_free_netdev:
 	}
 #endif /* MEM_ALLOC_INFO_SUPPORT */
 err_out_free_radev:
-	/* free RTMP_ADAPTER strcuture and os_cookie*/
-	RTMPFreeAdapter(pAd);
+	/* Match the completed device resource transaction, if any. */
+	if (radev_initialized)
+		RtmpRaDevCtrlExit(pAd);
+	else
+		RTMPFreeAdapter(pAd);
 err_out:
 	return -ENODEV;
 }

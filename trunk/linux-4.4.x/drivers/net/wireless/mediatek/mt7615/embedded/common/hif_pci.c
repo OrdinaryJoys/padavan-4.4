@@ -2243,7 +2243,7 @@ NDIS_STATUS RTMPFreeHifAdapterBlock(RTMP_ADAPTER *pAd)
 {
 	struct _PCI_HIF_T *hif;
 
-	hif = hc_get_hif_ctrl(pAd->hdev_ctrl);
+	hif = &pAd->PciHif;
 	NdisFreeSpinLock(&pAd->McuCmdLock);
 	NdisFreeSpinLock(&pAd->LockInterrupt);
 #ifdef CONFIG_ANDES_SUPPORT

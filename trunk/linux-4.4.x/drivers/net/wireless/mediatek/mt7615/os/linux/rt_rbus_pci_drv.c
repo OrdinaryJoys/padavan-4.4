@@ -251,6 +251,7 @@ VOID RTMPInitPCIeDevice(RT_CMD_PCIE_INIT *pConfig, VOID *pAdSrc)
 	POS_COOKIE pObj;
 	NDIS_STATUS ret;
 
+	pConfig->pci_init_succeed = FALSE;
 	pObj = (POS_COOKIE) pAd->OS_Cookie;
 	pci_read_config_word(pci_dev, pConfig->ConfigDeviceID, &device_id);
 #ifndef RT_BIG_ENDIAN
@@ -271,7 +272,6 @@ VOID RTMPInitPCIeDevice(RT_CMD_PCIE_INIT *pConfig, VOID *pAdSrc)
 		return;
 	}
 
-	pConfig->pci_init_succeed = TRUE;
 
 #endif /* */
 #ifdef CONFIG_WIFI_MSI_SUPPORT
@@ -279,11 +279,14 @@ VOID RTMPInitPCIeDevice(RT_CMD_PCIE_INIT *pConfig, VOID *pAdSrc)
 #endif /*CONFIG_WIFI_MSI_SUPPORT*/
 #ifdef INTELP6_SUPPORT
 #ifdef MULTI_INF_SUPPORT
-	multi_inf_adapt_reg((VOID *) pAd);
+	if (multi_inf_adapt_reg((VOID *)pAd) != NDIS_STATUS_SUCCESS)
+		return;
 #endif /* MULTI_INF_SUPPORT */
 #endif
-	if (pAd->infType != RTMP_DEV_INF_UNKNOWN)
-		RtmpRaDevCtrlInit(pAd, pAd->infType);
+	if (pAd->infType == RTMP_DEV_INF_UNKNOWN ||
+		RtmpRaDevCtrlInit(pAd, pAd->infType) != NDIS_STATUS_SUCCESS)
+		return;
+	pConfig->pci_init_succeed = TRUE;
 }
 
 #ifdef INTELP6_SUPPORT

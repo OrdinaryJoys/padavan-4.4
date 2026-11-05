@@ -2321,24 +2321,28 @@ BOOLEAN RtmpOsStatsAlloc(
 	IN VOID **ppStats,
 	IN VOID **ppIwStats)
 {
-	os_alloc_mem(NULL, (UCHAR **) ppStats, sizeof(struct net_device_stats));
+	VOID *stats = NULL, *iw_stats = NULL;
 
-	if ((*ppStats) == NULL)
+	/* Retain any existing owner; publish both new allocations together. */
+	if (ppStats == NULL || ppIwStats == NULL || ppStats == ppIwStats || *ppStats || *ppIwStats)
 		return FALSE;
-
-	os_zero_mem((UCHAR *) *ppStats, sizeof(struct net_device_stats));
+	os_alloc_mem(NULL, (UCHAR **)&stats, sizeof(struct net_device_stats));
+	if (stats == NULL)
+		return FALSE;
+	os_zero_mem(stats, sizeof(struct net_device_stats));
 #if WIRELESS_EXT >= 12
-	os_alloc_mem(NULL, (UCHAR **) ppIwStats, sizeof(struct iw_statistics));
-
-	if ((*ppIwStats) == NULL) {
-		os_free_mem(*ppStats);
+	os_alloc_mem(NULL, (UCHAR **)&iw_stats, sizeof(struct iw_statistics));
+	if (iw_stats == NULL) {
+		os_free_mem(stats);
 		return FALSE;
 	}
-
-	os_zero_mem((UCHAR *)*ppIwStats, sizeof(struct iw_statistics));
+	os_zero_mem(iw_stats, sizeof(struct iw_statistics));
 #endif
+	*ppStats = stats;
+	*ppIwStats = iw_stats;
 	return TRUE;
 }
+
 
 
 /*

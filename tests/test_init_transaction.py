@@ -56,9 +56,9 @@ class InitTransactionTests(unittest.TestCase):
     def test_outer_system_init_unwinds_completed_stages_and_retries(self):self.cases('sys-')
 
     def test_model_covers_whole_functions_and_exact_declared_case_set(self):
-        self.assertEqual(len(h.CASE_NAMES),61)
+        self.assertEqual(len(h.CASE_NAMES),72)
         self.assertEqual(set(h.CASE_NAMES),set(h.EXPECTED_ROWS))
-        self.assertEqual(len(h.function_manifest(self.texts)),24)
+        self.assertEqual(len(h.function_manifest(self.texts)),27)
         for name,key in h.FUNCTION_SOURCES.items():self.assertEqual(self.generated.count(h.function(self.texts[key],name)),1)
         with self.assertRaises(ValueError):h.generate_source({})
         with self.assertRaises(ValueError):h.generate_source(self.texts,'legacy')
@@ -72,6 +72,31 @@ class InitTransactionTests(unittest.TestCase):
         self.assertLess(alloc.index('NdisAllocateSpinLock(pAd, &pAd->mpdu_blk_pool.lock);'),alloc.index('*ppAdapter = (VOID *)pAd;'))
         self.assertEqual(free.count('NdisFreeSpinLock(&pAd->mpdu_blk_pool.lock);'),1)
         self.assertNotIn('NdisAllocateSpinLock',ba)
+
+
+    def test_removed_rollback_and_cleanup_status_barriers_preserve_detection(self):
+        mutations=(
+            ('rtmp_sys_init','if (tm_exit(pAd) != NDIS_STATUS_SUCCESS) {','if (FALSE) {','sys-tm-rollback-failure'),
+            ('rtmp_sys_task_exit','if (tm_exit(pAd) != NDIS_STATUS_SUCCESS) {','if (FALSE) {','sys-task-exit-failure'),
+            ('rtmp_sys_exit','if (rtmp_sys_task_exit(pAd) != NDIS_STATUS_SUCCESS)','if (FALSE)','sys-exit-failure'),
+            ('tm_init','pAd->tm_qm_ops = qm_ops;','(void)qm_ops;','tm-hif-rollback-failure'),
+            ('tm_exit','if (ret != NDIS_STATUS_SUCCESS)\n\t\treturn ret;','if (FALSE)\n\t\treturn ret;','tm-exit-qm-failure'),
+            ('rtmp_sys_init','if (RtmpDmaStopping(pAd) ||','if (FALSE ||','sys-stop-refusal'),
+            ('rtmp_sys_task_exit','if (tr_ctl_exit(pAd) != NDIS_STATUS_SUCCESS) {','if (FALSE) {','sys-tr-release-failure'),
+        )
+        for index,(name,before,after,case)in enumerate(mutations):
+            with self.subTest(function=name,case=case):
+                key=h.FUNCTION_SOURCES[name];body=h.function(self.texts[key],name)
+                self.assertEqual(body.count(before),1)
+                texts=dict(self.texts);texts[key]=texts[key].replace(body,body.replace(before,after))
+                source=self.directory/('removed-rollback-'+str(index)+'.c');source.write_text(h.generate_source(texts))
+                binary=source.with_suffix('')
+                built=subprocess.run([shutil.which('clang'),'-std=gnu99','-Os','-Wall','-Wextra','-Werror',
+                    '-Wno-unused-variable','-Wno-unused-parameter','-Wno-unused-but-set-variable',
+                    '-fsanitize=address,undefined',str(source),'-o',str(binary)],capture_output=True,text=True,timeout=60)
+                self.assertEqual((built.returncode,built.stderr),(0,''),built.stderr)
+                rejected=subprocess.run([str(binary),case],capture_output=True,text=True,timeout=10)
+                self.assertNotEqual(rejected.returncode,0)
 
 
 if __name__=='__main__':unittest.main()

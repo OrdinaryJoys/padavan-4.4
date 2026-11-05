@@ -69,6 +69,7 @@ static int wbsys_probe(struct platform_device *pdev)
 	int rv;
 	void *handle = NULL;
 	RTMP_ADAPTER *pAd;
+	BOOLEAN radev_initialized = FALSE;
 	RTMP_OS_NETDEV_OP_HOOK netDevHook;
 	unsigned int Value;
 
@@ -119,7 +120,9 @@ static int wbsys_probe(struct platform_device *pdev)
 	((POS_COOKIE)handle)->pci_dev = (void *)pdev;
 	/*link platform dev to pAd*/
 	((POS_COOKIE)handle)->pDev = &pdev->dev;
-	RtmpRaDevCtrlInit(pAd, RTMP_DEV_INF_RBUS);
+	if (RtmpRaDevCtrlInit(pAd, RTMP_DEV_INF_RBUS) != NDIS_STATUS_SUCCESS)
+		goto err_out_free_radev;
+	radev_initialized = TRUE;
 	/*Prepare netdev for wifi dev, NetDevInit */
 	net_dev = RtmpPhyNetDevInit(pAd, &netDevHook);
 
@@ -160,8 +163,11 @@ err_out_free_netdev:
 	free_meminfo();
 #endif /* MEM_ALLOC_INFO_SUPPORT */
 err_out_free_radev:
-	/* free RTMP_ADAPTER strcuture and os_cookie*/
-	RTMPFreeAdapter(pAd);
+	/* Match the completed device resource transaction, if any. */
+	if (radev_initialized)
+		RtmpRaDevCtrlExit(pAd);
+	else
+		RTMPFreeAdapter(pAd);
 err_out:
 	return -ENODEV;
 }

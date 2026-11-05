@@ -42,10 +42,9 @@ static INT desc_ring_alloc(RTMP_ADAPTER *pAd, RTMP_DMABUF *pDescRing, INT size)
 
 NDIS_STATUS alloc_chip_cap_dep_data_pci(void *hdev_ctrl)
 {
-	struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(hdev_ctrl);
-	struct _PCI_HIF_T *hif = hc_get_hif_ctrl(hdev_ctrl);
-	UINT8 num_of_tx_ring = GET_NUM_OF_TX_RING(cap);
-	UINT8 num_of_rx_ring = GET_NUM_OF_RX_RING(cap);
+	struct _RTMP_CHIP_CAP *cap;
+	struct _PCI_HIF_T *hif;
+	UINT8 num_of_tx_ring, num_of_rx_ring;
 	INT index;
 	RTMP_DMABUF *pTxBufSpace = NULL;
 	RTMP_DMABUF *pTxDescRing = NULL;
@@ -54,98 +53,124 @@ NDIS_STATUS alloc_chip_cap_dep_data_pci(void *hdev_ctrl)
 	RTMP_RX_RING *pRxRing = NULL;
 	NDIS_SPIN_LOCK *pTxRingLock = NULL;
 	NDIS_SPIN_LOCK *pRxRingLock = NULL;
-	
-	/* allocate pci hif data structure which depends on ChipCap */
-	os_alloc_mem(NULL, (UCHAR **)&pTxBufSpace, (num_of_tx_ring)*sizeof(RTMP_DMABUF));
 
-	if (pTxBufSpace == NULL)
+	if (hdev_ctrl == NULL)
+		return NDIS_STATUS_FAILURE;
+	cap = hc_get_chip_cap(hdev_ctrl);
+	hif = hc_get_hif_ctrl(hdev_ctrl);
+	if (cap == NULL || hif == NULL)
+		return NDIS_STATUS_FAILURE;
+	num_of_tx_ring = GET_NUM_OF_TX_RING(cap);
+	num_of_rx_ring = GET_NUM_OF_RX_RING(cap);
+	if (!num_of_tx_ring || !num_of_rx_ring || hif->TxBufSpace ||
+		hif->TxDescRing || hif->TxRing || hif->RxDescRing || hif->RxRing ||
+		hif->TxRingLock || hif->RxRingLock)
 		return NDIS_STATUS_FAILURE;
 
-	NdisZeroMemory(pTxBufSpace, (num_of_tx_ring)*sizeof(RTMP_DMABUF));
-	hif->TxBufSpace = pTxBufSpace;
-	
-	os_alloc_mem(NULL, (UCHAR **)&pTxDescRing, (num_of_tx_ring)*sizeof(RTMP_DMABUF));
+	/* These are CPU owner arrays, not live DMA descriptors. Publish together. */
+	if (os_alloc_mem(NULL, (UCHAR **)&pTxBufSpace,
+		num_of_tx_ring * sizeof(*pTxBufSpace)) != NDIS_STATUS_SUCCESS || !pTxBufSpace)
+		goto fail;
+	NdisZeroMemory(pTxBufSpace, num_of_tx_ring * sizeof(*pTxBufSpace));
+	if (os_alloc_mem(NULL, (UCHAR **)&pTxDescRing,
+		num_of_tx_ring * sizeof(*pTxDescRing)) != NDIS_STATUS_SUCCESS || !pTxDescRing)
+		goto fail;
+	NdisZeroMemory(pTxDescRing, num_of_tx_ring * sizeof(*pTxDescRing));
+	if (os_alloc_mem(NULL, (UCHAR **)&pTxRing,
+		num_of_tx_ring * sizeof(*pTxRing)) != NDIS_STATUS_SUCCESS || !pTxRing)
+		goto fail;
+	NdisZeroMemory(pTxRing, num_of_tx_ring * sizeof(*pTxRing));
+	if (os_alloc_mem(NULL, (UCHAR **)&pRxDescRing,
+		num_of_rx_ring * sizeof(*pRxDescRing)) != NDIS_STATUS_SUCCESS || !pRxDescRing)
+		goto fail;
+	NdisZeroMemory(pRxDescRing, num_of_rx_ring * sizeof(*pRxDescRing));
+	if (os_alloc_mem(NULL, (UCHAR **)&pRxRing,
+		num_of_rx_ring * sizeof(*pRxRing)) != NDIS_STATUS_SUCCESS || !pRxRing)
+		goto fail;
+	NdisZeroMemory(pRxRing, num_of_rx_ring * sizeof(*pRxRing));
+	if (os_alloc_mem(NULL, (UCHAR **)&pTxRingLock,
+		num_of_tx_ring * sizeof(*pTxRingLock)) != NDIS_STATUS_SUCCESS || !pTxRingLock)
+		goto fail;
+	NdisZeroMemory(pTxRingLock, num_of_tx_ring * sizeof(*pTxRingLock));
+	if (os_alloc_mem(NULL, (UCHAR **)&pRxRingLock,
+		num_of_rx_ring * sizeof(*pRxRingLock)) != NDIS_STATUS_SUCCESS || !pRxRingLock)
+		goto fail;
+	NdisZeroMemory(pRxRingLock, num_of_rx_ring * sizeof(*pRxRingLock));
 
-	if (pTxDescRing == NULL)
-		return NDIS_STATUS_FAILURE;
-
-	NdisZeroMemory(pTxDescRing, (num_of_tx_ring)*sizeof(RTMP_DMABUF));
-	hif->TxDescRing = pTxDescRing;
-	
-	os_alloc_mem(NULL, (UCHAR **)&pTxRing, (num_of_tx_ring)*sizeof(RTMP_TX_RING));
-
-	if (pTxRing == NULL)
-		return NDIS_STATUS_FAILURE;
-
-	NdisZeroMemory(pTxRing, (num_of_tx_ring)*sizeof(RTMP_TX_RING));
-	hif->TxRing = pTxRing;
-	
-	os_alloc_mem(NULL, (UCHAR **)&pRxDescRing, (num_of_rx_ring)*sizeof(RTMP_DMABUF));
-
-	if (pRxDescRing == NULL)
-		return NDIS_STATUS_FAILURE;
-
-	NdisZeroMemory(pRxDescRing, (num_of_rx_ring)*sizeof(RTMP_DMABUF));
-	hif->RxDescRing = pRxDescRing;
-	
-	os_alloc_mem(NULL, (UCHAR **)&pRxRing, (num_of_rx_ring)*sizeof(RTMP_RX_RING));
-
-	if (pRxRing == NULL)
-		return NDIS_STATUS_FAILURE;
-
-	NdisZeroMemory(pRxRing, (num_of_rx_ring)*sizeof(RTMP_RX_RING));
-	hif->RxRing = pRxRing;
-	
-	os_alloc_mem(NULL, (UCHAR **)&pTxRingLock, (num_of_tx_ring)*sizeof(NDIS_SPIN_LOCK));
-
-	if (pTxRingLock == NULL)
-		return NDIS_STATUS_FAILURE;
-
-	NdisZeroMemory(pTxRingLock, (num_of_tx_ring)*sizeof(NDIS_SPIN_LOCK));
-	hif->TxRingLock = pTxRingLock;
-	
-	os_alloc_mem(NULL, (UCHAR **)&pRxRingLock, (num_of_rx_ring)*sizeof(NDIS_SPIN_LOCK));
-
-	if (pRxRingLock == NULL)
-		return NDIS_STATUS_FAILURE;
-
-	NdisZeroMemory(pRxRingLock, (num_of_rx_ring)*sizeof(NDIS_SPIN_LOCK));
-	hif->RxRingLock = pRxRingLock;
-
-	/* spinlock is allocated after data structure is ready */
+	/* Current Linux lock initialization cannot fail. */
 	for (index = 0; index < num_of_tx_ring; index++)
-		OS_NdisAllocateSpinLock(&hif->TxRingLock[index]);
-
+		OS_NdisAllocateSpinLock(&pTxRingLock[index]);
 	for (index = 0; index < num_of_rx_ring; index++)
-		OS_NdisAllocateSpinLock(&hif->RxRingLock[index]);
-
+		OS_NdisAllocateSpinLock(&pRxRingLock[index]);
+	hif->TxBufSpace = pTxBufSpace;
+	hif->TxDescRing = pTxDescRing;
+	hif->TxRing = pTxRing;
+	hif->RxDescRing = pRxDescRing;
+	hif->RxRing = pRxRing;
+	hif->TxRingLock = pTxRingLock;
+	hif->RxRingLock = pRxRingLock;
 	return NDIS_STATUS_SUCCESS;
+fail:
+	if (pRxRingLock)
+		os_free_mem(pRxRingLock);
+	if (pTxRingLock)
+		os_free_mem(pTxRingLock);
+	if (pRxRing)
+		os_free_mem(pRxRing);
+	if (pRxDescRing)
+		os_free_mem(pRxDescRing);
+	if (pTxRing)
+		os_free_mem(pTxRing);
+	if (pTxDescRing)
+		os_free_mem(pTxDescRing);
+	if (pTxBufSpace)
+		os_free_mem(pTxBufSpace);
+	return NDIS_STATUS_RESOURCES;
 }
 
 VOID free_chip_cap_dep_data_pci(void *hdev_ctrl)
 {
-	struct _RTMP_CHIP_CAP *cap = hc_get_chip_cap(hdev_ctrl);
-	struct _PCI_HIF_T *hif = hc_get_hif_ctrl(hdev_ctrl);
-	UINT8 num_of_tx_ring = GET_NUM_OF_TX_RING(cap);
-	UINT8 num_of_rx_ring = GET_NUM_OF_RX_RING(cap);
+	struct _RTMP_CHIP_CAP *cap;
+	struct _PCI_HIF_T *hif;
+	UINT8 num_of_tx_ring, num_of_rx_ring;
 	INT index;
 
-	/* free pci hif data structure which depends on ChipCap */
-
-	/* spinlock must be freed before its data structure is freed */
-	for (index = 0; index < num_of_tx_ring; index++)
-		OS_NdisFreeSpinLock(&hif->TxRingLock[index]);
-
-	for (index = 0; index < num_of_rx_ring; index++)
-		OS_NdisFreeSpinLock(&hif->RxRingLock[index]);
-
-	os_free_mem(hif->TxBufSpace);
-	os_free_mem(hif->TxDescRing);
-	os_free_mem(hif->TxRing);
-	os_free_mem(hif->RxDescRing);
-	os_free_mem(hif->RxRing);
-	os_free_mem(hif->TxRingLock);
-	os_free_mem(hif->RxRingLock);
+	if (hdev_ctrl == NULL)
+		return;
+	cap = hc_get_chip_cap(hdev_ctrl);
+	hif = hc_get_hif_ctrl(hdev_ctrl);
+	if (cap == NULL || hif == NULL)
+		return;
+	num_of_tx_ring = GET_NUM_OF_TX_RING(cap);
+	num_of_rx_ring = GET_NUM_OF_RX_RING(cap);
+	/* Actors/DMA are already retired by the containing lifecycle owner. */
+	if (hif->TxRingLock)
+		for (index = 0; index < num_of_tx_ring; index++)
+			OS_NdisFreeSpinLock(&hif->TxRingLock[index]);
+	if (hif->RxRingLock)
+		for (index = 0; index < num_of_rx_ring; index++)
+			OS_NdisFreeSpinLock(&hif->RxRingLock[index]);
+	if (hif->RxRingLock)
+		os_free_mem(hif->RxRingLock);
+	hif->RxRingLock = NULL;
+	if (hif->TxRingLock)
+		os_free_mem(hif->TxRingLock);
+	hif->TxRingLock = NULL;
+	if (hif->RxRing)
+		os_free_mem(hif->RxRing);
+	hif->RxRing = NULL;
+	if (hif->RxDescRing)
+		os_free_mem(hif->RxDescRing);
+	hif->RxDescRing = NULL;
+	if (hif->TxRing)
+		os_free_mem(hif->TxRing);
+	hif->TxRing = NULL;
+	if (hif->TxDescRing)
+		os_free_mem(hif->TxDescRing);
+	hif->TxDescRing = NULL;
+	if (hif->TxBufSpace)
+		os_free_mem(hif->TxBufSpace);
+	hif->TxBufSpace = NULL;
 }
 
 inline VOID *alloc_rx_buf_1k(void *hif_resource)

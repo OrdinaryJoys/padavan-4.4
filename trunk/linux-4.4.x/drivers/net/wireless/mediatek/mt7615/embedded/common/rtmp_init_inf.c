@@ -152,8 +152,14 @@ INT rtmp_mgmt_init(RTMP_ADAPTER *pAd)
 }
 
 
-VOID rtmp_sys_task_exit(RTMP_ADAPTER *pAd)
+INT rtmp_sys_task_exit(RTMP_ADAPTER *pAd)
 {
+	if (!RtmpDmaTeardownCheck(pAd))
+		return NDIS_STATUS_FAILURE;
+	if (tm_exit(pAd) != NDIS_STATUS_SUCCESS) {
+		RtmpDmaQuarantine(pAd);
+		return NDIS_STATUS_FAILURE;
+	}
 #ifdef ERR_RECOVERY
 	HwCtrlSerExit(pAd);
 #endif
@@ -162,24 +168,28 @@ VOID rtmp_sys_task_exit(RTMP_ADAPTER *pAd)
 #ifdef ERR_RECOVERY
 	if (!pAd->ErrRecoveryCtl.queues_retired) {
 #endif
-		tm_exit(pAd);
 		qm_exit(pAd);
 #ifdef ERR_RECOVERY
 		pAd->ErrRecoveryCtl.queues_retired = TRUE;
 	}
 #endif
-	tr_ctl_exit(pAd);
+	if (tr_ctl_exit(pAd) != NDIS_STATUS_SUCCESS) {
+		RtmpDmaQuarantine(pAd);
+		return NDIS_STATUS_FAILURE;
+	}
 #ifdef WSC_INCLUDED
 	WscThreadExit(pAd);
 #endif
 	/* Every callback is retired before its HIF/MCU dependencies are freed. */
 	RTMP_AllTimerListRelease(pAd);
+	return NDIS_STATUS_SUCCESS;
 }
 
 static INT rtmp_sys_exit(RTMP_ADAPTER *pAd)
 {
 	/* Only called after rtmp_sys_init has transferred every software stage. */
-	rtmp_sys_task_exit(pAd);
+	if (rtmp_sys_task_exit(pAd) != NDIS_STATUS_SUCCESS)
+		return FALSE;
 	HwCtrlExit(pAd);
 	RtmpMgmtTaskExit(pAd);
 #ifdef MT_MAC
@@ -216,7 +226,7 @@ static INT rtmp_sys_init(RTMP_ADAPTER *pAd, RTMP_STRING *pHostName)
 #endif
 
 	/* Reject a second transaction before resetting any existing owner. */
-	if (RTMP_OS_TASK_LEGALITY(&pAd->cmdQTask) ||
+	if (RtmpDmaStopping(pAd) || RTMP_OS_TASK_LEGALITY(&pAd->cmdQTask) ||
 		RTMP_OS_TASK_LEGALITY(&pAd->HwCtrl.HwCtrlTask) ||
 #ifdef WSC_INCLUDED
 		RTMP_OS_TASK_LEGALITY(&pAd->wscTask) || pAd->WscWorkerInitialized ||
@@ -311,6 +321,13 @@ static INT rtmp_sys_init(RTMP_ADAPTER *pAd, RTMP_STRING *pHostName)
 	return TRUE;
 
 fail:
+	/* Close admissions even before first DMA: a partial TM still owns work. */
+	if (!RtmpDmaTeardownCheck(pAd))
+		return FALSE;
+	if (tm_exit(pAd) != NDIS_STATUS_SUCCESS) {
+		RtmpDmaQuarantine(pAd);
+		return FALSE;
+	}
 	/* Retire software producers while the objects they observe still exist. */
 	if (hw)
 		HwCtrlExit(pAd);
@@ -318,8 +335,10 @@ fail:
 		RtmpMgmtTaskExit(pAd);
 	if (qm)
 		qm_exit(pAd);
-	if (tr)
-		tr_ctl_exit(pAd);
+	if (tr && tr_ctl_exit(pAd) != NDIS_STATUS_SUCCESS) {
+		RtmpDmaQuarantine(pAd);
+		return FALSE;
+	}
 #ifdef MT_MAC
 	if (txs)
 		ExitTxSTypeTable(pAd);
@@ -645,14 +664,16 @@ err3:
 		APShutdown(pAd);
 #endif
 	MlmeHalt(pAd);
-	rtmp_sys_task_exit(pAd);
+	if (rtmp_sys_task_exit(pAd) != NDIS_STATUS_SUCCESS)
+		goto err0;
 	if (WfSysPosExit(pAd) != NDIS_STATUS_SUCCESS)
 		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 			("%s: armed initialization unwind failed DMA idle check\n", __func__));
 err2:
 	if (!RtmpDmaResourcesMayRelease(pAd))
 		goto err0;
-	rtmp_sys_exit(pAd);
+	if (rtmp_sys_exit(pAd) != TRUE)
+		goto err0;
 err0:
 	RTMP_CLEAR_FLAG(pAd, fRTMP_ADAPTER_START_UP);
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("!!! mt_wifi_init  fail !!!\n"));
@@ -909,7 +930,10 @@ VOID RTMPDrvClose(VOID *pAdSrc, VOID *net_dev)
 	if (!pAd->ErrRecoveryCtl.queues_retired) {
 #endif
 	/* tm exit */
-	tm_exit(pAd);
+	if (tm_exit(pAd) != NDIS_STATUS_SUCCESS) {
+		RtmpDmaQuarantine(pAd);
+		return;
+	}
 
 	/* qm exit */
 	qm_exit(pAd);
@@ -917,7 +941,10 @@ VOID RTMPDrvClose(VOID *pAdSrc, VOID *net_dev)
 		pAd->ErrRecoveryCtl.queues_retired = TRUE;
 	}
 #endif
-	tr_ctl_exit(pAd);
+	if (tr_ctl_exit(pAd) != NDIS_STATUS_SUCCESS) {
+		RtmpDmaQuarantine(pAd);
+		return;
+	}
 #ifdef WSC_INCLUDED
 	WscThreadExit(pAd);
 #endif
