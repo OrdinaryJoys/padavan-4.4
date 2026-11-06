@@ -54,7 +54,7 @@ class EswErrorTests(unittest.TestCase):
   for n,k in h.FUNCTION_SOURCES.items():self.assertEqual(self.generated.count(h.function(self.texts[k],n)),1)
   self.assertEqual(len(h.source_declarations(self.texts)),40);self.assertRegex(self.texts['config'],r'(?m)^CONFIG_RAETH_ESW_CONTROL=y$')
   self.assertTrue(h.MODEL_VARIANT['VLAN_programming_is_inert_side_effect_seam_not_real_algorithm']);self.assertTrue(h.MODEL_VARIANT['atomic_and_mutex_shims_are_sequential_not_kernel_scheduling']);self.assertFalse(h.MODEL_VARIANT['wire_layout_is_actual_kernel_ABI'])
-  apply=h.function(self.texts['esw'],'esw_vlan_apply_rules');self.assertIn('g_vlan_rule[i] = g_vlan_rule_user[i];',apply);self.assertIn('g_vlan_pvid_wan_untagged = untg_vid;',apply)
+  apply=h.function(self.texts['esw'],'esw_vlan_apply_rules');self.assertNotIn('g_vlan_rule[i] = g_vlan_rule_user[i];',apply);self.assertIn('*new_pvid = untg_vid;',apply);publish=h.function(self.texts['esw'],'esw_vlan_bridge_isolate');self.assertIn('g_vlan_rule[i] = g_vlan_rule_user[i];',publish);self.assertIn('g_vlan_pvid_wan_untagged = new_pvid;',publish)
   opening=h.function(self.texts['raeth'],'ei_open');self.assertRegex(opening,r'err = esw_ioctl_init_post\(\);\s*if \(err\)\s*goto fail_dma;')
  def test_pinned_old_whole_functions_reproduce_false_success(self):
   fixture=ROOT/'tests/fixtures/esw-error';manifest=json.loads((fixture/'manifest.json').read_text())
@@ -73,11 +73,11 @@ class EswErrorTests(unittest.TestCase):
    ('mt7530_gsw_mac_table_clear','if (!mii_mgr_write(0x1f, 0x80, atc_val))','if (mii_mgr_write(0x1f, 0x80, atc_val) && 0)','clear-write-fail'),
    ('mt7530_gsw_wait_wt_mac','return -ETIMEDOUT;','return 0;','clear-busy-timeout'),
    ('esw_mac_table_clear','if (ret)','if (0)','wrapper-write-fail'),
-   ('esw_vlan_bridge_isolate','memcpy(g_vlan_rule, old_rules, sizeof(old_rules));','(void)old_rules;','bridge-write-fail'),
-   ('change_bridge_mode','if (ret)','if (0)','bridge-write-fail'),
+   ('esw_vlan_bridge_isolate','g_bridge_apply_pending = true;\n\t\treturn ret;','g_bridge_apply_pending = true;\n\t\treturn 0;','bridge-write-fail'),
+   ('change_bridge_mode','if (ret) {','if (0) {','bridge-write-fail'),
    ('change_bridge_mode',' || g_bridge_apply_pending','','bridge-old-state-after-fail'),
    ('mtk_esw_ioctl','ioctl_result = esw_mac_table_clear();','(void)esw_mac_table_clear();','ioctl-clear-write-fail'),
-   ('esw_ioctl_init_post','if (ret)','if (0)','init-write-fail'),
+   ('esw_ioctl_init_post','if (ret)\n\t\tgoto out;\n\n#if','if (0)\n\t\tgoto out;\n\n#if','init-write-fail'),
    ('esw_ioctl_init_post','atomic_set(&g_switch_inited, 0);','(void)g_switch_inited;','init-prior-ready-fail'),
    ('mtk_esw_ioctl','if (copy_from_user(&uint_value, (int __user *)arg, sizeof(int)))','if (copy_from_user(&uint_value, (int __user *)arg, sizeof(int)) && 0)','bridge-uaccess-fail'))
   for i,(n,old,new,case)in enumerate(mutants):

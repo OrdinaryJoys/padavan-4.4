@@ -1,12 +1,12 @@
-"""Whole reset_control_reset; inert provider and sequential atomic shims only."""
+"""Whole reset_control_reset and shared gate; inert sequential observations."""
 import hashlib
 import re
 SOURCE_PATHS = {'core': 'trunk/linux-4.4.x/drivers/reset/core.c'}
-BODY_ORDER = ('reset_control_reset',)
-FUNCTION_SOURCES = {'reset_control_reset': 'core'}
+BODY_ORDER = ('reset_control_try_shared', 'reset_control_shared_done', 'reset_control_reset')
+FUNCTION_SOURCES = {'reset_control_try_shared': 'core', 'reset_control_shared_done': 'core', 'reset_control_reset': 'core'}
 SOURCE_ONLY_FUNCTION_SOURCES = {}
 FUNCTION_DECLARATIONS = ''
-SOURCE_FRAGMENTS = {'core': ('struct reset_control {','atomic_t deassert_count;','atomic_t triggered_count;')}
+SOURCE_FRAGMENTS = {'core': ('struct reset_control {','atomic_t deassert_count;','atomic_t triggered_count;','atomic_t shared_busy;')}
 MODEL_VARIANT = {'whole_function_execution': True, 'synthetic_reset_control_layout': True,
                  'provider_callback_is_inert': True,
                  'atomic_shims_are_sequential_not_kernel_scheduling': True,
@@ -42,6 +42,8 @@ PREFIX = r'''
 #include <stdlib.h>
 #define EINVAL 22
 #define ENOTSUPP 524
+#define EAGAIN 11
+#define INT_MAX 2147483647
 typedef struct { int value; } atomic_t;
 struct reset_controller_dev;
 struct reset_control_ops { int (*reset)(struct reset_controller_dev *, unsigned long); };
@@ -50,7 +52,7 @@ struct reset_control {
  struct reset_controller_dev *rcdev;
  unsigned int id;
  int shared;
- atomic_t deassert_count, triggered_count;
+ atomic_t deassert_count, triggered_count, shared_busy;
 };
 static int warnings, calls, pulses, failures, last_id = -1;
 static struct reset_controller_dev *expected_provider;
@@ -59,6 +61,18 @@ static struct reset_controller_dev *expected_provider;
 static int atomic_read(const atomic_t *p) { return p->value; }
 static int atomic_inc_return(atomic_t *p) { return ++p->value; }
 static void atomic_dec(atomic_t *p) { --p->value; }
+static int atomic_cmpxchg(atomic_t *p, int old, int value)
+{
+ int before = p->value;
+ if (before == old) p->value = value;
+ return before;
+}
+static int atomic_xchg(atomic_t *p, int value)
+{
+ int before = p->value;
+ p->value = value;
+ return before;
+}
 static int inert_reset(struct reset_controller_dev *provider, unsigned long id)
 {
  if (provider != expected_provider) abort();
@@ -87,7 +101,7 @@ int main(int argc, char **argv)
 {
  struct reset_control_ops ops = { inert_reset };
  struct reset_controller_dev provider = { &ops };
- struct reset_control reset = { &provider, 13, 0, {0}, {0} };
+ struct reset_control reset = { &provider, 13, 0, {0}, {0}, {0} };
  struct reset_control *argument = &reset;
  const struct scenario *selected = NULL;
  const char *name;

@@ -48,7 +48,7 @@ class ResetCoreTests(unittest.TestCase):
         self.rows(('shared-deasserted','null','error-pointer','missing-reset','shared-missing-reset'))
     def test_whole_body_identity_and_explicit_sequential_boundary(self):
         self.assertEqual(set(h.CASE_NAMES),set(h.EXPECTED_ROWS));self.assertEqual(len(h.CASE_NAMES),17)
-        self.assertEqual(len(h.function_manifest(self.texts)),1);self.assertEqual(h.source_only_manifest(self.texts),{})
+        self.assertEqual(len(h.function_manifest(self.texts)),3);self.assertEqual(h.source_only_manifest(self.texts),{})
         self.assertEqual(self.code.count(h.function(self.texts['core'],'reset_control_reset')),1)
         for key in ('synthetic_reset_control_layout','atomic_shims_are_sequential_not_kernel_scheduling','machine_restart_and_hardware_are_not_executed'):self.assertTrue(h.MODEL_VARIANT[key])
         with self.assertRaises(ValueError):h.generate_source({})
@@ -65,12 +65,19 @@ class ResetCoreTests(unittest.TestCase):
     def test_pinned_original_reproduces_duplicate_pulse_and_false_success_after_failure(self):
         old=subprocess.check_output(['git','show',BASE+':'+h.SOURCE_PATHS['core']],cwd=ROOT,text=True,timeout=10)
         self.assertIn('if (rstc->shared && !ret)',old)
-        self.reject(h.generate_source({'core':old}),('shared-repeat','shared-retry-1'),'original')
+        # The historical source predates the shared gate. Reconstruct its
+        # complete original function without unused current-only shims.
+        prefix=h.PREFIX
+        for name in ('atomic_cmpxchg','atomic_xchg'):
+            prefix=prefix.replace(h.function(prefix,name),'')
+        admission='if ('+' && '.join('strcmp(name,"'+n+'")'for n in h.CASE_NAMES)+') return 2;'
+        code=prefix+'\n'+h.function(old,'reset_control_reset')+'\n'+h.SUFFIX.replace('CASE_ADMISSION',admission)
+        self.reject(code,('shared-repeat','shared-retry-1'),'original')
     def test_rollback_consumption_and_mode_guard_mutants_are_rejected(self):
         self.assertEqual(self.code.count('if (rstc->shared && ret)'),1)
         self.reject(self.code.replace('if (rstc->shared && ret)','if (0 && rstc->shared && ret)'),('shared-retry-1',),'no-rollback')
         self.reject(self.code.replace('if (rstc->shared && ret)','if (rstc->shared)'),('shared-repeat',),'no-consumption')
-        before='if (atomic_inc_return(&rstc->triggered_count) != 1)\n\t\t\treturn 0;'
+        before='if (atomic_inc_return(&rstc->triggered_count) != 1)\n\t\t\treturn reset_control_shared_done(rstc, 0);'
         self.assertEqual(self.code.count(before),1)
         self.reject(self.code.replace(before,'(void)atomic_inc_return(&rstc->triggered_count);'),('shared-repeat',),'no-once-guard')
         before='atomic_read(&rstc->deassert_count) != 0'

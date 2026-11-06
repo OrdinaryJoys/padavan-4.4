@@ -290,6 +290,9 @@ PREFIX = r'''
 #define CONFIG_RAETH_ESW_CONTROL
 #define CONFIG_RALINK_MT7621
 #define BIT(n) (1U<<(n))
+#define EPERM 1
+#define CAP_NET_ADMIN 12
+#define capable(cap) ((void)(cap),1)
 #define __user
 typedef uint32_t u32;
 typedef struct {uint64_t RX,TX;} port_bytes_t;
@@ -299,7 +302,7 @@ typedef struct {int value;} atomic_t;
 SOURCE_DEFINITIONS
 FUNCTION_DECLARATIONS
 static u32 g_wan_bridge_mode,g_wan_bwan_isolation,g_vlan_rule[SWAPI_VLAN_RULE_NUM],g_vlan_rule_user[SWAPI_VLAN_RULE_NUM],g_vlan_pvid_wan_untagged,g_led_phy_mode;
-static atomic_t g_switch_inited,g_switch_allow_irq;
+static atomic_t g_switch_inited,g_switch_allow_irq,g_port_link_changed;
 static int esw_access_mutex,depth,lock_errors,locks,writes,reads,delay_us,last_atc,fail_write_at,fail_read_at,busy_reads,always_busy,user_fault;
 static int applies,vid1,masks,shows,power_down,power_up,sleeps,leds,macs;
 static void mutex_lock(int*p){(void)p;if(depth)lock_errors++;depth++;locks++;}
@@ -311,32 +314,33 @@ static u32 mii_mgr_write(u32 phy,u32 reg,u32 data){assert(phy==31&&reg==0x80&&(d
 static u32 mii_mgr_read(u32 phy,u32 reg,u32*out){assert(phy==31&&reg==0x80&&out);reads++;if(reads==fail_read_at)return 0;*out=always_busy||reads<=busy_reads?BIT(15):0;return 1;}
 static unsigned long copy_from_user(void*d,const void*s,size_t n){if(user_fault)return n;memcpy(d,s,n);return 0;}
 static unsigned long copy_to_user(void*d,const void*s,size_t n){(void)d;(void)s;(void)n;return 0;}
-#define put_user(v,p) do{(void)(v);(void)(p);}while(0)
+#define put_user(v,p) ((void)(v),(void)(p),0)
 static void require_owner(void){assert(depth==1);}
 /* Explicit inert VLAN seams reproduce only their source-bound global mutations. */
-static void esw_vlan_apply_rules(u32 mode,u32 iso){(void)mode;(void)iso;require_owner();applies++;memcpy(g_vlan_rule,g_vlan_rule_user,sizeof(g_vlan_rule));g_vlan_pvid_wan_untagged=2;}
-static void esw_vlan_init_vid1(void){require_owner();vid1++;}
-static void esw_mask_bridge_isolate(u32 mode,u32 iso){(void)mode;(void)iso;require_owner();masks++;}
+static int esw_vlan_apply_rules(u32 mode,u32 iso,u32*out){(void)mode;(void)iso;require_owner();applies++;*out=2;return 0;}
+static int esw_vlan_init_vid1(void){require_owner();vid1++;return 0;}
+static int esw_mask_bridge_isolate(u32 mode,u32 iso){(void)mode;(void)iso;require_owner();masks++;return 0;}
 static void esw_show_bridge_partitions(u32 mode){(void)mode;require_owner();shows++;}
-static int change_wan_lan_ports_power(u32 on,u32 wan){(void)wan;require_owner();if(on)power_up++;else power_down++;return 1;}
+static int change_wan_lan_ports_power_for_mode(u32 on,u32 wan,u32 mode){(void)mode;(void)wan;require_owner();if(on)power_up++;else power_down++;return 1;}
+static int change_wan_lan_ports_power(u32 on,u32 wan){return change_wan_lan_ports_power_for_mode(on,wan,g_wan_bridge_mode);}
 static void msleep(unsigned n){require_owner();assert(n==500);sleeps+=(int)n;}
-static void esw_mac_to_phy_enable(void){require_owner();macs++;}
-static void esw_led_mode(u32 mode){(void)mode;require_owner();leds++;}
+static int esw_mac_to_phy_enable(void){require_owner();macs++;return 0;}
+static int esw_led_mode(u32 mode){(void)mode;require_owner();leds++;return 0;}
 static u32 esw_status_link_port_uapi(u32 p){(void)p;return 0;}
 static u32 esw_status_link_ports(int p){(void)p;return 0;}
 static u32 esw_status_link_changed(void){return 0;}
 static u32 esw_status_speed_port_uapi(u32 p){(void)p;return 0;}
 static int esw_status_bytes_port_uapi(u32 p,port_bytes_t*b){(void)p;(void)b;return 0;}
 static int esw_status_mib_port_uapi(u32 p,esw_mib_counters_t*b){(void)p;(void)b;return 0;}
-static void change_ports_power(u32 a,u32 b){(void)a;(void)b;}
-static void esw_vlan_reset_table(void){}
-static void vlan_accept_port_mode(u32 a,u32 b){(void)a;(void)b;}
-static void vlan_create_entry(u32 a,u32 b,int c){(void)a;(void)b;(void)c;}
+static int change_ports_power(u32 a,u32 b){(void)a;(void)b;return 0;}
+static int esw_vlan_reset_table(void){return 0;}
+static int vlan_accept_port_mode(u32 a,u32 b){(void)a;(void)b;return 0;}
+static int vlan_create_entry(u32 a,u32 b,int c){(void)a;(void)b;(void)c;return 0;}
 static int change_vlan_rule(u32 a,u32 b){(void)a;(void)b;return 0;}
 static void change_storm_control_broadcast(u32 a){(void)a;}
 static void change_jumbo_frames_accept(u32 a){(void)a;}
-static void change_igmp_snooping_control(u32 a){(void)a;}
-static void change_igmp_static_ports(u32 a){(void)a;}
+static int change_igmp_snooping_control(u32 a){(void)a;return 0;}
+static int change_igmp_static_ports(u32 a){(void)a;return 0;}
 static void change_led_mode(u32 a){(void)a;}
 static int change_port_link_mode_uapi(u32 a,u32 b){(void)a;(void)b;return 0;}
 '''

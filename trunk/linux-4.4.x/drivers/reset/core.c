@@ -32,9 +32,9 @@ static LIST_HEAD(reset_controller_list);
  * @refcnt: Number of gets of this reset_control
  * @shared: Is this a shared (1), or an exclusive (0) reset_control?
  * @deassert_cnt: Number of times this reset line has been deasserted
- * @triggered_count: Number of times this reset line has been reset. Currently
- *                   only used for shared resets, which means that the value
- *                   will be either 0 or 1.
+ * @triggered_count: Shared reset requests; after shared_busy is cleared a
+ *                   positive value means the provider pulse has completed.
+ * @shared_busy: Nonblocking exclusion for shared provider/count transitions.
  */
 struct reset_control {
 	struct reset_controller_dev *rcdev;
@@ -44,7 +44,28 @@ struct reset_control {
 	bool shared;
 	atomic_t deassert_count;
 	atomic_t triggered_count;
+	atomic_t shared_busy;
 };
+
+/* Do not spin or sleep behind a provider: it may itself sleep, or be called
+ * from atomic context when the provider permits that. A concurrent shared
+ * caller must retry rather than observe success before the provider returns.
+ * cmpxchg/xchg also publish provider completion before the next owner. */
+static int reset_control_try_shared(struct reset_control *rstc)
+{
+	if (rstc->shared && atomic_cmpxchg(&rstc->shared_busy, 0, 1))
+		return -EAGAIN;
+
+	return 0;
+}
+
+static int reset_control_shared_done(struct reset_control *rstc, int result)
+{
+	if (rstc->shared)
+		atomic_xchg(&rstc->shared_busy, 0);
+
+	return result;
+}
 
 /**
  * of_reset_simple_xlate - translate reset_spec to the reset line number
@@ -143,6 +164,8 @@ EXPORT_SYMBOL_GPL(devm_reset_controller_register);
  * a no-op.
  * Consumers must not use reset_control_(de)assert on shared reset lines when
  * reset_control_reset has been used.
+ * A shared provider operation already in progress returns -EAGAIN without
+ * consuming a request. Provider failure also leaves the pulse retryable.
  *
  * If rstc is NULL it is an optional reset and the function will just
  * return 0.
@@ -160,12 +183,24 @@ int reset_control_reset(struct reset_control *rstc)
 	if (!rstc->rcdev->ops->reset)
 		return -ENOTSUPP;
 
+	ret = reset_control_try_shared(rstc);
+	if (ret)
+		return ret;
+
 	if (rstc->shared) {
 		if (WARN_ON(atomic_read(&rstc->deassert_count) != 0))
-			return -EINVAL;
+			return reset_control_shared_done(rstc, -EINVAL);
+
+		if (WARN_ON(atomic_read(&rstc->triggered_count) < 0))
+			return reset_control_shared_done(rstc, -EINVAL);
+
+		/* Only the consumed/not-consumed distinction is functional. Keep
+		 * historical positive accounting without allowing signed wrap. */
+		if (atomic_read(&rstc->triggered_count) == INT_MAX)
+			return reset_control_shared_done(rstc, 0);
 
 		if (atomic_inc_return(&rstc->triggered_count) != 1)
-			return 0;
+			return reset_control_shared_done(rstc, 0);
 	}
 
 	ret = rstc->rcdev->ops->reset(rstc->rcdev, rstc->id);
@@ -173,7 +208,7 @@ int reset_control_reset(struct reset_control *rstc)
 	if (rstc->shared && ret)
 		atomic_dec(&rstc->triggered_count);
 
-	return ret;
+	return reset_control_shared_done(rstc, ret);
 }
 EXPORT_SYMBOL_GPL(reset_control_reset);
 
@@ -189,13 +224,16 @@ EXPORT_SYMBOL_GPL(reset_control_reset);
  * internal state to be reset, but must be prepared for this to happen.
  * Consumers must not use reset_control_reset on shared reset lines when
  * reset_control_(de)assert has been used.
- * return 0.
+ * A shared operation in progress returns -EAGAIN without releasing a
+ * deassert reference. Provider failure likewise preserves that reference.
  *
  * If rstc is NULL it is an optional reset and the function will just
  * return 0.
  */
 int reset_control_assert(struct reset_control *rstc)
 {
+	int ret;
+
 	if (!rstc)
 		return 0;
 
@@ -205,18 +243,26 @@ int reset_control_assert(struct reset_control *rstc)
 	if (!rstc->rcdev->ops->assert)
 		return -ENOTSUPP;
 
+	ret = reset_control_try_shared(rstc);
+	if (ret)
+		return ret;
+
 	if (rstc->shared) {
 		if (WARN_ON(atomic_read(&rstc->triggered_count) != 0))
-			return -EINVAL;
+			return reset_control_shared_done(rstc, -EINVAL);
 
-		if (WARN_ON(atomic_read(&rstc->deassert_count) == 0))
-			return -EINVAL;
+		if (WARN_ON(atomic_read(&rstc->deassert_count) <= 0))
+			return reset_control_shared_done(rstc, -EINVAL);
 
 		if (atomic_dec_return(&rstc->deassert_count) != 0)
-			return 0;
+			return reset_control_shared_done(rstc, 0);
 	}
 
-	return rstc->rcdev->ops->assert(rstc->rcdev, rstc->id);
+	ret = rstc->rcdev->ops->assert(rstc->rcdev, rstc->id);
+	if (rstc->shared && ret)
+		atomic_inc(&rstc->deassert_count);
+
+	return reset_control_shared_done(rstc, ret);
 }
 EXPORT_SYMBOL_GPL(reset_control_assert);
 
@@ -227,13 +273,16 @@ EXPORT_SYMBOL_GPL(reset_control_assert);
  * After calling this function, the reset is guaranteed to be deasserted.
  * Consumers must not use reset_control_reset on shared reset lines when
  * reset_control_(de)assert has been used.
- * return 0.
+ * A shared operation in progress returns -EAGAIN without acquiring a
+ * deassert reference. A failed provider call is not counted either.
  *
  * If rstc is NULL it is an optional reset and the function will just
  * return 0.
  */
 int reset_control_deassert(struct reset_control *rstc)
 {
+	int ret;
+
 	if (!rstc)
 		return 0;
 
@@ -243,15 +292,29 @@ int reset_control_deassert(struct reset_control *rstc)
 	if (!rstc->rcdev->ops->deassert)
 		return -ENOTSUPP;
 
+	ret = reset_control_try_shared(rstc);
+	if (ret)
+		return ret;
+
 	if (rstc->shared) {
 		if (WARN_ON(atomic_read(&rstc->triggered_count) != 0))
-			return -EINVAL;
+			return reset_control_shared_done(rstc, -EINVAL);
+
+		if (WARN_ON(atomic_read(&rstc->deassert_count) < 0))
+			return reset_control_shared_done(rstc, -EINVAL);
+
+		if (atomic_read(&rstc->deassert_count) == INT_MAX)
+			return reset_control_shared_done(rstc, -EOVERFLOW);
 
 		if (atomic_inc_return(&rstc->deassert_count) != 1)
-			return 0;
+			return reset_control_shared_done(rstc, 0);
 	}
 
-	return rstc->rcdev->ops->deassert(rstc->rcdev, rstc->id);
+	ret = rstc->rcdev->ops->deassert(rstc->rcdev, rstc->id);
+	if (rstc->shared && ret)
+		atomic_dec(&rstc->deassert_count);
+
+	return reset_control_shared_done(rstc, ret);
 }
 EXPORT_SYMBOL_GPL(reset_control_deassert);
 
@@ -289,6 +352,9 @@ static struct reset_control *__reset_control_get(
 			if (WARN_ON(!rstc->shared || !shared))
 				return ERR_PTR(-EBUSY);
 
+			if (rstc->refcnt == UINT_MAX)
+				return ERR_PTR(-EOVERFLOW);
+
 			rstc->refcnt++;
 			return rstc;
 		}
@@ -298,7 +364,10 @@ static struct reset_control *__reset_control_get(
 	if (!rstc)
 		return ERR_PTR(-ENOMEM);
 
-	try_module_get(rcdev->owner);
+	if (!try_module_get(rcdev->owner)) {
+		kfree(rstc);
+		return ERR_PTR(-ENODEV);
+	}
 
 	rstc->rcdev = rcdev;
 	list_add(&rstc->list, &rcdev->reset_control_head);
@@ -389,11 +458,14 @@ EXPORT_SYMBOL_GPL(__of_reset_control_get);
 /**
  * reset_control_put - free the reset controller
  * @rstc: reset controller
+ *
+ * NULL optional controls and error pointers have no reference to release.
+ * The consumer must finish its operations before releasing their reference.
  */
 
 void reset_control_put(struct reset_control *rstc)
 {
-	if (IS_ERR(rstc))
+	if (IS_ERR_OR_NULL(rstc))
 		return;
 
 	mutex_lock(&reset_list_mutex);
@@ -420,7 +492,7 @@ struct reset_control *__devm_reset_control_get(struct device *dev,
 
 	rstc = __of_reset_control_get(dev ? dev->of_node : NULL,
 				      id, index, shared, optional);
-	if (!IS_ERR(rstc)) {
+	if (!IS_ERR_OR_NULL(rstc)) {
 		*ptr = rstc;
 		devres_add(dev, ptr);
 	} else {

@@ -128,8 +128,10 @@ __must_check reset_control_get_exclusive(struct device *dev, const char *id)
  * about shared reset-controls in the reset_control_assert docs.
  *
  * Calling reset_control_assert without first calling reset_control_deassert
- * is not allowed on a shared reset control. Calling reset_control_reset is
- * also not allowed on a shared reset control.
+ * is not allowed on a shared reset control. reset_control_reset may be used
+ * instead of assert/deassert, but the two modes must not be mixed. Shared
+ * operations return -EAGAIN, without changing references, while another
+ * provider operation on this control is in progress.
  *
  * Use of id names is optional.
  */
@@ -183,8 +185,10 @@ static inline struct reset_control *of_reset_control_get_exclusive(
  * about shared reset-controls in the reset_control_assert docs.
  *
  * Calling reset_control_assert without first calling reset_control_deassert
- * is not allowed on a shared reset control. Calling reset_control_reset is
- * also not allowed on a shared reset control.
+ * is not allowed on a shared reset control. reset_control_reset may be used
+ * instead of assert/deassert, but the two modes must not be mixed. Shared
+ * operations return -EAGAIN, without changing references, while another
+ * provider operation on this control is in progress.
  * Returns a struct reset_control or IS_ERR() condition containing errno.
  *
  * Use of id names is optional.
@@ -226,8 +230,10 @@ static inline struct reset_control *of_reset_control_get_exclusive_by_index(
  * about shared reset-controls in the reset_control_assert docs.
  *
  * Calling reset_control_assert without first calling reset_control_deassert
- * is not allowed on a shared reset control. Calling reset_control_reset is
- * also not allowed on a shared reset control.
+ * is not allowed on a shared reset control. reset_control_reset may be used
+ * instead of assert/deassert, but the two modes must not be mixed. Shared
+ * operations return -EAGAIN, without changing references, while another
+ * provider operation on this control is in progress.
  * Returns a struct reset_control or IS_ERR() condition containing errno.
  *
  * This is to be used to perform a list of resets for a device or power domain
