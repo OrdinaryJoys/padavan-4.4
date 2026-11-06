@@ -34,12 +34,15 @@ class WsysTeardownTests(unittest.TestCase):
   if not gnu: raise AssertionError('GNU GCC required')
   version = subprocess.run([gnu,'--version'],check=True,capture_output=True,text=True,timeout=10).stdout
   if 'Free Software Foundation' not in version or 'clang' in version.lower(): raise AssertionError('True GNU GCC required')
+  # Match target preflight's strict function-reachability warnings for current source.
+  cls.current_flags = [flag for flag in cls.flags if flag != '-Wno-unused-function']
+  cls.compilers = (('clang',shutil.which('clang')),('gcc',gnu))
   cls.binaries = []
-  for label,compiler in (('clang',shutil.which('clang')),('gcc',gnu)):
+  for label,compiler in cls.compilers:
    if not compiler: raise AssertionError('Required compiler absent: '+label)
    source = cls.directory/(label+'.c'); source.write_text(cls.generated)
    binary = source.with_suffix('')
-   result = subprocess.run([compiler,*cls.flags,*(['-fsanitize=address,undefined'] if label=='clang' else []),
+   result = subprocess.run([compiler,*cls.current_flags,*(['-fsanitize=address,undefined'] if label=='clang' else []),
     str(source),'-o',str(binary)],capture_output=True,text=True,timeout=60)
    if result.returncode: raise AssertionError(result.stderr)
    cls.binaries.append(binary)
@@ -96,6 +99,22 @@ class WsysTeardownTests(unittest.TestCase):
 
  def test_terminal_peer_and_edca_retirement_have_no_mcu_side_effect(self):
   self.cases(('peer-retire','edca-normal','edca-terminal'))
+  # The former direct Wsys call skipped the included static MAC-entry parent.
+  # Both native compilers must reject that exact regression with the same
+  # unsuppressed unused-function policy used by target MIPS preflight.
+  current = 'result=mac_entry_disconn_act(&ad,&ad.MacTab.Content[0]);'
+  previous = 'result=wifi_sys_disconn_act(&w,&ad.MacTab.Content[0]);'
+  self.assertEqual(self.generated.count(current),1)
+  source = self.directory/'pre-fix-unused-mac-parent.c'
+  source.write_text(self.generated.replace(current,previous))
+  self.assertNotIn('-Wno-unused-function',self.current_flags)
+  for label,compiler in self.compilers:
+   with self.subTest(compiler=label,regression='unused MAC-entry parent'):
+    result = subprocess.run([compiler,*self.current_flags,'-c',str(source),'-o',
+     str(self.directory/('pre-fix-unused-'+label+'.o'))],capture_output=True,text=True,timeout=60)
+    self.assertNotEqual(result.returncode,0)
+    self.assertIn('mac_entry_disconn_act',result.stderr)
+    self.assertIn('unused',result.stderr)
 
  def test_late_nonterminal_producers_never_borrow_payload(self):
   self.cases(('late-open','late-linkup','late-peerup','late-peerupdate','late-async-ra'))
