@@ -111,7 +111,11 @@ CASE_NAMES = ('unauthorized-mii-read',
  'pseudo-out-fail-mii-read',
  'pseudo-mdio-fail-mii-read',
  'pseudo-unsupported',
- 'pseudo-missing')
+ 'pseudo-missing',
+ 'mdio-fail-ingress',
+ 'mdio-fail-egress',
+ 'ingress-port-7',
+ 'egress-onoff-2')
 EXPECTED_ROWS = {'unauthorized-mii-read': {'ret': -1,
                            'in_copy': 0,
                            'out_copy': 0,
@@ -1147,6 +1151,62 @@ EXPECTED_ROWS = {'unauthorized-mii-read': {'ret': -1,
                     'lan': 0,
                     'errors': 0,
                     'out': 0,
+                    'sfq': 0},
+ 'mdio-fail-ingress': {'ret': -5,
+                       'in_copy': 1,
+                       'out_copy': 0,
+                       'locks': 0,
+                       'mmio': 1,
+                       'mdio': 1,
+                       'switch': 0,
+                       'ephy': 0,
+                       'ip': 0,
+                       'table': 0,
+                       'lan': 0,
+                       'errors': 0,
+                       'out': 0,
+                       'sfq': 0},
+ 'mdio-fail-egress': {'ret': -5,
+                      'in_copy': 1,
+                      'out_copy': 0,
+                      'locks': 0,
+                      'mmio': 1,
+                      'mdio': 1,
+                      'switch': 0,
+                      'ephy': 0,
+                      'ip': 0,
+                      'table': 0,
+                      'lan': 0,
+                      'errors': 0,
+                      'out': 0,
+                      'sfq': 0},
+ 'ingress-port-7': {'ret': -22,
+                    'in_copy': 1,
+                    'out_copy': 0,
+                    'locks': 0,
+                    'mmio': 0,
+                    'mdio': 0,
+                    'switch': 0,
+                    'ephy': 0,
+                    'ip': 0,
+                    'table': 0,
+                    'lan': 0,
+                    'errors': 0,
+                    'out': 0,
+                    'sfq': 0},
+ 'egress-onoff-2': {'ret': -22,
+                    'in_copy': 1,
+                    'out_copy': 0,
+                    'locks': 0,
+                    'mmio': 0,
+                    'mdio': 0,
+                    'switch': 0,
+                    'ephy': 0,
+                    'ip': 0,
+                    'table': 0,
+                    'lan': 0,
+                    'errors': 0,
+                    'out': 0,
                     'sfq': 0}}
 
 PREFIX = r'''
@@ -1282,61 +1342,70 @@ static inline int ephy_ioctl(struct net_device*n,struct ifreq*i,struct ephy_ioct
 
 '''
 
-SUFFIX = r'''
-static int command_for(const char*n){
- if(strstr(n,"cl45-read"))return RAETH_MII_READ_CL45;
- if(strstr(n,"cl45-write"))return RAETH_MII_WRITE_CL45;
- if(strstr(n,"mii-write"))return RAETH_MII_WRITE;
- if(strstr(n,"mii-read"))return RAETH_MII_READ;
- if(strstr(n,"esw-write"))return RAETH_ESW_REG_WRITE;
- if(strstr(n,"esw"))return RAETH_ESW_REG_READ;
- if(strstr(n,"qdma")||strstr(n,"sfq")||strstr(n,"magic"))return RAETH_QDMA_IOCTL;
- if(strstr(n,"switch"))return RAETH_SW_IOCTL;
- if(strstr(n,"ephy"))return RAETH_EPHY_IOCTL;
- if(strstr(n,"phy-dump"))return RAETH_ESW_PHY_DUMP;
- if(strstr(n,"ingress"))return RAETH_ESW_INGRESS_RATE;
- if(strstr(n,"egress"))return RAETH_ESW_EGRESS_RATE;
- if(strstr(n,"ip"))return RAETH_SET_LAN_IP;
- if(!strcmp(n,"unknown"))return -1;
- return RAETH_MII_READ;
-}
-int main(int argc,char**argv){
- const char*name;struct END_DEVICE e={0};struct net_device dev={&e};
- union {struct ra_mii_ioctl_data mii;struct esw_reg reg;struct esw_rate rate;struct ra_switch_ioctl_data sw;struct qdma_ioctl_data qdma;struct ephy_ioctl_data ephy;char ip[16];}u={0};
- struct ifreq ifr={&u};struct PSEUDO_ADAPTER pa={&dev};struct net_device pseudo={&pa};int ret;unsigned int i,table=0;
- if(argc!=2)return 2;
- name=argv[1];CASE_ADMISSION
- active_cmd=command_for(name);
- if(active_cmd==RAETH_ESW_REG_READ||active_cmd==RAETH_ESW_REG_WRITE){u.reg.off=4;u.reg.val=42;}
- if(active_cmd==RAETH_ESW_PHY_DUMP)u.reg.val=1;
- if(active_cmd==RAETH_QDMA_IOCTL){u.qdma.off=4;u.qdma.val=42;}
- if(active_cmd==RAETH_SET_LAN_IP)memcpy(u.ip,"192.0.2.1",10);
- if(active_cmd==RAETH_ESW_INGRESS_RATE||active_cmd==RAETH_ESW_EGRESS_RATE){u.rate.on_off=1;u.rate.port=1;u.rate.bw=10;}
- if(strstr(name,"unauthorized-")!=NULL)permitted=0;
- if(strstr(name,"copy-fail-")!=NULL)copy_in_fail=1;
- if(strstr(name,"out-fail-")!=NULL)copy_out_fail=1;
- if(strstr(name,"mdio-fail-")!=NULL)mdio_fail=1;
- if(!strcmp(name,"write-qdma"))u.qdma.cmd=RAETH_QDMA_REG_WRITE;
- if(!strncmp(name,"qdma-map-",9)){u.qdma.cmd=RAETH_QDMA_QUEUE_MAPPING;u.qdma.off=strstr(name,"lan")?0x13f:(unsigned int)atoi(name+9);}
- if(!strcmp(name,"qdma-large"))u.qdma.off=0x4000;
- if(!strcmp(name,"qdma-unaligned"))u.qdma.off=1;
- if(!strcmp(name,"esw-large"))u.reg.off=0x170;
- if(!strcmp(name,"esw-unaligned"))u.reg.off=1;
- if(!strcmp(name,"qdma-unknown"))u.qdma.cmd=0xff;
- if(!strcmp(name,"quarantined"))e.dma_quarantined=1;
- if(!strcmp(name,"ip-unterminated"))memset(u.ip,'X',sizeof(u.ip));
- if(!strcmp(name,"ephy-fail"))ephy_fail=1;
- if(!strncmp(name,"sfq-",4)){u.qdma.cmd=RAETH_QDMA_SFQ_WEB_ENABLE;if(strcmp(name,"sfq-disabled"))e.features=FE_HW_SFQ;u.qdma.val=!strcmp(name,"sfq-on");}
- if(!strncmp(name,"magic-",6)){e.chip_name=MT7622_FE;u.qdma.off=0x777;if(!strcmp(name,"magic-write"))u.qdma.cmd=RAETH_QDMA_REG_WRITE;}
- if(!strcmp(name,"pseudo-unsupported"))active_cmd=-1;
- if(!strcmp(name,"pseudo-missing"))pa.raeth_dev=NULL;
- ret=!strncmp(name,"pseudo-",7)?virtualif_ioctl(&pseudo,&ifr,active_cmd):ei_ioctl(&dev,&ifr,active_cmd);
- for(i=0;i<ARRAY_SIZE(M2Q_table);i++)table+=M2Q_table[i];
- if(lock_depth)errors++;
- printf("{\"ret\":%d,\"in_copy\":%d,\"out_copy\":%d,\"locks\":%d,\"mmio\":%d,\"mdio\":%d,\"switch\":%d,\"ephy\":%d,\"ip\":%d,\"table\":%u,\"lan\":%u,\"errors\":%d,\"out\":%u,\"sfq\":%u}\n",ret,in_copy,out_copy,locks,mmio,mdio,switches,ephys,e.lan_ip4_addr[0]!=0,table,lan_wan_separate,errors,out_value,web_sfq_enable);
- return 0;
-}
-'''
+SUFFIX = ('\n'
+ 'static int command_for(const char*n){\n'
+ ' if(strstr(n,"cl45-read"))return RAETH_MII_READ_CL45;\n'
+ ' if(strstr(n,"cl45-write"))return RAETH_MII_WRITE_CL45;\n'
+ ' if(strstr(n,"mii-write"))return RAETH_MII_WRITE;\n'
+ ' if(strstr(n,"mii-read"))return RAETH_MII_READ;\n'
+ ' if(strstr(n,"esw-write"))return RAETH_ESW_REG_WRITE;\n'
+ ' if(strstr(n,"esw"))return RAETH_ESW_REG_READ;\n'
+ ' if(strstr(n,"qdma")||strstr(n,"sfq")||strstr(n,"magic"))return RAETH_QDMA_IOCTL;\n'
+ ' if(strstr(n,"switch"))return RAETH_SW_IOCTL;\n'
+ ' if(strstr(n,"ephy"))return RAETH_EPHY_IOCTL;\n'
+ ' if(strstr(n,"phy-dump"))return RAETH_ESW_PHY_DUMP;\n'
+ ' if(strstr(n,"ingress"))return RAETH_ESW_INGRESS_RATE;\n'
+ ' if(strstr(n,"egress"))return RAETH_ESW_EGRESS_RATE;\n'
+ ' if(strstr(n,"ip"))return RAETH_SET_LAN_IP;\n'
+ ' if(!strcmp(n,"unknown"))return -1;\n'
+ ' return RAETH_MII_READ;\n'
+ '}\n'
+ 'int main(int argc,char**argv){\n'
+ ' const char*name;struct END_DEVICE e={0};struct net_device dev={&e};\n'
+ ' union {struct ra_mii_ioctl_data mii;struct esw_reg reg;struct esw_rate rate;struct ra_switch_ioctl_data '
+ 'sw;struct qdma_ioctl_data qdma;struct ephy_ioctl_data ephy;char ip[16];}u={0};\n'
+ ' struct ifreq ifr={&u};struct PSEUDO_ADAPTER pa={&dev};struct net_device pseudo={&pa};int ret;unsigned int '
+ 'i,table=0;\n'
+ ' if(argc!=2)return 2;\n'
+ ' name=argv[1];CASE_ADMISSION\n'
+ ' active_cmd=command_for(name);\n'
+ ' if(active_cmd==RAETH_ESW_REG_READ||active_cmd==RAETH_ESW_REG_WRITE){u.reg.off=4;u.reg.val=42;}\n'
+ ' if(active_cmd==RAETH_ESW_PHY_DUMP)u.reg.val=1;\n'
+ ' if(active_cmd==RAETH_QDMA_IOCTL){u.qdma.off=4;u.qdma.val=42;}\n'
+ ' if(active_cmd==RAETH_SET_LAN_IP)memcpy(u.ip,"192.0.2.1",10);\n'
+ ' '
+ 'if(active_cmd==RAETH_ESW_INGRESS_RATE||active_cmd==RAETH_ESW_EGRESS_RATE){u.rate.on_off=1;u.rate.port=1;u.rate.bw=10;}\n'
+ ' if(strstr(name,"unauthorized-")!=NULL)permitted=0;\n'
+ ' if(strstr(name,"copy-fail-")!=NULL)copy_in_fail=1;\n'
+ ' if(strstr(name,"out-fail-")!=NULL)copy_out_fail=1;\n'
+ ' if(strstr(name,"mdio-fail-")!=NULL)mdio_fail=1;\n'
+ ' if(!strcmp(name,"write-qdma"))u.qdma.cmd=RAETH_QDMA_REG_WRITE;\n'
+ ' '
+ 'if(!strncmp(name,"qdma-map-",9)){u.qdma.cmd=RAETH_QDMA_QUEUE_MAPPING;u.qdma.off=strstr(name,"lan")?0x13f:(unsigned '
+ 'int)atoi(name+9);}\n'
+ ' if(!strcmp(name,"qdma-large"))u.qdma.off=0x4000;\n'
+ ' if(!strcmp(name,"qdma-unaligned"))u.qdma.off=1;\n'
+ ' if(!strcmp(name,"esw-large"))u.reg.off=0x170;\n'
+ ' if(!strcmp(name,"esw-unaligned"))u.reg.off=1;\n'
+ ' if(!strcmp(name,"qdma-unknown"))u.qdma.cmd=0xff;\n'
+ ' if(!strcmp(name,"quarantined"))e.dma_quarantined=1;\n'
+ ' if(!strcmp(name,"ip-unterminated"))memset(u.ip,\'X\',sizeof(u.ip));\n'
+ ' if(!strcmp(name,"ephy-fail"))ephy_fail=1;\n'
+ ' if(!strcmp(name,"ingress-port-7"))u.rate.port=7;\n'
+ ' if(!strcmp(name,"egress-onoff-2"))u.rate.on_off=2;\n'
+ ' '
+ 'if(!strncmp(name,"sfq-",4)){u.qdma.cmd=RAETH_QDMA_SFQ_WEB_ENABLE;if(strcmp(name,"sfq-disabled"))e.features=FE_HW_SFQ;u.qdma.val=!strcmp(name,"sfq-on");}\n'
+ ' '
+ 'if(!strncmp(name,"magic-",6)){e.chip_name=MT7622_FE;u.qdma.off=0x777;if(!strcmp(name,"magic-write"))u.qdma.cmd=RAETH_QDMA_REG_WRITE;}\n'
+ ' if(!strcmp(name,"pseudo-unsupported"))active_cmd=-1;\n'
+ ' if(!strcmp(name,"pseudo-missing"))pa.raeth_dev=NULL;\n'
+ ' ret=!strncmp(name,"pseudo-",7)?virtualif_ioctl(&pseudo,&ifr,active_cmd):ei_ioctl(&dev,&ifr,active_cmd);\n'
+ ' for(i=0;i<ARRAY_SIZE(M2Q_table);i++)table+=M2Q_table[i];\n'
+ ' if(lock_depth)errors++;\n'
+ ' '
+ 'printf("{\\"ret\\":%d,\\"in_copy\\":%d,\\"out_copy\\":%d,\\"locks\\":%d,\\"mmio\\":%d,\\"mdio\\":%d,\\"switch\\":%d,\\"ephy\\":%d,\\"ip\\":%d,\\"table\\":%u,\\"lan\\":%u,\\"errors\\":%d,\\"out\\":%u,\\"sfq\\":%u}\\n",ret,in_copy,out_copy,locks,mmio,mdio,switches,ephys,e.lan_ip4_addr[0]!=0,table,lan_wan_separate,errors,out_value,web_sfq_enable);\n'
+ ' return 0;\n'
+ '}\n')
 
 def function(text,name):
     masked=re.sub(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',lambda m:' '*len(m.group()),text,flags=re.S)

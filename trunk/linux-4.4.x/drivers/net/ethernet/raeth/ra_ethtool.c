@@ -20,12 +20,15 @@ unsigned char get_current_phy_address(void)
 {
 	struct net_device *cur_dev_p;
 	struct END_DEVICE *ei_local;
+	unsigned char phy;
 
 	cur_dev_p = dev_get_by_name(&init_net, DEV_NAME);
 	if (!cur_dev_p)
 		return 0;
 	ei_local = netdev_priv(cur_dev_p);
-	return ei_local->mii_info.phy_id;
+	phy = ei_local->mii_info.phy_id;
+	dev_put(cur_dev_p);
+	return phy;
 }
 
 #define MII_CR_ADDR			0x00
@@ -56,8 +59,9 @@ int mdio_read(struct net_device *dev, int phy_id, int location)
 	unsigned int result;
 	struct END_DEVICE *ei_local = netdev_priv(dev);
 
-	mii_mgr_read((unsigned int)ei_local->mii_info.phy_id,
-		     (unsigned int)location, &result);
+	if (!mii_mgr_read((unsigned int)ei_local->mii_info.phy_id,
+			  (unsigned int)location, &result))
+		return 0;
 /* printk("\n%s mii.o query= phy_id:%d\n",dev->name, phy_id);*/
 /*printk("address:%d retval:%x\n", location, result); */
 	return (int)result;
@@ -109,8 +113,9 @@ int mdio_virt_read(struct net_device *dev, int phy_id, int location)
 	struct END_DEVICE *ei_local = netdev_priv(dev_raether);
 
 	if (ei_local->features & FE_GE2_SUPPORT) {
-		mii_mgr_read((unsigned int)pseudo->mii_info.phy_id,
-			     (unsigned int)location, &result);
+		if (!mii_mgr_read((unsigned int)pseudo->mii_info.phy_id,
+				  (unsigned int)location, &result))
+			return 0;
 /* printk("%s mii.o query= phy_id:%d,\n", dev->name, phy_id); */
 /*printk("address:%d retval:%d\n", location, result);*/
 		return (int)result;

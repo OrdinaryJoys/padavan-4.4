@@ -61,10 +61,16 @@ class RaethInitTests(unittest.TestCase):
         self.assertIn('ret = fe_tx_rx_dec(ei_local, pdev);\n\tif (ret)\n\t\tgoto err_free_dev;',body)
         self.assertLess(body.index('ret = fe_tx_rx_dec('),body.index('of_iomap('))
         cleanup=body[body.index('err_free_dev:'):]
-        for token in ('debug_proc_exit();','ei_clock_disable(ei_local);','of_node_put(ei_local->switch_np);','platform_device_put(ei_local->qdma_pdev);','fe_tx_rx_dec_free(ei_local);','dev_raether = NULL;','free_netdev(netdev);'):
+        for token in ('mii_mgr_detach();','debug_proc_exit();','raeth_release_resources(ei_local, pdev);','dev_raether = NULL;','free_netdev(netdev);'):
             self.assertEqual(cleanup.count(token),1)
+        self.assertLess(cleanup.index('mii_mgr_detach();'),cleanup.index('raeth_release_resources('))
+        self.assertLess(cleanup.index('raeth_release_resources('),cleanup.index('dev_raether = NULL;'))
         self.assertLess(cleanup.index('dev_raether = NULL;'),cleanup.index('free_netdev(netdev);'))
-        self.assertIn('ei_local->qdma_pdev != pdev',cleanup)
+        owners=h.function(self.texts['raeth'],'raeth_release_resources')
+        for token in ('ei_clock_disable(ei_local);','of_node_put(ei_local->switch_np);','platform_device_put(ei_local->qdma_pdev);','fe_tx_rx_dec_free(ei_local);','put_device(&pdev->dev);'):
+            self.assertEqual(owners.count(token),1)
+        self.assertIn('ei_local->qdma_pdev != pdev',owners)
+        self.assertNotIn('devm_',body)
         self.assertIn('if (!ethdma_sysctl_base)',body)
         self.assertIn('of_node_put(node);',body)
         self.assertLess(body.index('if (dev_raether)'),body.index('alloc_etherdev_mqs('))

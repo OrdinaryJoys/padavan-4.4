@@ -41,6 +41,8 @@ static DECLARE_BITMAP(g_vlan_pool, 4096);
 
 static u32 g_wan_bridge_mode                     = SWAPI_WAN_BRIDGE_DISABLE;
 static u32 g_wan_bwan_isolation                  = SWAPI_WAN_BWAN_ISOLATION_NONE;
+/* A failed flush leaves hardware uncertain even if software was restored. */
+static bool g_bridge_apply_pending;
 
 static u32 g_led_phy_mode                        = SWAPI_LED_LINK_ACT;
 
@@ -94,12 +96,13 @@ int mt7530_gsw_wait_wt_mac(void)
 	for (i = 0; i < 200; i++) {
 		udelay(100);
 		atc_val = 0;
-		mii_mgr_read(0x1f, 0x80, &atc_val);
+		if (!mii_mgr_read(0x1f, 0x80, &atc_val))
+			return -EIO;
 		if (!(atc_val & BIT(15)))
 			return 0;
 	}
 
-	return -1;
+	return -ETIMEDOUT;
 }
 
 static
@@ -110,7 +113,8 @@ int mt7530_gsw_mac_table_clear(int static_only)
 	/* clear all (non)static MAC entries */
 	atc_val = (static_only) ? 0x8602 : 0x8002;
 
-	mii_mgr_write(0x1f, 0x80, atc_val);
+	if (!mii_mgr_write(0x1f, 0x80, atc_val))
+		return -EIO;
 
 	return mt7530_gsw_wait_wt_mac();
 }
@@ -463,13 +467,17 @@ static void esw_igmp_mld_snooping(u32 enable_igmp, u32 enable_mld)
 }
 #endif
 
-static void esw_mac_table_clear(void)
+static int esw_mac_table_clear(void)
 {
-	mt7530_gsw_mac_table_clear(0);
+	int ret = mt7530_gsw_mac_table_clear(0);
+
+	if (ret)
+		return ret;
 #if defined (CONFIG_P4_MAC_TO_MT7530_GPHY_P0) || defined (CONFIG_P4_RGMII_TO_MT7530_GMAC_P5) || \
     defined (CONFIG_P4_MAC_TO_MT7530_GPHY_P4)
 	mt7620_esw_mac_table_clear(0);
 #endif
+	return 0;
 }
 
 static int esw_write_vtcr(u32 vtcr_cmd, u32 vtcr_val)
@@ -1008,18 +1016,33 @@ static void esw_mask_bridge_isolate(u32 wan_bridge_mode, u32 wan_bwan_isolation)
 	}
 }
 
-static void esw_vlan_bridge_isolate(u32 wan_bridge_mode, u32 wan_bwan_isolation, int bridge_changed, int br_iso_changed, int vlan_rule_changed)
+static int esw_vlan_bridge_isolate(u32 wan_bridge_mode, u32 wan_bwan_isolation, int bridge_changed, int br_iso_changed, int vlan_rule_changed)
 {
+	u32 old_rules[SWAPI_VLAN_RULE_NUM];
+	u32 old_pvid = g_vlan_pvid_wan_untagged;
+	int ret;
+
+	memcpy(old_rules, g_vlan_rule, sizeof(old_rules));
 	if (wan_bridge_mode == SWAPI_WAN_BRIDGE_DISABLE_WAN) {
 		if (!bridge_changed)
-			return;
+			return 0;
 		
 		esw_vlan_init_vid1();
 	} else {
 		if (!bridge_changed && !br_iso_changed && !vlan_rule_changed)
-			return;
+			return 0;
 		
 		esw_vlan_apply_rules(wan_bridge_mode, wan_bwan_isolation);
+	}
+
+	ret = esw_mac_table_clear();
+	if (ret) {
+		/* Keep the applied-state comparison retryable after a failed flush.
+		 * Hardware may already be partly reconfigured; this is not rollback. */
+		memcpy(g_vlan_rule, old_rules, sizeof(old_rules));
+		g_vlan_pvid_wan_untagged = old_pvid;
+		g_bridge_apply_pending = true;
+		return ret;
 	}
 
 	if (bridge_changed) {
@@ -1031,7 +1054,8 @@ static void esw_vlan_bridge_isolate(u32 wan_bridge_mode, u32 wan_bwan_isolation,
 		esw_show_bridge_partitions(wan_bridge_mode);
 	}
 
-	esw_mac_table_clear();
+	g_bridge_apply_pending = false;
+	return 0;
 }
 
 static void esw_mac_to_phy_enable(void)
@@ -1371,7 +1395,9 @@ static int change_wan_lan_ports_power(u32 power_on, u32 is_wan)
 
 static int change_bridge_mode(u32 wan_bwan_isolation, u32 wan_bridge_mode)
 {
-	int i, bridge_changed, br_iso_changed, vlan_rule_changed, power_changed;
+	int i, bridge_changed, br_iso_changed, vlan_rule_changed, power_changed, ret;
+	u32 old_bridge_mode = g_wan_bridge_mode;
+	u32 old_isolation = g_wan_bwan_isolation;
 
 	if (wan_bridge_mode > SWAPI_WAN_BRIDGE_DISABLE_WAN)
 		return -EINVAL;
@@ -1382,7 +1408,7 @@ static int change_bridge_mode(u32 wan_bwan_isolation, u32 wan_bridge_mode)
 	if (wan_bridge_mode == SWAPI_WAN_BRIDGE_DISABLE)
 		wan_bwan_isolation = SWAPI_WAN_BWAN_ISOLATION_NONE;
 
-	bridge_changed = (g_wan_bridge_mode != wan_bridge_mode) ? 1 : 0;
+	bridge_changed = (g_wan_bridge_mode != wan_bridge_mode || g_bridge_apply_pending) ? 1 : 0;
 	br_iso_changed = (g_wan_bwan_isolation != wan_bwan_isolation) ? 1 : 0;
 	vlan_rule_changed = 0;
 	for (i = 0; i <= SWAPI_VLAN_RULE_WAN_LAN4; i++) {
@@ -1411,12 +1437,16 @@ static int change_bridge_mode(u32 wan_bwan_isolation, u32 wan_bridge_mode)
 	if (bridge_changed || br_iso_changed)
 		esw_mask_bridge_isolate(wan_bridge_mode, wan_bwan_isolation);
 
-	esw_vlan_bridge_isolate(wan_bridge_mode, wan_bwan_isolation, bridge_changed, br_iso_changed, vlan_rule_changed);
+	ret = esw_vlan_bridge_isolate(wan_bridge_mode, wan_bwan_isolation, bridge_changed, br_iso_changed, vlan_rule_changed);
 
 	if (power_changed)
 		change_wan_lan_ports_power(1, 1);
 
-	return 0;
+	if (ret) {
+		g_wan_bridge_mode = old_bridge_mode;
+		g_wan_bwan_isolation = old_isolation;
+	}
+	return ret;
 }
 
 static void vlan_accept_port_mode(u32 accept_mode, u32 port_mask)
@@ -1787,6 +1817,11 @@ static void esw_link_status_changed_state(u32 port_id, int port_link)
 
 int esw_ioctl_init_post(void)
 {
+	int ret;
+
+	mutex_lock(&esw_access_mutex);
+	atomic_set(&g_switch_inited, 0);
+	atomic_set(&g_switch_allow_irq, 0);
 	/* configure bridge isolation mode via forwards mask */
 	esw_mask_bridge_isolate(g_wan_bridge_mode, g_wan_bwan_isolation);
 
@@ -1794,7 +1829,9 @@ int esw_ioctl_init_post(void)
 	esw_mac_to_phy_enable();
 
 	/* configure bridge isolation mode via VLAN */
-	esw_vlan_bridge_isolate(g_wan_bridge_mode, g_wan_bwan_isolation, 1, 1, 1);
+	ret = esw_vlan_bridge_isolate(g_wan_bridge_mode, g_wan_bwan_isolation, 1, 1, 1);
+	if (ret)
+		goto out;
 
 #if defined (CONFIG_RAETH_ESW_IGMP_SNOOP_HW)
 	/* configure igmp/mld snooping */
@@ -1808,7 +1845,9 @@ int esw_ioctl_init_post(void)
 	atomic_set(&g_switch_inited, 1);
 	atomic_set(&g_switch_allow_irq, 1);
 
-	return 0;
+out:
+	mutex_unlock(&esw_access_mutex);
+	return ret;
 }
 
 #if defined (CONFIG_RA_HW_NAT) || defined (CONFIG_RA_HW_NAT_MODULE)

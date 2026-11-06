@@ -40,18 +40,18 @@ class RaethIoctlTests(unittest.TestCase):
  def test_register_and_mii_replies_copy_after_unlock_and_report_copy_failure(self):self.rows([n for n in h.CASE_NAMES if n.startswith('read-')or n.startswith('out-fail-')])
  def test_writes_and_mdio_failures_propagate_outcomes(self):self.rows([n for n in h.CASE_NAMES if n.startswith('write-')or n.startswith('mdio-fail-')])
  def test_qdma_bounds_preserve_table_and_lan_state_on_failure(self):self.rows([n for n in h.CASE_NAMES if n.startswith('qdma-')or n.startswith('esw-')or n.startswith('magic-')])
- def test_phy_switch_ephy_ip_and_feature_routes_avoid_descriptor_lock(self):self.rows(('phy-dump','switch-valid','ephy-valid','ephy-fail','ip-valid','ip-unterminated','ingress-valid','egress-valid','sfq-disabled','sfq-on','sfq-off'))
+ def test_phy_switch_ephy_ip_and_feature_routes_avoid_descriptor_lock(self):self.rows(('phy-dump','switch-valid','ephy-valid','ephy-fail','ip-valid','ip-unterminated','ingress-valid','egress-valid','sfq-disabled','sfq-on','sfq-off','ingress-port-7','egress-onoff-2'))
  def test_terminal_and_unknown_admissions_are_closed(self):self.rows(('quarantined','unknown'))
  def test_pseudo_interface_uses_same_checked_hardware_owner_path(self):self.rows([n for n in h.CASE_NAMES if n.startswith('pseudo-')])
  def test_whole_functions_actual_uapi_layout_and_source_only_dispatch_boundaries(self):
-  self.assertEqual(len(h.CASE_NAMES),74);self.assertEqual(set(h.CASE_NAMES),set(h.EXPECTED_ROWS))
+  self.assertEqual(len(h.CASE_NAMES),78);self.assertEqual(set(h.CASE_NAMES),set(h.EXPECTED_ROWS))
   self.assertEqual(len(h.function_manifest(self.texts)),3);self.assertEqual(len(h.source_only_manifest(self.texts)),1)
   for name,key in h.FUNCTION_SOURCES.items():self.assertEqual(self.code.count(h.function(self.texts[key],name)),1)
   for name in('esw_reg','ra_mii_ioctl_data','ra_switch_ioctl_data','qdma_ioctl_data','ephy_ioctl_data','esw_rate'):
    actual=re.search(r'struct '+name+r' \{[\s\S]*?\};',self.texts['ioctl_header']).group();self.assertIn(actual,h.PREFIX)
   core=h.function(self.texts['core'],'dev_ioctl');private=core[core.index('Unknown or private ioctl.'):]
   self.assertIn('rtnl_lock();',private);self.assertIn('ret = dev_ifsioc(net, &ifr, cmd);',private);self.assertNotIn('capable(',private)
-  self.assertIn('#define EOPNOTSUPP\t122\t',self.texts['mips_errno']);self.assertIn('spin_lock_irqsave(&ei_local->mdio_lock, flags);',self.texts['mdio'])
+  self.assertIn('#define EOPNOTSUPP\t122\t',self.texts['mips_errno']);self.assertIn('spin_lock_irqsave(&mdio_bus_lock, *flags);',self.texts['mdio']);self.assertNotIn('time_after(',self.texts['mdio'])
   self.assertTrue(h.MODEL_VARIANT['RTNL_dispatch_and_MDIO_wait_source_only']);self.assertFalse(h.MODEL_VARIANT['actual_user_pointer_access_or_ioctl_executed'])
   with self.assertRaises(ValueError):h.generate_source({})
  def reject(self,code,case,label):
@@ -77,7 +77,7 @@ class RaethIoctlTests(unittest.TestCase):
   old='if (!memchr(ip_tmp, 0, sizeof(ip_tmp)))';self.assertEqual(self.code.count(old),1)
   self.reject(self.code.replace(old,'if (0)'),'ip-unterminated','unterminated-ip')
  def test_removed_mdio_error_propagation_is_rejected(self):
-  body=h.function(self.texts['raeth'],'ei_ioctl');self.assertEqual(body.count('ret = -EIO;'),4)
+  body=h.function(self.texts['raeth'],'ei_ioctl');self.assertEqual(body.count('ret = -EIO;'),6)
   self.reject(self.code.replace(body,body.replace('ret = -EIO;','ret = 0;')),'mdio-fail-mii-read','ignored-mdio-error')
 
 if __name__=='__main__':unittest.main()

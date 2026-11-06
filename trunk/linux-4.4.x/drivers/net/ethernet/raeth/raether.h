@@ -352,6 +352,9 @@ struct END_DEVICE {
 	unsigned int tx_mask;
 	unsigned int rx_mask;
 	unsigned int *rls_cnt;
+	/* Explicit owners survive driver-core devres release on failed remove. */
+	resource_size_t frame_start, frame_size;
+	bool frame_region_owned, parent_ref_held, clocks_enabled;
 };
 
 #ifdef CONFIG_INET_LRO
@@ -379,6 +382,8 @@ int ei_close(struct net_device *dev);
 int ra2882eth_init(void);
 void ra2882eth_cleanup_module(void);
 
+void mii_mgr_attach(void);
+void mii_mgr_detach(void);
 u32 mii_mgr_read(u32 phy_addr, u32 phy_register, u32 *read_data);
 u32 mii_mgr_write(u32 phy_addr, u32 phy_register, u32 write_data);
 u32 mii_mgr_cl45_set_address(u32 port_num, u32 dev_addr, u32 reg_addr);

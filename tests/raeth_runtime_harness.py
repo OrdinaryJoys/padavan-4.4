@@ -73,7 +73,8 @@ MODEL_VARIANT = {'K2P_MT7621_QTX_PRX_tasklet': True,
  'logical_descriptor_fields_not_hardware_layout': True,
  'rx_packet_delivery_source_only': False,
  'RW_PDMAPTR_FROM_VAR_enabled': True,
- 'Linux_MIPS_ETIMEDOUT': 145}
+ 'Linux_MIPS_ETIMEDOUT': 145,
+ 'CONFIG_RAETH_ESW_CONTROL_enabled_checked_post_init_inert_seam': True}
 SOURCE_FRAGMENTS = {'config': ('#define CONFIG_RAETH_RW_PDMAPTR_FROM_VAR',
             '#define CONFIG_RA_NETWORK_TASKLET_BH',
             '#define CONFIG_RAETH_QDMA',
@@ -145,7 +146,9 @@ CASE_NAMES = ('oom-1',
  'rx-no-pseudo',
  'rx-zero',
  'quarantine-reopen',
- 'quarantine-close')
+ 'quarantine-close',
+ 'esw-post-eio',
+ 'esw-post-timeout')
 EXPECTED_ROWS = {'oom-1': {'delivered': 0,
            'dropped': 0,
            'ret': -12,
@@ -880,6 +883,36 @@ EXPECTED_ROWS = {'oom-1': {'delivered': 0,
                       'queue': 0,
                       'schedules': 0,
                       'rearms': 2,
+                      'errors': 0},
+ 'esw-post-eio': {'delivered': 0,
+                  'dropped': 0,
+                  'ret': -5,
+                  'second_ret': 0,
+                  'live': 0,
+                  'maps': 0,
+                  'irq_live': 0,
+                  'module': 0,
+                  'quarantine': 0,
+                  'stages': 0,
+                  'dma_on': 0,
+                  'queue': 0,
+                  'schedules': 0,
+                  'rearms': 0,
+                  'errors': 0},
+ 'esw-post-timeout': {'delivered': 0,
+                      'dropped': 0,
+                      'ret': -145,
+                      'second_ret': 0,
+                      'live': 0,
+                      'maps': 0,
+                      'irq_live': 0,
+                      'module': 0,
+                      'quarantine': 0,
+                      'stages': 0,
+                      'dma_on': 0,
+                      'queue': 0,
+                      'schedules': 0,
+                      'rearms': 0,
                       'errors': 0}}
 FUNCTION_DECLARATIONS = ''
 PREFIX = ('/* Inert seams include optional-profile stubs and production signed loop indices. */\n'
@@ -1231,7 +1264,11 @@ PREFIX = ('/* Inert seams include optional-profile stubs and production signed l
  '{regfile[r]=value;if((r==RAETH_FE_INT_ENABLE||r==QFE_INT_ENABLE)&&value)rearms++;}\n'
  'static void set_fe_pdma_glo_cfg(void) {sys_reg_write(PDMA_GLO_CFG,TX_DMA_EN|RX_DMA_EN);}\n'
  'static void set_fe_qdma_glo_cfg(void) {sys_reg_write(QDMA_GLO_CFG,TX_DMA_EN|RX_DMA_EN);}\n'
- 'static int receive_stub(struct net_device *d,void *n,int b) {(void)d;(void)n;(void)b;return 17;}\n')
+ 'static int receive_stub(struct net_device *d,void *n,int b) {(void)d;(void)n;(void)b;return 17;}\n'
+ '\n'
+ '#define CONFIG_RAETH_ESW_CONTROL 1\n'
+ 'static int fail_esw_post;\n'
+ 'static int esw_ioctl_init_post(void) { return fail_esw_post; }\n')
 SUFFIX = ('\n'
  'int main(int argc,char **argv) {\n'
  ' if(argc!=2)return 2;const char *name=argv[1];CASE_ADMISSION\n'
@@ -1248,6 +1285,8 @@ SUFFIX = ('\n'
  ' if(sscanf(name,"irq-%u",&fail_irq)!=1)fail_irq=0;\n'
  ' '
  'if(!strcmp(name,"init-pbusy"))pbusy=1;if(!strcmp(name,"init-qbusy"))qbusy=1;if(!strcmp(name,"module-denied"))fail_module=1;\n'
+ ' if(!strcmp(name,"esw-post-eio"))fail_esw_post=-5;\n'
+ ' if(!strcmp(name,"esw-post-timeout"))fail_esw_post=-145;\n'
  ' int ret,second=0;\n'
  ' if(!strcmp(name,"pdma-tx-oom")||!strcmp(name,"pdma-tx-success")) {\n'
  '  if(!strcmp(name,"pdma-tx-oom"))fail_alloc=1;\n'

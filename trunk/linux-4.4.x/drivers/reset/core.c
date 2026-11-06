@@ -169,7 +169,8 @@ int reset_control_reset(struct reset_control *rstc)
 	}
 
 	ret = rstc->rcdev->ops->reset(rstc->rcdev, rstc->id);
-	if (rstc->shared && !ret)
+	/* A successful shared pulse is consumed; only failure permits retry. */
+	if (rstc->shared && ret)
 		atomic_dec(&rstc->triggered_count);
 
 	return ret;

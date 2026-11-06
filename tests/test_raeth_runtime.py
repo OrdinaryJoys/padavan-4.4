@@ -45,7 +45,7 @@ class RaethRuntimeTests(unittest.TestCase):
     def test_all_seven_rx_mapping_failures_unmap_only_successful_owners(self):
         self.rows([n for n in h.CASE_NAMES if n.startswith('map-')])
     def test_irq_failures_unwind_owned_handlers_and_balance_module_pin(self):
-        self.rows(('irq-1','irq-2','irq-twice','module-denied'))
+        self.rows(('irq-1','irq-2','irq-twice','module-denied','esw-post-eio','esw-post-timeout'))
     def test_permanent_pdma_or_qdma_busy_keeps_all_dma_owners_and_pin(self):
         self.rows(('close-pbusy','close-qbusy','init-pbusy','init-qbusy','quarantine-reopen','quarantine-close'))
     def test_success_retry_duplicate_open_and_idempotent_close(self):
@@ -58,7 +58,7 @@ class RaethRuntimeTests(unittest.TestCase):
         self.rows(('rx-short','rx-long','rx-min','rx-max','rx-no-pseudo','rx-zero'))
     def test_complete_source_bodies_and_explicit_profile_limits(self):
         self.assertEqual(len(h.FUNCTION_SOURCES),25)
-        self.assertEqual(len(h.CASE_NAMES),49)
+        self.assertEqual(len(h.CASE_NAMES),51)
         self.assertEqual(set(h.CASE_NAMES),set(h.EXPECTED_ROWS))
         for name,key in h.FUNCTION_SOURCES.items():
             self.assertEqual(self.code.count(h.function(self.texts[key],name)),1)
@@ -106,6 +106,7 @@ class RaethRuntimeTests(unittest.TestCase):
     def test_missing_local_allocation_unwind_is_rejected(self):
         self.reject('no_rx_mem:\n\tfe_pdma_rx_dma_deinit(dev);','no_rx_mem:\n\t/* dropped unwind */','oom-8','pdma-leak')
     def test_wrong_switch_irq_dev_id_is_rejected(self):
+        self.reject('err = esw_ioctl_init_post();','err = 0; (void)esw_ioctl_init_post();','esw-post-eio','ignored-esw-post-error')
         self.reject('free_irq(ei_local->switch_irq, NULL);','free_irq(ei_local->switch_irq, dev);','success','switch-owner')
     def test_missing_qdma_stop_is_rejected(self):
         self.reject('sys_reg_write(QDMA_GLO_CFG, reg_value);','/* omitted QDMA stop */','success','qdma-stop')

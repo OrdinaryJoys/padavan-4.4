@@ -103,11 +103,14 @@ static long mtk_esw_ioctl(struct file *file, unsigned int req, unsigned long arg
 		change_wan_lan_ports_power(uint_param, uint_value);
 		break;
 	case MTK_ESW_IOCTL_MAC_TABLE_CLEAR: /* used by rc */
-		esw_mac_table_clear();
+		ioctl_result = esw_mac_table_clear();
 		break;
 
 	case MTK_ESW_IOCTL_BRIDGE_MODE: /* used by rc */
-		copy_from_user(&uint_value, (int __user *)arg, sizeof(int));
+		if (copy_from_user(&uint_value, (int __user *)arg, sizeof(int))) {
+			ioctl_result = -EFAULT;
+			break;
+		}
 		ioctl_result = change_bridge_mode(uint_param, uint_value);
 		break;
 

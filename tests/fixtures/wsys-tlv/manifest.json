@@ -1,0 +1,18 @@
+{
+  "StaRecUpdateWtbl": {
+    "sha256": "ee31ad0cbf45bc83e4349fa7edfd975e8c8e6373e27958522526a2fd27a4dd54",
+    "source_commit": "8371e9d2471d85199c8fefcff5fee43e2494094d"
+  },
+  "CmdExtStaRecUpdate": {
+    "sha256": "db49e38f42c4d6e2e0838ae880638077f9cd51c057f324fa4da7ce1bbb287b58",
+    "source_commit": "8371e9d2471d85199c8fefcff5fee43e2494094d"
+  },
+  "CmdExtStaRecUpdate_ReSyncDelete": {
+    "sha256": "0ec91d6f23b088326f09924481f95db6501b494f406123f7653f58ee3f075112",
+    "source_commit": "8371e9d2471d85199c8fefcff5fee43e2494094d"
+  },
+  "CmdExtStaRecBaUpdate": {
+    "sha256": "981f4c07cbcf13cf5e23b3adb904a203828ec6eaeff2502a2055d5ba2e228894",
+    "source_commit": "8371e9d2471d85199c8fefcff5fee43e2494094d"
+  }
+}

@@ -2134,9 +2134,12 @@ static INT32 StaRecUpdateWtbl(RTMP_ADAPTER *pAd, struct cmd_msg *msg, VOID *args
 	P_CMD_WTBL_UPDATE_T	pCmdWtblUpdate = NULL;
 	/* Allocate TLV msg */
 	Status = os_alloc_mem(pAd, (UCHAR **)&pStarec_wtbl, sizeof(CMD_STAREC_WTBL_T));
+	if (Status != NDIS_STATUS_SUCCESS || pStarec_wtbl == NULL) {
+		if (pStarec_wtbl)
+			os_free_mem(pStarec_wtbl);
+		return NDIS_STATUS_RESOURCES;
+	}
 	os_zero_mem(pStarec_wtbl, sizeof(CMD_STAREC_WTBL_T));
-	if (pStarec_wtbl == NULL)
-		return -1;
 
 	pStarec_wtbl->u2Tag = cpu2le16(STA_REC_WTBL);
 	pStarec_wtbl->u2Length = cpu2le16(sizeof(CMD_STAREC_WTBL_T));
@@ -2189,7 +2192,7 @@ static INT32 StaRecUpdateWtbl(RTMP_ADAPTER *pAd, struct cmd_msg *msg, VOID *args
 
 		struct wifi_dev *wdev = NULL;
 
-		if (pEntry == NULL){
+		if (pEntry == NULL || pEntry->wdev == NULL) {
 
 			MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 					 ("\n\nERROR%s: No MacEntry. widx=%d ConnTyp=0x%x feat=0x%x\n\n\n",
@@ -2472,12 +2475,15 @@ static INT32 CmdExtStaRecUpdate_ReSyncDelete(
 	struct _CMD_ATTRIBUTE	attr = {0};
 	STA_REC_CFG_T		StaRecCfgForDel = {0};
 
+	if (!pStaRecCfg)
+		return NDIS_STATUS_INVALID_DATA;
+
 	StaRecCfgForDel.ucBssIndex = pStaRecCfg->ucBssIndex;
 	StaRecCfgForDel.ucWlanIdx = pStaRecCfg->ucWlanIdx;
 	StaRecCfgForDel.ConnectionState = STATE_DISCONNECT;
 	StaRecCfgForDel.MuarIdx = pStaRecCfg->MuarIdx;
 	StaRecCfgForDel.ConnectionType = pStaRecCfg->ConnectionType;
-	StaRecCfgForDel.u4EnableFeature = STA_REC_BASIC_STA_RECORD;
+	StaRecCfgForDel.u4EnableFeature = STA_REC_BASIC_STA_RECORD_FEATURE;
 	StaRecCfgForDel.pEntry = pStaRecCfg->pEntry;
 	size = sizeof(CMD_STAREC_UPDATE_T);
 	size += StaRecHandle[STA_REC_BASIC_STA_RECORD].StaRecTagLen;
@@ -2503,8 +2509,12 @@ static INT32 CmdExtStaRecUpdate_ReSyncDelete(
 	CmdStaRecUpdate.ucMuarIdx = StaRecCfgForDel.MuarIdx;
 	Ret = StaRecHandle[STA_REC_BASIC_STA_RECORD].StaRecTagHandler(pAd, msg, &StaRecCfgForDel);
 
-	if (Ret == NDIS_STATUS_SUCCESS)
-		u2TLVNumber++;
+	if (Ret != NDIS_STATUS_SUCCESS) {
+		/* Not submitted: retire the message, packet and completion together. */
+		AndesForceFreeCmdMsg(msg);
+		goto error;
+	}
+	u2TLVNumber++;
 
 	/*insert to head*/
 	CmdStaRecUpdate.u2TotalElementNum = cpu2le16(u2TLVNumber);
@@ -2530,6 +2540,7 @@ INT32 CmdExtStaRecUpdate(
 	UINT8					i = 0;
 	UINT16					u2TLVNumber;
 	UINT32					size;
+	UINT32					selected;
 	UCHAR StaRecSupprotNum = sizeof(StaRecHandle) / sizeof(STAREC_HANDLE_T);
 	struct _CMD_ATTRIBUTE attr = {0};
 	UINT8 retry = STAREC_RETRY;
@@ -2537,10 +2548,23 @@ CmdExtStaRecUpdate_restart:
 	u2TLVNumber = 0;
 	size = sizeof(CMD_STAREC_UPDATE_T);
 
-	/* Get number of TLV*/
+	/* Every requested tag needs an implemented builder before allocation. */
+	selected = 0;
 	for (i = 0; i < StaRecSupprotNum; i++) {
-		if (StaRecCfg.u4EnableFeature & (1 << StaRecHandle[i].StaRecTag))
+		UINT32 feature = 1U << StaRecHandle[i].StaRecTag;
+
+		if (StaRecCfg.u4EnableFeature & feature) {
+			if (!StaRecHandle[i].StaRecTagHandler) {
+				Ret = NDIS_STATUS_INVALID_DATA;
+				goto error;
+			}
+			selected |= feature;
 			size += StaRecHandle[i].StaRecTagLen;
+		}
+	}
+	if (StaRecCfg.u4EnableFeature & ~selected) {
+		Ret = NDIS_STATUS_INVALID_DATA;
+		goto error;
 	}
 
 	msg = AndesAllocCmdMsg(pAd, size);
@@ -2571,8 +2595,12 @@ CmdExtStaRecUpdate_restart:
 			if (StaRecHandle[i].StaRecTagHandler != NULL) {
 				Ret = StaRecHandle[i].StaRecTagHandler(pAd, msg, &StaRecCfg);
 
-				if (Ret == 0)
-					u2TLVNumber++;
+				if (Ret != NDIS_STATUS_SUCCESS) {
+					/* Never send a partially assembled station transaction. */
+					AndesForceFreeCmdMsg(msg);
+					goto error;
+				}
+				u2TLVNumber++;
 			} else {
 				MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_INFO,
 						 ("%s: StaRecTag = %d no corresponding function handler.\n",
@@ -2624,6 +2652,10 @@ INT32 CmdExtStaRecBaUpdate(
 	INT32 Ret = 0;
 	UINT16 ucTLVNumber = 0;
 
+	if (!StaRecBaCfg.BaEntry ||
+	    (StaRecBaCfg.baDirection != ORI_BA && StaRecBaCfg.baDirection != RCV_BA))
+		return NDIS_STATUS_INVALID_DATA;
+
 	MsgLen = sizeof(CMD_STAREC_UPDATE_T) + sizeof(CMD_STAREC_BA_T);
 	msg = AndesAllocCmdMsg(pAd, MsgLen);
 
@@ -2674,7 +2706,8 @@ INT32 CmdExtStaRecBaUpdate(
 	} else {
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				 ("%s:Invalid BaDirection (baDirection = %d)\n", __func__, StaRecBaCfg.baDirection));
-		return Ret;
+		AndesForceFreeCmdMsg(msg);
+		return NDIS_STATUS_INVALID_DATA;
 	}
 
 	CmdStaRecBa.ucBaEenable = StaRecBaCfg.BaEnable;

@@ -13,6 +13,7 @@
  * GNU General Public License for more details.
  */
 #include "raether.h"
+#include <linux/ioport.h>
 #include "ra_mac.h"
 #include "ra_ioctl.h"
 #include "ra_switch.h"
@@ -765,9 +766,6 @@ static int ei_init(struct net_device *dev)
 		}
 	}
 
-	spin_lock_init(&ei_local->page_lock);
-	spin_lock_init(&ei_local->irq_lock);
-	spin_lock_init(&ei_local->mdio_lock);
 	ether_setup(dev);
 
 	if (ei_local->features & FE_SW_LRO)
@@ -2414,6 +2412,8 @@ int virtualif_open(struct net_device *dev)
 
 	pr_info("%s: ===> virtualif_open\n", dev->name);
 
+	if (READ_ONCE(ei_local->dma_quarantined))
+		return -EBUSY;
 	virtif_setup_statistics(p_pseudo_ad);
 
 	if (ei_local->features & FE_HW_VLAN_TX)
@@ -2637,7 +2637,6 @@ void raeth_init_pseudo(struct END_DEVICE *p_ad, struct net_device *net_dev)
 
 		p_pseudo_ad->pseudo_dev = dev;
 		p_pseudo_ad->raeth_dev = net_dev;
-		p_ad->pseudo_dev = dev;
 
 		dev->netdev_ops = &virtualif_netdev_ops;
 
@@ -2665,8 +2664,13 @@ void raeth_init_pseudo(struct END_DEVICE *p_ad, struct net_device *net_dev)
 			ethtool_virt_init(dev);
 		}
 
-		/* Register this device */
-		register_netdev(dev);
+		/* Publish the child only after registration has really succeeded. */
+		if (register_netdev(dev)) {
+			p_ad->pseudo_dev = NULL;
+			free_netdev(dev);
+			return;
+		}
+		p_ad->pseudo_dev = dev;
 	}
 }
 
@@ -2731,7 +2735,9 @@ int ei_open(struct net_device *dev)
 		fe_set_sw_lro_my_ip(ei_local->lan_ip4_addr);
 
 #if defined (CONFIG_RAETH_ESW_CONTROL)
-	esw_ioctl_init_post();
+	err = esw_ioctl_init_post();
+	if (err)
+		goto fail_dma;
 #endif
 	forward_config(dev);
 
@@ -3052,6 +3058,10 @@ int ei_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 		break;
 
 	case RAETH_ESW_INGRESS_RATE:
+		if (ratelimit.port > 6 || ratelimit.on_off > 1) {
+			ret = -EINVAL;
+			break;
+		}
 		offset = 0x1800 + (0x100 * ratelimit.port);
 		value = sys_reg_read(RALINK_ETH_SW_BASE + offset);
 
@@ -3076,10 +3086,15 @@ int ei_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 			}
 		}
 		pr_info("offset = 0x%4x value=0x%x\n\r", offset, value);
-		mii_mgr_write(0x1f, offset, value);
+		if (!mii_mgr_write(0x1f, offset, value))
+			ret = -EIO;
 		break;
 
 	case RAETH_ESW_EGRESS_RATE:
+		if (ratelimit.port > 6 || ratelimit.on_off > 1) {
+			ret = -EINVAL;
+			break;
+		}
 		offset = 0x1040 + (0x100 * ratelimit.port);
 		value = sys_reg_read(RALINK_ETH_SW_BASE + offset);
 
@@ -3104,7 +3119,8 @@ int ei_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 			}
 		}
 		pr_info("offset = 0x%4x value=0x%x\n\r", offset, value);
-		mii_mgr_write(0x1f, offset, value);
+		if (!mii_mgr_write(0x1f, offset, value))
+			ret = -EIO;
 		break;
 
 	case RAETH_SET_LAN_IP:
@@ -3495,6 +3511,50 @@ no_mem:
 	return -ENOMEM;
 }
 
+/* Explicit owners are essential: driver core releases devres even when remove
+ * reports failure. A quarantined controller must keep its MMIO and DMA parent. */
+static void raeth_release_resources(struct END_DEVICE *ei_local,
+				    struct platform_device *pdev)
+{
+	unsigned int i;
+
+	if (ei_local->clocks_enabled) {
+		ei_clock_disable(ei_local);
+		ei_local->clocks_enabled = false;
+	}
+	for (i = 0; i < ARRAY_SIZE(ei_local->clks); i++) {
+		if (!IS_ERR_OR_NULL(ei_local->clks[i]))
+			clk_put(ei_local->clks[i]);
+		ei_local->clks[i] = NULL;
+	}
+	of_node_put(ei_local->switch_np);
+	ei_local->switch_np = NULL;
+	if (ethdma_mac_base) {
+		iounmap(ethdma_mac_base);
+		ethdma_mac_base = NULL;
+	}
+	if (ethdma_sysctl_base) {
+		iounmap(ethdma_sysctl_base);
+		ethdma_sysctl_base = NULL;
+	}
+	if (ethdma_frame_engine_base) {
+		iounmap(ethdma_frame_engine_base);
+		ethdma_frame_engine_base = NULL;
+	}
+	if (ei_local->frame_region_owned) {
+		release_mem_region(ei_local->frame_start, ei_local->frame_size);
+		ei_local->frame_region_owned = false;
+	}
+	if (ei_local->qdma_pdev && ei_local->qdma_pdev != pdev)
+		platform_device_put(ei_local->qdma_pdev);
+	ei_local->qdma_pdev = NULL;
+	fe_tx_rx_dec_free(ei_local);
+	if (ei_local->parent_ref_held) {
+		put_device(&pdev->dev);
+		ei_local->parent_ref_held = false;
+	}
+}
+
 /* static struct wakeup_source eth_wake_lock; */
 
 static int rather_probe(struct platform_device *pdev)
@@ -3506,7 +3566,6 @@ static int rather_probe(struct platform_device *pdev)
 	const char *mac_addr;
 	int ret;
 	int i;
-	bool clocks_enabled = false;
 	bool proc_initialized = false;
 
 	if (dev_raether)
@@ -3521,6 +3580,11 @@ static int rather_probe(struct platform_device *pdev)
 
 	dev_raether = netdev;
 	ei_local = netdev_priv(netdev);
+	spin_lock_init(&ei_local->page_lock);
+	spin_lock_init(&ei_local->irq_lock);
+	spin_lock_init(&ei_local->mdio_lock);
+	get_device(&pdev->dev);
+	ei_local->parent_ref_held = true;
 	ei_local->dev = &pdev->dev;
 	ei_local->netdev = netdev;
 	fe_features_config(ei_local);
@@ -3567,11 +3631,20 @@ static int rather_probe(struct platform_device *pdev)
 		goto err_free_dev;
 	}
 
-	ethdma_frame_engine_base = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(ethdma_frame_engine_base)) {
-		dev_err(&pdev->dev, "no ethdma_frame_engine_base found\n");
-		ret = PTR_ERR(ethdma_frame_engine_base);
-		ethdma_frame_engine_base = NULL;
+	if (!res || !resource_size(res)) {
+		ret = -EINVAL;
+		goto err_free_dev;
+	}
+	ei_local->frame_start = res->start;
+	ei_local->frame_size = resource_size(res);
+	if (!request_mem_region(res->start, resource_size(res), dev_name(&pdev->dev))) {
+		ret = -EBUSY;
+		goto err_free_dev;
+	}
+	ei_local->frame_region_owned = true;
+	ethdma_frame_engine_base = ioremap(res->start, resource_size(res));
+	if (!ethdma_frame_engine_base) {
+		ret = -ENOMEM;
 		goto err_free_dev;
 	}
 
@@ -3584,12 +3657,15 @@ static int rather_probe(struct platform_device *pdev)
 	/* get clock ctrl */
 	if (ei_local->chip_name != MT7621_FE) {
 		for (i = 0; i < ARRAY_SIZE(ei_local->clks); i++) {
-			ei_local->clks[i] = devm_clk_get(&pdev->dev,
+			ei_local->clks[i] = clk_get(&pdev->dev,
 							 mtk_clks_source_name[i]);
 			if (IS_ERR(ei_local->clks[i])) {
 				if (PTR_ERR(ei_local->clks[i]) == -EPROBE_DEFER)
 					pr_info("!!!!!EPROBE_DEFER!!!!!\n");
 				pr_info("!!!!ENODEV!!!!! clks = %s\n", mtk_clks_source_name[i]);
+				ret = PTR_ERR(ei_local->clks[i]);
+				ei_local->clks[i] = NULL;
+				goto err_free_dev;
 			}
 		}
 	}
@@ -3623,7 +3699,7 @@ static int rather_probe(struct platform_device *pdev)
 	}
 
 	ei_clock_enable(ei_local);
-	clocks_enabled = true;
+	ei_local->clocks_enabled = true;
 
 	if (ei_local->chip_name == MT7622_FE || ei_local->chip_name == LEOPARD_FE)
 		ei_ioc_setting(pdev, ei_local);
@@ -3644,6 +3720,7 @@ static int rather_probe(struct platform_device *pdev)
 	    ("%s  %d rx/%d tx descriptors allocated, mtu = %d!\n",
 	     RAETH_VERSION, num_rx_desc, num_tx_desc, netdev->mtu);
 
+	mii_mgr_attach();
 	if (ei_local->features & FE_ETHTOOL)
 		ethtool_init(netdev);
 
@@ -3677,26 +3754,14 @@ static int rather_probe(struct platform_device *pdev)
 #if defined (CONFIG_RAETH_ESW_CONTROL)
 	esw_ioctl_init();
 #endif
+	platform_set_drvdata(pdev, netdev);
 	return 0;
 
 err_free_dev:
+	mii_mgr_detach();
 	if (proc_initialized)
 		debug_proc_exit();
-	if (clocks_enabled)
-		ei_clock_disable(ei_local);
-	of_node_put(ei_local->switch_np);
-	if (ethdma_mac_base) {
-		iounmap(ethdma_mac_base);
-		ethdma_mac_base = NULL;
-	}
-	if (ethdma_sysctl_base) {
-		iounmap(ethdma_sysctl_base);
-		ethdma_sysctl_base = NULL;
-	}
-	if (ei_local->qdma_pdev && ei_local->qdma_pdev != pdev)
-		platform_device_put(ei_local->qdma_pdev);
-	fe_tx_rx_dec_free(ei_local);
-	ethdma_frame_engine_base = NULL;
+	raeth_release_resources(ei_local, pdev);
 	dev_raether = NULL;
 	free_netdev(netdev);
 	return ret;
@@ -3704,17 +3769,73 @@ err_free_dev:
 
 static int raether_remove(struct platform_device *pdev)
 {
-	struct END_DEVICE *ei_local = netdev_priv(dev_raether);
+	struct net_device *dev = platform_get_drvdata(pdev);
+	struct END_DEVICE *ei_local;
+	struct net_device *pseudo;
+	bool was_quarantined, foreign_users;
+	int err;
+
+	if (!dev)
+		return 0;
+	ei_local = netdev_priv(dev);
+	rtnl_lock();
+	was_quarantined = ei_local->dma_quarantined;
+	/* This also blocks reopen and private ioctls while publication retires. */
+	WRITE_ONCE(ei_local->dma_quarantined, true);
+	if (!ei_local->module_reserved && try_module_get(THIS_MODULE))
+		ei_local->module_reserved = true;
+	rtnl_unlock();
+	/* Neither proc rundown nor MDIO retirement may wait behind RTNL. */
+	mii_mgr_detach();
+	debug_proc_exit();
+	rtnl_lock();
+	pseudo = ei_local->pseudo_dev;
+	netif_tx_disable(dev);
+	if (pseudo)
+		netif_tx_disable(pseudo);
+	if (ei_local->kreset_task) {
+		kthread_stop(ei_local->kreset_task);
+		ei_local->kreset_task = NULL;
+	}
+	if (ei_local->kphy_poll_task) {
+		kthread_stop(ei_local->kphy_poll_task);
+		ei_local->kphy_poll_task = NULL;
+	}
+	fe_int_disable(dev);
+	err = ei_stop_dma(dev);
+	foreign_users = netdev_refcnt_read(dev) > 1 ||
+		(pseudo && netdev_refcnt_read(pseudo) > 1);
+#if !defined(CONFIG_RA_NAT_NONE)
+	foreign_users |= READ_ONCE(ra_sw_nat_hook_rx) || READ_ONCE(ra_sw_nat_hook_tx);
+#endif
+	if (err || was_quarantined || foreign_users || !ei_local->module_reserved) {
+		/* Core ignores .remove's return and releases ALL devres afterwards.
+		 * Our explicit MMIO/clock/parent owners and every DMA allocation stay
+		 * pinned. Do not unregister: ndo_stop failure is ignored there too. */
+		rtnl_unlock();
+		return err ? err : -EBUSY;
+	}
+	ei_deinit_dma(dev);
+	fe_reset();
+	if (pseudo) {
+		if (pseudo->reg_state == NETREG_REGISTERED)
+			unregister_netdevice(pseudo);
+		ei_local->pseudo_dev = NULL;
+	}
+	unregister_netdevice(dev);
+	rtnl_unlock();
+	if (pseudo)
+		free_netdev(pseudo);
 #if defined (CONFIG_RAETH_ESW_CONTROL)
 	esw_ioctl_uninit();
 #endif
-	if (ei_local->features & FE_QDMA_FQOS)
-		if (ei_local->qdma_pdev)
-			ei_local->qdma_pdev->dev.release
-				(&ei_local->qdma_pdev->dev);
-
-	ei_clock_disable(ei_local);
-
+	device_init_wakeup(&pdev->dev, false);
+	platform_set_drvdata(pdev, NULL);
+	dev_raether = NULL;
+	raeth_release_resources(ei_local, pdev);
+	ei_local->module_reserved = false;
+	module_put(THIS_MODULE);
+	free_netdev(dev);
 	return 0;
 }
 
@@ -3739,7 +3860,7 @@ static struct platform_driver raeth_driver = {
 	.driver = {
 		   .name = raeth_string,
 		   .owner = THIS_MODULE,
-		   /* remove cannot yet retire active DMA; reject manual detach. */
+		   /* Keep manual detach disabled until physical DMA/consumer retirement is tested. */
 		   .suppress_bind_attrs = true,
 		   .of_match_table = raether_of_ids,
 		   /* .pm = &raeth_pm_ops, */

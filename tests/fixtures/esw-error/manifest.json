@@ -1,0 +1,27 @@
+{
+  "mt7530_gsw_wait_wt_mac": {
+    "source_commit": "8371e9d2471d85199c8fefcff5fee43e2494094d",
+    "source_path": "trunk/linux-4.4.x/drivers/net/ethernet/raeth/mtk_esw/ioctl_mt762x.c",
+    "sha256": "46e3e3577e1b6692ca36f5b2da21f594b4a1536886250ee9e921df0a297a35f9"
+  },
+  "mt7530_gsw_mac_table_clear": {
+    "source_commit": "8371e9d2471d85199c8fefcff5fee43e2494094d",
+    "source_path": "trunk/linux-4.4.x/drivers/net/ethernet/raeth/mtk_esw/ioctl_mt762x.c",
+    "sha256": "581b055cf5dff68c4fc9b32c772bc0c175b0936c3bc64db2329730ecd3c9cb91"
+  },
+  "change_bridge_mode": {
+    "source_commit": "8371e9d2471d85199c8fefcff5fee43e2494094d",
+    "source_path": "trunk/linux-4.4.x/drivers/net/ethernet/raeth/mtk_esw/ioctl_mt762x.c",
+    "sha256": "73e62ed6277c550c9c63db7e387109760830a138d3a536519cfba1fd65a2538b"
+  },
+  "esw_ioctl_init_post": {
+    "source_commit": "8371e9d2471d85199c8fefcff5fee43e2494094d",
+    "source_path": "trunk/linux-4.4.x/drivers/net/ethernet/raeth/mtk_esw/ioctl_mt762x.c",
+    "sha256": "97a22e2cc08e97ed6a0c08967e4dbecff269da8ae304d1c6a31f38bd8413e247"
+  },
+  "mtk_esw_ioctl": {
+    "source_commit": "8371e9d2471d85199c8fefcff5fee43e2494094d",
+    "source_path": "trunk/linux-4.4.x/drivers/net/ethernet/raeth/mtk_esw/ioctl.c",
+    "sha256": "d62614e0ec945b191a167468aee1ea73f510f5e15f06c8cce726eab798079432"
+  }
+}
