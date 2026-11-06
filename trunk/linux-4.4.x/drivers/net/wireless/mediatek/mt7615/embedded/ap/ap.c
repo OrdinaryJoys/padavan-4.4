@@ -781,7 +781,7 @@ static INT ap_hw_tb_init(RTMP_ADAPTER *pAd)
 	==========================================================================
  */
 
-VOID APStartUpForMbss(RTMP_ADAPTER *pAd, BSS_STRUCT *pMbss)
+BOOLEAN APStartUpForMbss(RTMP_ADAPTER *pAd, BSS_STRUCT *pMbss)
 {
 	struct wifi_dev *wdev = &pMbss->wdev;
 	BOOLEAN bWmmCapable = FALSE;
@@ -917,8 +917,10 @@ VOID APStartUpForMbss(RTMP_ADAPTER *pAd, BSS_STRUCT *pMbss)
 	if(pAd->ApCfg.bRadioOn)
 #endif
 	if (WDEV_WITH_BCN_ABILITY(wdev) && wdev->bAllowBeaconing) {
-		if (wdev_do_linkup(wdev, NULL) != TRUE)
+		if (wdev_do_linkup(wdev, NULL) != TRUE) {
 			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s: link up fail!!\n", __func__));
+			return FALSE;
+		}
 	}
 
 #if defined(MT_DFS_SUPPORT) && defined(BACKGROUND_SCAN_SUPPORT)
@@ -1077,6 +1079,7 @@ VOID APStartUpForMbss(RTMP_ADAPTER *pAd, BSS_STRUCT *pMbss)
 #endif /* CUSTOMISE_RDD_THRESHOLD_SUPPORT */
 #endif /* CONFIG_AP_SUPPORT */
 
+	return TRUE;
 }
 
 VOID APStartUpByBss(RTMP_ADAPTER *pAd, BSS_STRUCT *pMbss)
@@ -1106,13 +1109,18 @@ VOID APStartUpByBss(RTMP_ADAPTER *pAd, BSS_STRUCT *pMbss)
 	AsicUpdateProtect(pAd);
 
 	/* Update devinfo for any phymode change */
-	if (wdev_do_open(wdev) != TRUE)
+	if (wdev_do_open(wdev) != TRUE) {
 		MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s() open fail!!!\n", __func__));
+		return;
+	}
 
 	/* Update ERP */
 	ApUpdateCapabilityAndErpIe(pAd, pMbss);
 #ifndef CONFIG_INIT_RADIO_ONOFF
-	APStartUpForMbss(pAd, pMbss);
+	if (!APStartUpForMbss(pAd, pMbss)) {
+		wifi_sys_abort_open(wdev);
+		return;
+	}
 #endif
 #ifdef DOT11_N_SUPPORT
 	/* Update HT & GF Protect */
@@ -4206,8 +4214,9 @@ UINT32 starec_ap_feature_decision(struct wifi_dev *wdev, struct _MAC_TABLE_ENTRY
 */
 INT ap_link_up(struct wifi_dev *wdev, struct _MAC_TABLE_ENTRY *entry)
 {
-	if (WDEV_BSS_STATE(wdev) == BSS_INIT) {
-		wifi_sys_linkup(wdev, NULL);
+	if (WDEV_BSS_STATE(wdev) <= BSS_INITED) {
+		if (wifi_sys_linkup(wdev, NULL) != TRUE)
+			return FALSE;
 		APStartRekeyTimer(wdev->sys_handle, wdev);
 	}
 
@@ -4252,6 +4261,7 @@ INT ap_conn_act(struct wifi_dev *wdev, struct _MAC_TABLE_ENTRY *entry)
 	if (wifi_sys_conn_act(wdev, entry) != TRUE) {
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 				 ("%s(): connect action fail!\n", __func__));
+		return FALSE;
 	}
 
 #if defined(MT7615) || defined(MT7637) || defined(MT7622) || defined(P18) || defined(MT7663)
@@ -4334,7 +4344,10 @@ INT ap_inf_open(struct wifi_dev *wdev)
 	HW_IO_WRITE32(pAd, PHY_BAND0_PHYMUX_5, CrValue);
 #endif /* BACKGROUND_SCAN_SUPPORT */
 
-	APStartUpForMbss(pAd, &pAd->ApCfg.MBSSID[wdev->func_idx]);
+	if (!APStartUpForMbss(pAd, &pAd->ApCfg.MBSSID[wdev->func_idx])) {
+		wifi_sys_abort_open(wdev);
+		return FALSE;
+	}
 	/* Logic to perform OBSS scan for 2.4G only and
 	 * one time for all  MBSS configured to same channel.
 	 */
@@ -4411,8 +4424,10 @@ INT ap_inf_close(struct wifi_dev *wdev)
 #endif /* APCLI_CFG80211_SUPPORT */
 		wdev->bAllowBeaconing = FALSE;
 
-		if (wdev_do_linkdown(wdev) != TRUE)
+		if (wdev_do_linkdown(wdev) != TRUE) {
 			MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s() linkdown fail!!!\n", __func__));
+			return FALSE;
+		}
 
 		if (wifi_sys_close(wdev) != TRUE) {
 			MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s() close fail!!!\n", __func__));

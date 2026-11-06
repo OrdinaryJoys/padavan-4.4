@@ -1329,11 +1329,15 @@ static NTSTATUS HwCtrlWifiSysOpen(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
 {
 	struct WIFI_SYS_CTRL *wsys = (struct WIFI_SYS_CTRL *)CMDQelmt->buffer;
 
+	if (CMDQelmt->bufferlength != sizeof(*wsys) || !wsys ||
+		!wsys->wdev || wsys->wdev->sys_handle != pAd)
+		return NDIS_STATUS_INVALID_DATA;
+
 	if (pAd->HwCtrl.hwctrl_ops.wifi_sys_open)
 		return pAd->HwCtrl.hwctrl_ops.wifi_sys_open(wsys);
 	else {
 		AsicNotSupportFunc(pAd, __func__);
-		return FALSE;
+		return NDIS_STATUS_FAILURE;
 	}
 }
 
@@ -1345,11 +1349,15 @@ static NTSTATUS HwCtrlWifiSysClose(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
 {
 	struct WIFI_SYS_CTRL *wsys = (struct WIFI_SYS_CTRL *)CMDQelmt->buffer;
 
+	if (CMDQelmt->bufferlength != sizeof(*wsys) || !wsys ||
+		!wsys->wdev || wsys->wdev->sys_handle != pAd)
+		return NDIS_STATUS_INVALID_DATA;
+
 	if (pAd->HwCtrl.hwctrl_ops.wifi_sys_close)
 		return pAd->HwCtrl.hwctrl_ops.wifi_sys_close(wsys);
 	else {
 		AsicNotSupportFunc(pAd, __func__);
-		return FALSE;
+		return NDIS_STATUS_FAILURE;
 	}
 }
 
@@ -1361,11 +1369,15 @@ static NTSTATUS HwCtrlWifiSysLinkUp(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
 {
 	struct WIFI_SYS_CTRL *wsys = (struct WIFI_SYS_CTRL *)CMDQelmt->buffer;
 
+	if (CMDQelmt->bufferlength != sizeof(*wsys) || !wsys ||
+		!wsys->wdev || wsys->wdev->sys_handle != pAd)
+		return NDIS_STATUS_INVALID_DATA;
+
 	if (pAd->HwCtrl.hwctrl_ops.wifi_sys_link_up)
 		return pAd->HwCtrl.hwctrl_ops.wifi_sys_link_up(wsys);
 	else {
 		AsicNotSupportFunc(pAd, __func__);
-		return FALSE;
+		return NDIS_STATUS_FAILURE;
 	}
 }
 
@@ -1377,11 +1389,15 @@ static NTSTATUS HwCtrlWifiSysLinkDown(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
 {
 	struct WIFI_SYS_CTRL *wsys = (struct WIFI_SYS_CTRL *)CMDQelmt->buffer;
 
+	if (CMDQelmt->bufferlength != sizeof(*wsys) || !wsys ||
+		!wsys->wdev || wsys->wdev->sys_handle != pAd)
+		return NDIS_STATUS_INVALID_DATA;
+
 	if (pAd->HwCtrl.hwctrl_ops.wifi_sys_link_down)
 		return pAd->HwCtrl.hwctrl_ops.wifi_sys_link_down(wsys);
 	else {
 		AsicNotSupportFunc(pAd, __func__);
-		return FALSE;
+		return NDIS_STATUS_FAILURE;
 	}
 }
 
@@ -1393,11 +1409,15 @@ static NTSTATUS HwCtrlWifiSysPeerLinkDown(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelm
 {
 	struct WIFI_SYS_CTRL *wsys = (struct WIFI_SYS_CTRL *)CMDQelmt->buffer;
 
+	if (CMDQelmt->bufferlength != sizeof(*wsys) || !wsys ||
+		!wsys->wdev || wsys->wdev->sys_handle != pAd)
+		return NDIS_STATUS_INVALID_DATA;
+
 	if (pAd->HwCtrl.hwctrl_ops.wifi_sys_disconnt_act)
 		return pAd->HwCtrl.hwctrl_ops.wifi_sys_disconnt_act(wsys);
 	else {
 		AsicNotSupportFunc(pAd, __func__);
-		return FALSE;
+		return NDIS_STATUS_FAILURE;
 	}
 }
 
@@ -1409,11 +1429,15 @@ static NTSTATUS HwCtrlWifiSysPeerLinkUp(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
 {
 	struct WIFI_SYS_CTRL *wsys = (struct WIFI_SYS_CTRL *)CMDQelmt->buffer;
 
+	if (CMDQelmt->bufferlength != sizeof(*wsys) || !wsys ||
+		!wsys->wdev || wsys->wdev->sys_handle != pAd)
+		return NDIS_STATUS_INVALID_DATA;
+
 	if (pAd->HwCtrl.hwctrl_ops.wifi_sys_connt_act)
 		return pAd->HwCtrl.hwctrl_ops.wifi_sys_connt_act(wsys);
 	else {
 		AsicNotSupportFunc(pAd, __func__);
-		return FALSE;
+		return NDIS_STATUS_FAILURE;
 	}
 }
 
@@ -1425,11 +1449,15 @@ static NTSTATUS HwCtrlWifiSysPeerUpdate(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
 {
 	struct WIFI_SYS_CTRL *wsys = (struct WIFI_SYS_CTRL *)CMDQelmt->buffer;
 
+	if (CMDQelmt->bufferlength != sizeof(*wsys) || !wsys ||
+		!wsys->wdev || wsys->wdev->sys_handle != pAd)
+		return NDIS_STATUS_INVALID_DATA;
+
 	if (pAd->HwCtrl.hwctrl_ops.wifi_sys_peer_update)
 		return pAd->HwCtrl.hwctrl_ops.wifi_sys_peer_update(wsys);
 	else {
 		AsicNotSupportFunc(pAd, __func__);
-		return FALSE;
+		return NDIS_STATUS_FAILURE;
 	}
 }
 

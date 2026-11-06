@@ -40,10 +40,12 @@ CASE_NAMES=('node-oom-sync','node-oom-async','payload-oom-sync','payload-oom-asy
  'exit-retirement-failure','repeat-exit','command-stop-before-handler','normal-callback',
  'response-handler-failure','response-no-handler','response-exit-before-start',
  'temperature-too-large','temperature-null','temperature-api-failure',
- 'exit-without-threadfn','response-exit-without-threadfn')
+ 'exit-without-threadfn','response-exit-without-threadfn','wsys-timeout-queued','wsys-timeout-running')
 FIELDS=('result','allocs','frees','live','locks','completion_init','completion_close',
  'callbacks','flag_callbacks','wakes','kills','quarantined','caller','early_live','stop_join_seen')
-EXPECTED_ROWS={'node-oom-sync': [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 9, 0, 1],
+EXPECTED_ROWS={'wsys-timeout-queued':[1,2,2,0,0,1,1,0,0,1,1,1,9,2,1],
+ 'wsys-timeout-running':[1,2,2,0,0,1,1,1,0,1,1,1,9,2,1],
+ 'node-oom-sync': [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 9, 0, 1],
  'node-oom-async': [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 9, 0, 1],
  'payload-oom-sync': [3, 1, 1, 0, 0, 1, 1, 0, 0, 0, 1, 0, 9, 0, 1],
  'payload-oom-async': [3, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 9, 0, 1],
@@ -74,6 +76,7 @@ EXPECTED_ROWS={'node-oom-sync': [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 9, 0, 1],
  'exit-without-threadfn': [0, 2, 2, 0, 0, 0, 0, 0, 0, 1, 1, 0, 9, 2, 1],
  'response-exit-without-threadfn': [1, 3, 3, 0, 0, 1, 1, 0, 0, 1, 1, 0, 9, 0, 1]}
 SOURCE_DECLARATIONS={
+ r'enum \{\n\tHWCMD_TYPE_FIRST[\s\S]*?\n\};':'header',
  r'typedef struct _HwCmdQElmt \{[\s\S]*?\} HwCmdQElmt, \*PHwCmdQElmt;':'header',
  r'typedef struct _HwCmdQ \{[\s\S]*?\} HwCmdQ, \*PHwCmdQ;':'header',
  r'typedef struct _HwFlagCtrl \{[\s\S]*?\} HwFlagCtrl, \*PHwFlagCtrl;':'header',
@@ -163,7 +166,7 @@ static VOID HwCtrlExit(RTMP_ADAPTER*);
 static NTSTATUS HwCtrlGetTemperature(RTMP_ADAPTER*,HwCmdQElmt*);
 INT32 MtCmdGetThermalSensorResult(RTMP_ADAPTER *ad,UINT8 action,UINT32 *value){assert(ad==active&&!action);if(sensor_fail)return 3;*value=77;return 0;}
 static INT HwCtrlThread(ULONG);
-static int wait_completion(RTMP_OS_COMPLETION *p,UINT32 timeout){assert(timeout&&p->initialized);if(process_on_wait==1)HwCtrlCmdHandler(active);else if(process_on_wait==2)HwCtrlExit(active);return p->done;}
+static int wait_completion(RTMP_OS_COMPLETION *p,UINT32 timeout){assert(timeout&&p->initialized);if(process_on_wait==1)HwCtrlCmdHandler(active);else if(process_on_wait==2)HwCtrlExit(active);else if(process_on_wait==3){pthread_mutex_lock(&schedule_lock);while(!handler_entered)pthread_cond_wait(&schedule_cond,&schedule_lock);pthread_mutex_unlock(&schedule_lock);return 0;}return p->done;}
 #define RTMP_OS_WAIT_FOR_COMPLETION_TIMEOUT(p,n) wait_completion((p),(n))
 static void RTCMDUp(RTMP_OS_TASK *task){(void)task;pthread_mutex_lock(&schedule_lock);wakes++;wake_budget++;pthread_cond_broadcast(&schedule_cond);pthread_mutex_unlock(&schedule_lock);}
 static void RtmpOSTaskCustomize(RTMP_OS_TASK *task){assert(task->priv==active);}
@@ -171,7 +174,7 @@ static int RtmpOSTaskWait(RTMP_ADAPTER *ad,RTMP_OS_TASK *task,int *status){if(ta
 static int RtmpOSTaskNotifyToExit(RTMP_OS_TASK *task){assert(task->priv==active);return 0;}
 static void HwCtrlSerExit(RTMP_ADAPTER *ad){assert(ad==active);}
 static INT ser_exit(RTMP_ADAPTER *ad){assert(ad==active);return 0;}
-static void RtmpDmaQuarantine(RTMP_ADAPTER *ad){ad->quarantined=1;}
+static void RtmpDmaQuarantine(RTMP_ADAPTER *ad){ad->quarantined=1;ad->flags&=~fRTMP_ADAPTER_START_UP;}
 static int RtmpOSTaskKill(RTMP_OS_TASK *task){kills++;assert(active->HwCtrl.HwCtrlQ.CmdQState==RTMP_TASK_STAT_STOPED);stop_join_seen=1;if(kill_fail)return 1;
  pthread_mutex_lock(&schedule_lock);task->killed=1;exit_join_entered=1;pthread_cond_broadcast(&schedule_cond);pthread_mutex_unlock(&schedule_lock);
  if(thread_created){assert(!pthread_join(worker,NULL));thread_created=0;}else if(!skip_threadfn) HwCtrlThread((ULONG)task);
@@ -195,6 +198,7 @@ int main(int argc,char **argv){const char *name;RTMP_ADAPTER ad;HW_CTRL_TXD tx;U
  if(!strncmp(name,"node-oom",8))fail_at=1;
  if(!strncmp(name,"payload-oom",11))fail_at=2;
  if(!strcmp(name,"response-oom"))fail_at=3;
+ if(!strncmp(name,"wsys-timeout-",13)){tx.NeedWait=TRUE;tx.CmdType=HWCMD_TYPE_WIFISYS;}
  if(!strncmp(name,"reject-stopped",14)||!strcmp(name,"command-stop-before-handler"))ad.HwCtrl.HwCtrlQ.CmdQState=RTMP_TASK_STAT_STOPED;
  if(!strcmp(name,"null-input"))tx.pInformationBuffer=NULL;
  if(!strcmp(name,"null-response"))tx.pRespBuffer=NULL;
@@ -216,6 +220,11 @@ int main(int argc,char **argv){const char *name;RTMP_ADAPTER ad;HW_CTRL_TXD tx;U
   ad.HwCtrl.HwCtrlQ.CmdQState=RTMP_TASK_STAT_STOPED;
   if(!strcmp(name,"flag-late-stop"))result=HwCtrlSetFlag(&ad,1);
   else{ad.HwCtrl.HwCtrlFlag.FlagId=1;ad.HwCtrl.HwCtrlFlag.IsFlagSet=1;HwCtrlFlagHandler(&ad);}
+ }else if(!strcmp(name,"wsys-timeout-running")){
+  ad.HwCtrl.HwCtrlQ.CmdQState=RTMP_TASK_STAT_INITED;block_handler=1;process_on_wait=3;thread_created=1;assert(!pthread_create(&worker,NULL,worker_entry,&ad.HwCtrl.HwCtrlTask));
+  pthread_mutex_lock(&schedule_lock);while(!worker_ready)pthread_cond_wait(&schedule_cond,&schedule_lock);pthread_mutex_unlock(&schedule_lock);
+  result=HwCtrlEnqueueCmd(&ad,tx);early_live=live;assert(result==1&&ad.quarantined&&callbacks==1&&live==2);
+  pthread_mutex_lock(&schedule_lock);release_handler=1;pthread_cond_broadcast(&schedule_cond);pthread_mutex_unlock(&schedule_lock);
  }else if(!strcmp(name,"active-worker-vs-exit")){
   ad.HwCtrl.HwCtrlQ.CmdQState=RTMP_TASK_STAT_INITED;block_handler=1;thread_created=1;assert(!pthread_create(&worker,NULL,worker_entry,&ad.HwCtrl.HwCtrlTask));
   pthread_mutex_lock(&schedule_lock);while(!worker_ready)pthread_cond_wait(&schedule_cond,&schedule_lock);pthread_mutex_unlock(&schedule_lock);

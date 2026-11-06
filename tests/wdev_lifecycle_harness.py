@@ -431,6 +431,7 @@ PREFIX = ('\n'
  '*a){assert(a==current&&protect&&!lifecycle);lifecycle=1;}\n'
  'static void RtmpDmaLifecycleUnlock(RTMP_ADAPTER '
  '*a){assert(a==current&&protect&&lifecycle);lifecycle=0;}\n'
+ 'static int RtmpDmaQuarantined(RTMP_ADAPTER *a){return a->quarantined;}\n'
  'static int RtmpDmaResourcesMayRelease(RTMP_ADAPTER *a){return !a->quarantined;}\n'
  'static int RtmpDmaFinalReleaseCheck(RTMP_ADAPTER *a){return a->dma_ok&&!a->quarantined;}\n'
  'static void retire_model(RTMP_ADAPTER *a){a->virtual_count=0;a->flags=0;a->HwCtrl.HwCtrlTask=0;\n'
@@ -648,3 +649,7 @@ def generate_source(texts,variant='current'):
     admission='if(!('+'||'.join('!strcmp(name,"'+n+'")'for n in CASE_NAMES)+'))return 91;'
     return PREFIX.replace('SOURCE_DEFINITIONS',declarations(texts)).replace('FUNCTION_DECLARATIONS',prototypes)+'\n'.join(bodies.values())+SUFFIX.replace('CASE_ADMISSION',admission)
 
+
+# Existing cases cover retired/admitted ordinary WDEV state; quarantine branches
+# execute in the additive wsys_lifecycle_harness component.
+WSYS_QUARANTINE_MODEL_BOUNDARY = {'old_rows_preserved': True, 'quarantine_branch_executed_elsewhere': True}

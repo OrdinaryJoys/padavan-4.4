@@ -192,6 +192,11 @@ enum mtk_clks_map {
 	MTK_CLK_MAX
 };
 
+struct raeth_qtx_mapping {
+	dma_addr_t addr;
+	unsigned int len;
+};
+
 struct END_DEVICE {
 	struct device *dev;
 	unsigned int tx_cpu_owner_idx0;
@@ -219,6 +224,7 @@ struct END_DEVICE {
 	unsigned int *free_txd_head;
 	unsigned int *free_txd_tail;
 	struct QDMA_txdesc *txd_pool;
+	struct raeth_qtx_mapping *qtx_mapping;
 	dma_addr_t phy_txd_pool;
 	/* unsigned int txd_pool_info[NUM_TX_DESC]; */
 	unsigned int *txd_pool_info;
@@ -228,6 +234,15 @@ struct END_DEVICE {
 	dma_addr_t phy_free_page_head;
 	struct PDMA_rxdesc *qrx_ring;
 	dma_addr_t phy_qrx_ring;
+	/* RTNL owns open/stop stages; IRQ admission is read by RX/TX contexts. */
+	unsigned int qrx_mapped;
+	unsigned int prx_mapped;
+	unsigned int dma_stages;
+	unsigned int irq_requested;
+	unsigned int switch_irq;
+	bool irq_active;
+	bool dma_quarantined;
+	bool module_reserved;
 
 	/* TSO */
 	unsigned int skb_txd_num;
@@ -405,6 +420,7 @@ int fe_qdma_rx_dma_init(struct net_device *dev);
 int fe_qdma_tx_dma_init(struct net_device *dev);
 void fe_qdma_rx_dma_deinit(struct net_device *dev);
 void fe_qdma_tx_dma_deinit(struct net_device *dev);
+void fe_qdma_tx_unmap(struct END_DEVICE *ei_local, unsigned int idx);
 void set_fe_qdma_glo_cfg(void);
 int ei_qdma_start_xmit(struct sk_buff *skb, struct net_device *dev,
 		       int gmac_no);

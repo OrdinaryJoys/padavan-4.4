@@ -16,25 +16,16 @@
 
 int fe_pdma_wait_dma_idle(void)
 {
-	unsigned int reg_val;
-	unsigned int loop_cnt = 0;
+	unsigned int loop_cnt;
 
-	while (1) {
-		if (loop_cnt++ > 1000)
-			break;
-		reg_val = sys_reg_read(PDMA_GLO_CFG);
-		if ((reg_val & RX_DMA_BUSY)) {
-			pr_warn("\n  RX_DMA_BUSY !!! ");
-			continue;
-		}
-		if ((reg_val & TX_DMA_BUSY)) {
-			pr_warn("\n  TX_DMA_BUSY !!! ");
-			continue;
-		}
-		return 0;
+	/* A failed idle observation never authorizes freeing a DMA owner. */
+	for (loop_cnt = 0; loop_cnt < 1000; loop_cnt++) {
+		if (!(sys_reg_read(PDMA_GLO_CFG) & (RX_DMA_BUSY | TX_DMA_BUSY)))
+			return 0;
+		udelay(10);
 	}
-
-	return -1;
+	pr_err("PDMA did not become idle\n");
+	return -ETIMEDOUT;
 }
 
 int fe_pdma_rx_dma_init(struct net_device *dev)
@@ -47,12 +38,17 @@ int fe_pdma_rx_dma_init(struct net_device *dev)
 	skb_size = SKB_DATA_ALIGN(MAX_RX_LENGTH + NET_IP_ALIGN + NET_SKB_PAD) +
 		   SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
 
+	if (ei_local->rx_ring[0])
+		return -EBUSY;
+
 	/* Initial RX Ring 0 */
 	ei_local->rx_ring[0] = dma_alloc_coherent(dev->dev.parent,
 						num_rx_desc *
 						sizeof(struct PDMA_rxdesc),
 						&ei_local->phy_rx_ring[0],
 						GFP_ATOMIC | __GFP_ZERO);
+	if (!ei_local->rx_ring[0])
+		return -ENOMEM;
 	pr_debug("\nphy_rx_ring[0] = 0x%08x, rx_ring[0] = 0x%p\n",
 		 (unsigned int)ei_local->phy_rx_ring[0],
 		 (void *)ei_local->rx_ring[0]);
@@ -82,6 +78,7 @@ int fe_pdma_rx_dma_init(struct net_device *dev)
 			pr_err("[%s]dma_map_single() failed...\n", __func__);
 			goto no_rx_mem;
 		}
+		ei_local->prx_mapped++;
 	}
 
 	/* Tell the adapter where the RX rings are located. */
@@ -94,6 +91,7 @@ int fe_pdma_rx_dma_init(struct net_device *dev)
 	return 0;
 
 no_rx_mem:
+	fe_pdma_rx_dma_deinit(dev);
 	return -ENOMEM;
 }
 
@@ -101,6 +99,9 @@ int fe_pdma_tx_dma_init(struct net_device *dev)
 {
 	int i;
 	struct END_DEVICE *ei_local = netdev_priv(dev);
+
+	if (ei_local->tx_ring0)
+		return -EBUSY;
 
 	for (i = 0; i < num_tx_desc; i++)
 		ei_local->skb_free[i] = 0;
@@ -112,6 +113,8 @@ int fe_pdma_tx_dma_init(struct net_device *dev)
 			       num_tx_desc * sizeof(struct PDMA_txdesc),
 			       &ei_local->phy_tx_ring0,
 			       GFP_ATOMIC | __GFP_ZERO);
+	if (!ei_local->tx_ring0)
+		return -ENOMEM;
 	pr_debug("\nphy_tx_ring = 0x%08x, tx_ring = 0x%p\n",
 		 (unsigned int)ei_local->phy_tx_ring0,
 		 (void *)ei_local->tx_ring0);
@@ -139,16 +142,22 @@ void fe_pdma_rx_dma_deinit(struct net_device *dev)
 	struct END_DEVICE *ei_local = netdev_priv(dev);
 	int i;
 
-	/* free RX Ring */
-	dma_free_coherent(dev->dev.parent,
-			  num_rx_desc * sizeof(struct PDMA_rxdesc),
-			  ei_local->rx_ring[0], ei_local->phy_rx_ring[0]);
-
-	/* free RX data */
+	if (!ei_local->rx_ring[0])
+		return;
+	for (i = 0; i < ei_local->prx_mapped; i++)
+		dma_unmap_single(dev->dev.parent,
+			ei_local->rx_ring[0][i].rxd_info1.PDP0,
+			MAX_RX_LENGTH, DMA_FROM_DEVICE);
+	ei_local->prx_mapped = 0;
 	for (i = 0; i < num_rx_desc; i++) {
 		raeth_free_skb_data(ei_local->netrx_skb_data[0][i]);
 		ei_local->netrx_skb_data[0][i] = NULL;
 	}
+	dma_free_coherent(dev->dev.parent,
+		num_rx_desc * sizeof(struct PDMA_rxdesc),
+		ei_local->rx_ring[0], ei_local->phy_rx_ring[0]);
+	ei_local->rx_ring[0] = NULL;
+	ei_local->phy_rx_ring[0] = 0;
 }
 
 void fe_pdma_tx_dma_deinit(struct net_device *dev)
@@ -164,11 +173,15 @@ void fe_pdma_tx_dma_deinit(struct net_device *dev)
 				  ei_local->tx_ring0,
 				  ei_local->phy_tx_ring0);
 
+	ei_local->tx_ring0 = NULL;
+	ei_local->phy_tx_ring0 = 0;
+
 	/* free TX data */
 	for (i = 0; i < num_tx_desc; i++) {
 		if ((ei_local->skb_free[i] != 0) &&
 		    (ei_local->skb_free[i] != (struct sk_buff *)0xFFFFFFFF))
 			dev_kfree_skb_any(ei_local->skb_free[i]);
+		ei_local->skb_free[i] = NULL;
 	}
 }
 

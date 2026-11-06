@@ -180,7 +180,11 @@ struct WIFI_SYS_CTRL {
 	DEV_INFO_CTRL_T DevInfoCtrl;
 	STA_REC_CTRL_T StaRecCtrl;
 	BSS_INFO_ARGUMENT_T BssInfoCtrl;
-	VOID *priv;
+#ifdef RACTRL_FW_OFFLOAD_SUPPORT
+	/* Copied with the queue element; never borrow an allocated RA payload. */
+	CMD_STAREC_AUTO_RATE_UPDATE_T RaParam;
+	BOOLEAN ra_param_valid;
+#endif
 	BOOLEAN skip_set_txop;
 };
 
@@ -251,6 +255,7 @@ VOID WifiSysUpdatePortSecur(struct _RTMP_ADAPTER *pAd, struct _MAC_TABLE_ENTRY *
 /*wifi system architecture layer api*/
 INT wifi_sys_open(struct wifi_dev *wdev);
 INT wifi_sys_close(struct wifi_dev *wdev);
+INT wifi_sys_abort_open(struct wifi_dev *wdev);
 INT wifi_sys_conn_act(struct wifi_dev *wdev, struct _MAC_TABLE_ENTRY *entry);
 INT wifi_sys_disconn_act(struct wifi_dev *wdev, struct _MAC_TABLE_ENTRY *entry);
 INT wifi_sys_linkup(struct wifi_dev *wdev, struct _MAC_TABLE_ENTRY *entry);

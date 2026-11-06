@@ -49,6 +49,12 @@ void ra2880stop(struct END_DEVICE *ei_local)
 	reg_value = sys_reg_read(DMA_GLO_CFG);
 	reg_value &= ~(TX_WB_DDONE | RX_DMA_EN | TX_DMA_EN);
 	sys_reg_write(DMA_GLO_CFG, reg_value);
+	/* QDMA owns TX/FQ memory even when RX packets use PDMA. */
+	if (ei_local->features & FE_QDMA) {
+		reg_value = sys_reg_read(QDMA_GLO_CFG);
+		reg_value &= ~(TX_WB_DDONE | RX_DMA_EN | TX_DMA_EN);
+		sys_reg_write(QDMA_GLO_CFG, reg_value);
+	}
 
 	pr_info("Done\n");
 }

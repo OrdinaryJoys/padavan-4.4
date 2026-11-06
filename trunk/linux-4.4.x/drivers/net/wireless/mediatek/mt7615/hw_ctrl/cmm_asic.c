@@ -1797,12 +1797,12 @@ INT32 AsicDevInfoUpdate(
 			return pAd->archOps.archSetDevMac(pAd, OwnMacIdx, OwnMacAddr, BandIdx, Active, EnableFeature);
 
 		AsicNotSupportFunc(pAd, __func__);
-		return FALSE;
+		return NDIS_STATUS_FAILURE;
 	}
 
 #endif /* MT_MAC */
 	AsicNotSupportFunc(pAd, __func__);
-	return FALSE;
+	return NDIS_STATUS_FAILURE;
 }
 
 INT32 AsicBssInfoUpdate(
@@ -1819,7 +1819,7 @@ INT32 AsicBssInfoUpdate(
 		return pAd->archOps.archSetBssid(pAd, bss_info_argument);
 
 	AsicNotSupportFunc(pAd, __func__);
-	return FALSE;
+	return NDIS_STATUS_FAILURE;
 }
 
 INT32 AsicExtPwrMgtBitWifi(RTMP_ADAPTER *pAd, UINT8 ucWlanIdx, UINT8 ucPwrMgtBit)
@@ -1902,7 +1902,7 @@ INT32 AsicStaRecUpdate(
 	}
 
 	AsicNotSupportFunc(pAd, __func__);
-	return FALSE;
+	return NDIS_STATUS_FAILURE;
 }
 
 
@@ -1954,7 +1954,7 @@ INT32 AsicRaParamStaRecUpdate(
 	}
 
 	AsicNotSupportFunc(pAd, __func__);
-	return FALSE;
+	return NDIS_STATUS_FAILURE;
 }
 #endif /* MT_MAC */
 

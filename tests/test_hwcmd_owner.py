@@ -85,14 +85,17 @@ class HwcmdOwnerTests(unittest.TestCase):
     except subprocess.TimeoutExpired:continue
     self.assertTrue(result.returncode!=0 or json.loads(result.stdout)!=h.EXPECTED_ROWS[case])
 
+ def test_wsys_timeout_quarantines_and_late_queue_or_running_retirement_retains_owners(self):
+  self.cases(('wsys-timeout-queued','wsys-timeout-running'))
+
  def test_whole_function_declaration_and_case_contract_is_complete(self):
-  self.assertEqual(len(h.CASE_NAMES),30)
+  self.assertEqual(len(h.CASE_NAMES),32)
   self.assertEqual(set(h.CASE_NAMES),set(h.EXPECTED_ROWS))
   self.assertEqual(len(h.function_manifest(self.texts)),9)
   self.assertEqual(len(h.source_only_function_manifest(self.texts)),8)
   for name,key in h.FUNCTION_SOURCES.items():
    self.assertEqual(self.generated.count(h.function(self.texts[key],name)),1)
-  self.assertEqual(len(h.source_declarations(self.texts)),13)
+  self.assertEqual(len(h.source_declarations(self.texts)),14)
   self.assertIn('if (!test_bit(KTHREAD_SHOULD_STOP, &self.flags)) {',self.texts['kernel_task'])
   self.assertIn('ret = threadfn(data);',self.texts['kernel_task'])
   with self.assertRaises(ValueError):h.generate_source({})

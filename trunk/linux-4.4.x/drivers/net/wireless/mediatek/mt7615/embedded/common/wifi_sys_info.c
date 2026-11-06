@@ -339,13 +339,6 @@ static VOID fill_devinfo(
 	os_move_mem(devinfo->OwnMacAddr, wdev->if_addr, MAC_ADDR_LEN);
 	devinfo->EnableFeature = DEVINFO_ACTIVE_FEATURE;
 	devinfo->BandIdx = HcGetBandByWdev(wdev);
-	os_move_mem(&wdev->DevInfo, devinfo, sizeof(DEV_INFO_CTRL_T));
-
-#ifdef CONFIG_AP_SUPPORT
-#ifdef IGMP_SNOOP_SUPPORT
-	update_igmpinfo(wdev, act);
-#endif
-#endif
 	MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE,
 		("%s(): Active=%d,OwnMacIdx=%d,EnableFeature=%d,BandIdx=%d\n", __func__,
 		devinfo->Active, devinfo->OwnMacIdx, devinfo->EnableFeature, devinfo->BandIdx));
@@ -360,8 +353,10 @@ static inline VOID fill_bssinfo_active(
 	struct _BSS_INFO_ARGUMENT_T *bssinfo)
 {
 	BssInfoArgumentLink(ad, wdev, bssinfo);
+	/* Keep the acquired index/WCID/EDCA discoverable until confirmed close. */
+	os_move_mem(&wdev->bss_info_argument, bssinfo, sizeof(*bssinfo));
+	WDEV_BSS_STATE(wdev) = BSS_INITED;
 	bssinfo->bss_state = BSS_ACTIVE;
-	WDEV_BSS_STATE(wdev) = BSS_ACTIVE;
 }
 
 /*
@@ -372,8 +367,8 @@ static inline VOID fill_bssinfo_deactive(
 	struct wifi_dev *wdev,
 	struct _BSS_INFO_ARGUMENT_T *bssinfo)
 {
-	WDEV_BSS_STATE(wdev) = BSS_INITED;
 	os_move_mem(bssinfo, &wdev->bss_info_argument, sizeof(wdev->bss_info_argument));
+	bssinfo->bss_state = BSS_INITED;
 }
 
 /*
@@ -510,8 +505,16 @@ INT wifi_sys_update_devinfo(struct _RTMP_ADAPTER *ad, struct wifi_dev *wdev, str
 {
 	INT len = sizeof(wdev->DevInfo) - sizeof(wdev->DevInfo.list);
 
+	if (!new->Active)
+		call_wsys_notifieriers(WSYS_NOTIFY_CLOSE, wdev, NULL);
 	os_move_mem(&wdev->DevInfo, new, len);
+#ifdef CONFIG_AP_SUPPORT
+#ifdef IGMP_SNOOP_SUPPORT
+	update_igmpinfo(wdev, new->Active);
+#endif
+#endif
 	if (new->Active) {
+		wlan_operate_set_state(wdev, WLAN_OPER_STATE_VALID);
 		add_devinfo(ad, wdev);
 		/*notify other modules, hw resouce is acquired down*/
 		call_wsys_notifieriers(WSYS_NOTIFY_OPEN, wdev, NULL);
@@ -538,6 +541,7 @@ INT wifi_sys_update_bssinfo(struct _RTMP_ADAPTER *ad, struct wifi_dev *wdev, str
 		/*notify other modules, bss related setting is done*/
 		call_wsys_notifieriers(WSYS_NOTIFY_LINKUP, wdev, bss);
 	} else {
+		call_wsys_notifieriers(WSYS_NOTIFY_LINKDOWN, wdev, NULL);
 		del_bssinfo(ad, wdev);
 		BssInfoArgumentUnLink(ad, wdev);
 	}
@@ -553,6 +557,8 @@ INT wifi_sys_update_starec(struct _RTMP_ADAPTER *ad, struct _STA_REC_CTRL_T *new
 	struct _STA_REC_CTRL_T *sta_rec = &tr_entry->StaRec;
 	INT len = sizeof(tr_entry->StaRec) - sizeof(sta_rec->list);
 
+	if (new->ConnectionState == STATE_DISCONNECT)
+		call_wsys_notifieriers(WSYS_NOTIFY_DISCONNT_ACT, tr_entry->wdev, tr_entry);
 	os_move_mem(sta_rec, new, len);
 	if (new->ConnectionState == STATE_DISCONNECT) {
 		/*remove starec*/
@@ -752,14 +758,17 @@ INT wifi_sys_open(struct wifi_dev *wdev)
 {
 	struct WIFI_SYS_CTRL wsys;
 
+	if (RtmpDmaQuarantined(wdev->sys_handle))
+		return FALSE;
+
 	os_zero_mem(&wsys, sizeof(wsys));
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_OFF,
 		("%s(), wdev idx = %d\n", __func__, wdev->wdev_idx));
 
 	if (!wdev->DevInfo.Active && (wlan_operate_get_state(wdev) == WLAN_OPER_STATE_INVALID)) {
-		wlan_operate_set_state(wdev, WLAN_OPER_STATE_VALID);
 		/*acquire wdev related attribute*/
-		wdev_attr_update(wdev->sys_handle, wdev);
+		if (wdev_attr_update(wdev->sys_handle, wdev) != TRUE)
+			return FALSE;
 
 		/* WDS share DevInfo with normal AP */
 		if (wdev->wdev_type != WDEV_TYPE_WDS)
@@ -767,7 +776,13 @@ INT wifi_sys_open(struct wifi_dev *wdev)
 
 		wsys.wdev = wdev;
 		/*update to hwctrl*/
-		HW_WIFISYS_OPEN(wdev->sys_handle, &wsys);
+		if (HW_WIFISYS_OPEN(wdev->sys_handle, &wsys) != NDIS_STATUS_SUCCESS) {
+			if (!RtmpDmaQuarantined(wdev->sys_handle)) {
+				UpdateDot11hForWdev(wdev->sys_handle, wdev, FALSE);
+				HcReleaseRadioForWdev(wdev->sys_handle, wdev);
+			}
+			return FALSE;
+		}
 	}
 
 	return TRUE;
@@ -780,26 +795,23 @@ INT wifi_sys_close(struct wifi_dev *wdev)
 {
 	struct WIFI_SYS_CTRL wsys;
 
+	if (RtmpDmaQuarantined(wdev->sys_handle))
+		return FALSE;
+
 	os_zero_mem(&wsys, sizeof(wsys));
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s(), wdev idx = %d\n",
 		__func__, wdev->wdev_idx));
 
 	if (wlan_operate_get_state(wdev) == WLAN_OPER_STATE_VALID) {
 
-		wlan_operate_set_state(wdev, WLAN_OPER_STATE_INVALID);
-
-		/* Un-initialize the pDot11H of wdev */
-		UpdateDot11hForWdev(wdev->sys_handle, wdev, FALSE);
-
 		/* WDS share DevInfo with normal AP */
 		if (wdev->wdev_type != WDEV_TYPE_WDS)
 			fill_devinfo(wdev->sys_handle, wdev, FALSE, &wsys.DevInfoCtrl);
 
 		wsys.wdev = wdev;
-		/*notify other module will release hw resource*/
-		call_wsys_notifieriers(WSYS_NOTIFY_CLOSE, wdev, NULL);
 		/*update to hwctrl*/
-		HW_WIFISYS_CLOSE(wdev->sys_handle, &wsys);
+		if (HW_WIFISYS_CLOSE(wdev->sys_handle, &wsys) != NDIS_STATUS_SUCCESS)
+			return FALSE;
 	}
 
 	return TRUE;
@@ -815,10 +827,12 @@ INT wifi_sys_disconn_act(struct wifi_dev *wdev, struct _MAC_TABLE_ENTRY *entry)
 	struct _STA_TR_ENTRY *tr_entry = &ad->MacTab.tr_entry[entry->tr_tb_idx];
 	struct _STA_REC_CTRL_T *new_sta = &wsys.StaRecCtrl;
 
+	if (RtmpDmaQuarantined(wdev->sys_handle))
+		return FALSE;
+
 	os_zero_mem(&wsys, sizeof(wsys));
 
 	if (entry->EntryState == ENTRY_STATE_SYNC) {
-		entry->EntryState = ENTRY_STATE_NONE;
 		/* Deactive StaRec in FW */
 		new_sta->BssIndex = wdev->bss_info_argument.ucBssIndex;
 		new_sta->WlanIdx = entry->wcid;
@@ -835,10 +849,10 @@ INT wifi_sys_disconn_act(struct wifi_dev *wdev, struct _MAC_TABLE_ENTRY *entry)
 			wsys.skip_set_txop = TRUE;
 		}
 		wsys.wdev = wdev;
-		/*notify other module will release starec*/
-		call_wsys_notifieriers(WSYS_NOTIFY_DISCONNT_ACT, wdev, tr_entry);
 		/*send event for release starec*/
-		HW_WIFISYS_PEER_LINKDOWN(ad, &wsys);
+		if (HW_WIFISYS_PEER_LINKDOWN(ad, &wsys) != NDIS_STATUS_SUCCESS)
+			return FALSE;
+		entry->EntryState = ENTRY_STATE_NONE;
 #ifdef CONFIG_AP_SUPPORT
 
 		if (wdev->wdev_type == WDEV_TYPE_AP)
@@ -857,13 +871,13 @@ INT wifi_sys_conn_act(struct wifi_dev *wdev, struct _MAC_TABLE_ENTRY *entry)
 	struct _STA_REC_CTRL_T *sta_rec = &wsys.StaRecCtrl;
 	struct _STA_TR_ENTRY *tr_entry = &ad->MacTab.tr_entry[entry->tr_tb_idx];
 	struct _BSS_INFO_ARGUMENT_T *bss = &wdev->bss_info_argument;
-	PEER_LINKUP_HWCTRL *lu_ctrl = NULL;
 	UINT32 features = 0;
 	UCHAR state = 0;
 
-	/*indicate mac entry under sync to hw*/
-	entry->EntryState = ENTRY_STATE_SYNC;
 	/*star to fill wifi sys control*/
+	if (RtmpDmaQuarantined(wdev->sys_handle))
+		return FALSE;
+
 	os_zero_mem(&wsys, sizeof(wsys));
 	/*generic connection action*/
 	/*sta rec feature & security update*/
@@ -882,22 +896,13 @@ INT wifi_sys_conn_act(struct wifi_dev *wdev, struct _MAC_TABLE_ENTRY *entry)
 	if (sta_rec->EnableFeature & STA_REC_INSTALL_KEY_FEATURE)
 		starec_security_set(wdev, entry, sta_rec);
 
-	/*specific part*/
-	if (wdev->wdev_type == WDEV_TYPE_AP) {
-		wsys.skip_set_txop = TRUE;/* there is no need to set txop when sta connected.*/
-		os_alloc_mem(NULL, (UCHAR **)&lu_ctrl, sizeof(PEER_LINKUP_HWCTRL));
-		os_zero_mem(lu_ctrl, sizeof(PEER_LINKUP_HWCTRL));
-#ifdef DOT11_N_SUPPORT
-
-		if (CLIENT_STATUS_TEST_FLAG(entry, fCLIENT_STATUS_RDG_CAPABLE))
-			lu_ctrl->bRdgCap = TRUE;
-
-#endif /*DOT11_N_SUPPORT*/
-		wsys.priv = (VOID *)lu_ctrl;
-	}
+	if (wdev->wdev_type == WDEV_TYPE_AP)
+		wsys.skip_set_txop = TRUE;
 
 	wsys.wdev = wdev;
-	HW_WIFISYS_PEER_LINKUP(ad, &wsys);
+	if (HW_WIFISYS_PEER_LINKUP(ad, &wsys) != NDIS_STATUS_SUCCESS)
+		return FALSE;
+	entry->EntryState = ENTRY_STATE_SYNC;
 	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 			 ("===> AsicStaRecUpdate called by (%s), wcid=%d, PortSecured=%d, AKMMap=%d\n",
 			  __func__, entry->wcid, sta_rec->ConnectionState, entry->SecConfig.AKMMap));
@@ -922,18 +927,24 @@ INT wifi_sys_linkup(struct wifi_dev *wdev, struct _MAC_TABLE_ENTRY *entry)
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s(), wdev idx = %d\n",
 		__func__, wdev->wdev_idx));
 
+	if (RtmpDmaQuarantined(wdev->sys_handle))
+		return FALSE;
+
 	/*if interface down up should not run ap link up (for apstop/apstart check)*/
 	if (!HcIsRadioAcq(wdev))
 		return TRUE;
 
 	os_zero_mem(&wsys, sizeof(wsys));
 
-	if (WDEV_BSS_STATE(wdev) == BSS_INIT) {
+	if (WDEV_BSS_STATE(wdev) <= BSS_INITED) {
 		/*prepare bssinfo*/
-		fill_bssinfo(wdev->sys_handle, wdev, TRUE, bss);
-		/* Need to update ucBssIndex of wdev here immediately because
-		it could be used if invoke wifi_sys_conn_act subsequently. */
-		wdev->bss_info_argument.ucBssIndex = bss->ucBssIndex;
+		if (WDEV_BSS_STATE(wdev) == BSS_INIT)
+			fill_bssinfo(wdev->sys_handle, wdev, TRUE, bss);
+		else {
+			/* Retry the reserved BSS instead of acquiring a second owner. */
+			os_move_mem(bss, &wdev->bss_info_argument, sizeof(*bss));
+			bss->bss_state = BSS_ACTIVE;
+		}
 #ifdef APCLI_OWE_SUPPORT
 		/*To allow OWE ApCli to connect to Open bss*/
 		if ((wdev->wdev_type == WDEV_TYPE_APCLI) && IS_AKM_OWE(wdev->SecConfig.AKMMap)) {
@@ -988,7 +999,8 @@ INT wifi_sys_linkup(struct wifi_dev *wdev, struct _MAC_TABLE_ENTRY *entry)
 		}
 		/*update to hw ctrl*/
 		wsys.wdev = wdev;
-		HW_WIFISYS_LINKUP(ad, &wsys);
+		if (HW_WIFISYS_LINKUP(ad, &wsys) != NDIS_STATUS_SUCCESS)
+			return FALSE;
 	}
 
 	return TRUE;
@@ -1005,6 +1017,9 @@ INT wifi_sys_linkdown(struct wifi_dev *wdev)
 
 	MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s(), wdev idx = %d\n",
 		__func__, wdev->wdev_idx));
+
+	if (RtmpDmaQuarantined(wdev->sys_handle))
+		return FALSE;
 
 	os_zero_mem(&wsys, sizeof(wsys));
 
@@ -1029,11 +1044,24 @@ INT wifi_sys_linkdown(struct wifi_dev *wdev)
 		}
 		/*update to hwctrl for hw seting*/
 		wsys.wdev = wdev;
-		/*notify other module will leave bss*/
-		call_wsys_notifieriers(WSYS_NOTIFY_LINKDOWN, wdev, NULL);
-		HW_WIFISYS_LINKDOWN(ad, &wsys);
+		if (HW_WIFISYS_LINKDOWN(ad, &wsys) != NDIS_STATUS_SUCCESS)
+			return FALSE;
 	}
 
+	return TRUE;
+}
+
+/* Retire every owner published by a failed AP open before its VIF is dropped. */
+INT wifi_sys_abort_open(struct wifi_dev *wdev)
+{
+	struct _RTMP_ADAPTER *ad = wdev->sys_handle;
+
+	if (RtmpDmaQuarantined(ad))
+		return FALSE;
+	if (wifi_sys_linkdown(wdev) != TRUE || wifi_sys_close(wdev) != TRUE) {
+		RtmpDmaQuarantine(ad);
+		return FALSE;
+	}
 	return TRUE;
 }
 
@@ -1106,14 +1134,15 @@ VOID WifiSysUpdatePortSecur(RTMP_ADAPTER *pAd, MAC_TABLE_ENTRY *pEntry, ASIC_SEC
 			NdisMoveMemory(&sta_ctrl->asic_sec_info, asic_sec_info, sizeof(ASIC_SEC_INFO));
 		}
 
+		wsys.wdev = wdev;
+		if (HW_WIFISYS_PEER_UPDATE(pAd, &wsys) != NDIS_STATUS_SUCCESS)
+			return;
 		if (IS_ENTRY_CLIENT(pEntry)) {
 			INT32 aid = pEntry->wcid;
 
 			RESET_FLAG_CONN_IN_PROG(aid, pAd->ConInPrgress);
 		}
 
-		wsys.wdev = wdev;
-		HW_WIFISYS_PEER_UPDATE(pAd, &wsys);
 #ifdef CONFIG_AP_SUPPORT
 		CheckBMCPortSecured(pAd, pEntry, TRUE);
 #endif /* CONFIG_AP_SUPPORT */
@@ -1188,7 +1217,6 @@ VOID WifiSysUpdateRa(RTMP_ADAPTER *pAd,
 	struct WIFI_SYS_CTRL wsys;
 	struct _STA_REC_CTRL_T *sta_rec = &wsys.StaRecCtrl;
 	struct _STA_TR_ENTRY *tr_entry = &pAd->MacTab.tr_entry[pEntry->tr_tb_idx];
-	CMD_STAREC_AUTO_RATE_UPDATE_T *ra_parm = NULL;
 
 	os_zero_mem(&wsys, sizeof(wsys));
 	sta_rec->BssIndex = pEntry->wdev->bss_info_argument.ucBssIndex;
@@ -1197,9 +1225,10 @@ VOID WifiSysUpdateRa(RTMP_ADAPTER *pAd,
 	sta_rec->ConnectionState = STATE_CONNECTED;
 	sta_rec->EnableFeature = STA_REC_RA_UPDATE_FEATURE;
 	sta_rec->priv = tr_entry;
-	os_alloc_mem(NULL, (UCHAR **)&ra_parm, sizeof(CMD_STAREC_AUTO_RATE_UPDATE_T));
-	os_move_mem(ra_parm, prParam, sizeof(CMD_STAREC_AUTO_RATE_UPDATE_T));
-	wsys.priv = (VOID *)ra_parm;
+	if (!prParam)
+		return;
+	os_move_mem(&wsys.RaParam, prParam, sizeof(wsys.RaParam));
+	wsys.ra_param_valid = TRUE;
 	wsys.wdev = pEntry->wdev;
 	HW_WIFISYS_RA_UPDATE(pAd, &wsys);
 }

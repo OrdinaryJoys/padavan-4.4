@@ -719,17 +719,19 @@ VOID HW_AP_TXBF_TX_APPLY(struct _RTMP_ADAPTER *pAd, UCHAR enable)
 
 
 /*WIFI_SYS related HwCtrl CMD*/
-static UINT32 wifi_sys_queue_work(struct _RTMP_ADAPTER *ad, UINT32 id, struct WIFI_SYS_CTRL *wsys)
+static NDIS_STATUS wifi_sys_queue_work(struct _RTMP_ADAPTER *ad, UINT32 id, struct WIFI_SYS_CTRL *wsys)
 {
-	UINT32 ret = 0;
+	NDIS_STATUS ret;
 	HW_CTRL_TXD HwCtrlTxd;
 
 	if (in_interrupt()) {
 		MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 			("%s(): do not equeue wifi sys layer API to dispatch context!\n", __func__));
 		dump_stack();
-		return ret;
+		return NDIS_STATUS_FAILURE;
 	}
+	if (!wsys || !wsys->wdev || RtmpDmaQuarantined(ad))
+		return NDIS_STATUS_FAILURE;
 
 	HW_CTRL_TXD_BASIC(
 		ad,
@@ -747,92 +749,95 @@ static UINT32 wifi_sys_queue_work(struct _RTMP_ADAPTER *ad, UINT32 id, struct WI
 /*
 *
 */
-VOID HW_WIFISYS_OPEN(
+NDIS_STATUS HW_WIFISYS_OPEN(
 	RTMP_ADAPTER *pAd,
 	struct WIFI_SYS_CTRL *wsys)
 {
-	wifi_sys_queue_work(pAd, HWCMD_ID_WIFISYS_OPEN, wsys);
+	return wifi_sys_queue_work(pAd, HWCMD_ID_WIFISYS_OPEN, wsys);
 }
 
 
 /*
 *
 */
-VOID HW_WIFISYS_CLOSE(
+NDIS_STATUS HW_WIFISYS_CLOSE(
 	RTMP_ADAPTER *pAd,
 	struct WIFI_SYS_CTRL *wsys)
 {
-	wifi_sys_queue_work(pAd, HWCMD_ID_WIFISYS_CLOSE, wsys);
+	return wifi_sys_queue_work(pAd, HWCMD_ID_WIFISYS_CLOSE, wsys);
 }
 
 
 /*
 *
 */
-VOID HW_WIFISYS_LINKDOWN(
+NDIS_STATUS HW_WIFISYS_LINKDOWN(
 	RTMP_ADAPTER *pAd,
 	struct WIFI_SYS_CTRL *wsys)
 {
-	wifi_sys_queue_work(pAd, HWCMD_ID_WIFISYS_LINKDOWN, wsys);
+	return wifi_sys_queue_work(pAd, HWCMD_ID_WIFISYS_LINKDOWN, wsys);
 }
 
 
 /*
 *
 */
-VOID HW_WIFISYS_LINKUP(
+NDIS_STATUS HW_WIFISYS_LINKUP(
 	RTMP_ADAPTER *pAd,
 	struct WIFI_SYS_CTRL *wsys)
 {
-	wifi_sys_queue_work(pAd, HWCMD_ID_WIFISYS_LINKUP, wsys);
+	return wifi_sys_queue_work(pAd, HWCMD_ID_WIFISYS_LINKUP, wsys);
 }
 
 
 /*
 *
 */
-VOID HW_WIFISYS_PEER_LINKUP(
+NDIS_STATUS HW_WIFISYS_PEER_LINKUP(
 	RTMP_ADAPTER *pAd,
 	struct WIFI_SYS_CTRL *wsys)
 {
-	wifi_sys_queue_work(pAd, HWCMD_ID_WIFISYS_PEER_LINKUP, wsys);
+	return wifi_sys_queue_work(pAd, HWCMD_ID_WIFISYS_PEER_LINKUP, wsys);
 }
 
 
 /*
 *
 */
-VOID HW_WIFISYS_PEER_LINKDOWN(
+NDIS_STATUS HW_WIFISYS_PEER_LINKDOWN(
 	RTMP_ADAPTER *pAd,
 	struct WIFI_SYS_CTRL *wsys)
 {
-	wifi_sys_queue_work(pAd, HWCMD_ID_WIFISYS_PEER_LINKDOWN, wsys);
+	return wifi_sys_queue_work(pAd, HWCMD_ID_WIFISYS_PEER_LINKDOWN, wsys);
 }
 
 /*
 *
 */
-VOID HW_WIFISYS_PEER_UPDATE(
+NDIS_STATUS HW_WIFISYS_PEER_UPDATE(
 	RTMP_ADAPTER *pAd,
 	struct WIFI_SYS_CTRL *wsys)
 {
-	wifi_sys_queue_work(pAd, HWCMD_ID_WIFISYS_PEER_UPDATE, wsys);
+	return wifi_sys_queue_work(pAd, HWCMD_ID_WIFISYS_PEER_UPDATE, wsys);
 }
 
 /*
 * for ra update
 */
-VOID HW_WIFISYS_RA_UPDATE(
+NDIS_STATUS HW_WIFISYS_RA_UPDATE(
 	RTMP_ADAPTER *pAd,
 	struct WIFI_SYS_CTRL *wsys)
 {
 	UINT32 ret;
 
+	if (!wsys || !wsys->wdev || RtmpDmaQuarantined(pAd))
+		return NDIS_STATUS_FAILURE;
 	ret = HW_CTRL_BASIC_ENQ(pAd,
 							HWCMD_TYPE_WIFISYS,
 							HWCMD_ID_WIFISYS_PEER_UPDATE,
 							sizeof(struct WIFI_SYS_CTRL),
 							wsys);
+	return ret;
 }
 
 VOID HW_GET_TX_STATISTIC(

@@ -18,6 +18,7 @@
 #include "ra_switch.h"
 #include "raether_hwlro.h"
 #include "ra_ethtool.h"
+#include <linux/capability.h>
 
 #include "mtk_hnat/nf_hnat_mtk.h"
 
@@ -213,7 +214,8 @@ static int rt2880_eth_recv(struct net_device *dev,
 			   struct napi_struct *napi, int budget)
 {
 	struct END_DEVICE *ei_local = netdev_priv(dev);
-	struct PSEUDO_ADAPTER *p_ad = netdev_priv(ei_local->pseudo_dev);
+	struct PSEUDO_ADAPTER *p_ad = ei_local->pseudo_dev ?
+		netdev_priv(ei_local->pseudo_dev) : NULL;
 	struct sk_buff *rx_skb;
 	unsigned int length = 0;
 	int rx_processed = 0;
@@ -240,10 +242,18 @@ static int rt2880_eth_recv(struct net_device *dev,
 		    (rx_ring->rxd_info2.DDONE_bit == 0))
 			break;
 
+		/* Order descriptor fields after the device's completion ownership bit. */
+		dma_rmb();
+
 		rx_next_idx = (rx_dma_owner_idx + 1) % num_rx_desc;
 		rx_ring_next = &ei_local->rx_ring[0][rx_next_idx];
 		rx_data_next = ei_local->netrx_skb_data[0][rx_next_idx];
 		prefetch(rx_ring_next);
+
+		length = rx_ring->rxd_info2.PLEN0;
+		if (unlikely(length < ETH_HLEN || length > MAX_RX_LENGTH ||
+			     (rx_ring->rxd_info4.SP == 2 && !p_ad)))
+			goto skb_err;
 
 		/* We have to check the free memory size is big enough
 		 * before pass the packet to cpu
@@ -268,16 +278,18 @@ static int rt2880_eth_recv(struct net_device *dev,
 		rx_skb = raeth_build_skb(rx_data, skb_size);
 
 		if (unlikely(!rx_skb)) {
-			put_page(virt_to_head_page(rx_data));
+			/* The old buffer remains mapped and owned by this RX ring. */
+			dma_unmap_single(dev->dev.parent, dma_addr,
+					 MAX_RX_LENGTH, DMA_FROM_DEVICE);
+			raeth_free_skb_data(new_data);
 			pr_err("build_skb failed\n");
 			goto skb_err;
 		}
 		skb_reserve(rx_skb, NET_SKB_PAD + NET_IP_ALIGN);
 
-		length = rx_ring->rxd_info2.PLEN0;
 		dma_unmap_single(dev->dev.parent,
 				 rx_ring->rxd_info1.PDP0,
-				 length, DMA_FROM_DEVICE);
+				 MAX_RX_LENGTH, DMA_FROM_DEVICE);
 
 		prefetch(rx_skb->data);
 
@@ -373,7 +385,7 @@ static int rt2880_eth_recv(struct net_device *dev,
 		}
 #endif
 
-		if (rx_ring->rxd_info4.SP == 2) {
+		if (rx_ring->rxd_info4.SP == 2 && p_ad) {
 			p_ad->stat.rx_packets++;
 			p_ad->stat.rx_bytes += length;
 		} else {
@@ -418,7 +430,7 @@ static int rt2880_eth_recv(struct net_device *dev,
 
 skb_err:
 	/* rx packet from GE2 */
-	if (rx_ring->rxd_info4.SP == 2)
+	if (rx_ring->rxd_info4.SP == 2 && p_ad)
 		p_ad->stat.rx_dropped++;
 	else
 		ei_local->stat.rx_dropped++;
@@ -839,6 +851,14 @@ static void fe_dma_rx_cal_idx_init(struct END_DEVICE *ei_local)
 }
 #endif
 
+#define FE_DMA_PRX BIT(0)
+#define FE_DMA_QRX BIT(1)
+#define FE_DMA_PTX BIT(2)
+#define FE_DMA_QTX BIT(3)
+#define FE_DMA_EXTRA_RX BIT(4)
+
+static void ei_deinit_dma(struct net_device *dev);
+
 static inline int ei_init_ptx_prx(struct net_device *dev)
 {
 	int err;
@@ -850,20 +870,31 @@ static inline int ei_init_ptx_prx(struct net_device *dev)
 
 	err = fe_pdma_rx_dma_init(dev);
 	if (err)
-		return err;
+		goto fail;
+	ei_local->dma_stages |= FE_DMA_PRX;
 
 	if (ei_local->features & FE_HW_LRO) {
 		err = fe_hw_lro_init(dev);
-		if (err)
+		if (err) {
+			/* Optional constructor unwind is not proven; retain its owners. */
+			ei_local->dma_quarantined = true;
 			return err;
+		}
+		ei_local->dma_stages |= FE_DMA_EXTRA_RX;
 	} else if (ei_local->features & FE_RSS_4RING) {
 		err = fe_rss_4ring_init(dev);
-		if (err)
+		if (err) {
+			ei_local->dma_quarantined = true;
 			return err;
+		}
+		ei_local->dma_stages |= FE_DMA_EXTRA_RX;
 	} else if (ei_local->features & FE_RSS_2RING) {
 		err = fe_rss_2ring_init(dev);
-		if (err)
+		if (err) {
+			ei_local->dma_quarantined = true;
 			return err;
+		}
+		ei_local->dma_stages |= FE_DMA_EXTRA_RX;
 	}
 #ifdef CONFIG_RAETH_RW_PDMAPTR_FROM_VAR
 	fe_dma_rx_cal_idx_init(ei_local);
@@ -871,15 +902,14 @@ static inline int ei_init_ptx_prx(struct net_device *dev)
 
 	err = fe_pdma_tx_dma_init(dev);
 	if (err)
-		return err;
-
-	set_fe_pdma_glo_cfg();
-
-	/* enable RXD prefetch of ADMA */
-	SET_PDMA_LRO_RXD_PREFETCH_EN(ADMA_RXD_PREFETCH_EN |
-				     ADMA_MULTI_RXD_PREFETCH_EN);
+		goto fail;
+	ei_local->dma_stages |= FE_DMA_PTX;
 
 	return 0;
+
+fail:
+	ei_deinit_dma(dev);
+	return err;
 }
 
 static inline int ei_init_qtx_prx(struct net_device *dev)
@@ -897,24 +927,35 @@ static inline int ei_init_qtx_prx(struct net_device *dev)
 
 	err = fe_qdma_rx_dma_init(dev);
 	if (err)
-		return err;
+		goto fail;
+	ei_local->dma_stages |= FE_DMA_QRX;
 
 	err = fe_pdma_rx_dma_init(dev);
 	if (err)
-		return err;
+		goto fail;
+	ei_local->dma_stages |= FE_DMA_PRX;
 
 	if (ei_local->features & FE_HW_LRO) {
 		err = fe_hw_lro_init(dev);
-		if (err)
+		if (err) {
+			ei_local->dma_quarantined = true;
 			return err;
+		}
+		ei_local->dma_stages |= FE_DMA_EXTRA_RX;
 	} else if (ei_local->features & FE_RSS_4RING) {
 		err = fe_rss_4ring_init(dev);
-		if (err)
+		if (err) {
+			ei_local->dma_quarantined = true;
 			return err;
+		}
+		ei_local->dma_stages |= FE_DMA_EXTRA_RX;
 	} else if (ei_local->features & FE_RSS_2RING) {
 		err = fe_rss_2ring_init(dev);
-		if (err)
+		if (err) {
+			ei_local->dma_quarantined = true;
 			return err;
+		}
+		ei_local->dma_stages |= FE_DMA_EXTRA_RX;
 	}
 #ifdef CONFIG_RAETH_RW_PDMAPTR_FROM_VAR
 	fe_dma_rx_cal_idx_init(ei_local);
@@ -922,16 +963,14 @@ static inline int ei_init_qtx_prx(struct net_device *dev)
 
 	err = fe_qdma_tx_dma_init(dev);
 	if (err)
-		return err;
-
-	set_fe_pdma_glo_cfg();
-	set_fe_qdma_glo_cfg();
-
-	/* enable RXD prefetch of ADMA */
-	SET_PDMA_LRO_RXD_PREFETCH_EN(ADMA_RXD_PREFETCH_EN |
-				     ADMA_MULTI_RXD_PREFETCH_EN);
+		goto fail;
+	ei_local->dma_stages |= FE_DMA_QTX;
 
 	return 0;
+
+fail:
+	ei_deinit_dma(dev);
+	return err;
 }
 
 static inline int ei_init_qtx_qrx(struct net_device *dev)
@@ -945,7 +984,8 @@ static inline int ei_init_qtx_qrx(struct net_device *dev)
 
 	err = fe_qdma_rx_dma_init(dev);
 	if (err)
-		return err;
+		goto fail;
+	ei_local->dma_stages |= FE_DMA_QRX;
 
 #ifdef CONFIG_RAETH_RW_PDMAPTR_FROM_VAR
 	fe_dma_rx_cal_idx_init(ei_local);
@@ -953,16 +993,22 @@ static inline int ei_init_qtx_qrx(struct net_device *dev)
 
 	err = fe_qdma_tx_dma_init(dev);
 	if (err)
-		return err;
-
-	set_fe_qdma_glo_cfg();
+		goto fail;
+	ei_local->dma_stages |= FE_DMA_QTX;
 
 	return 0;
+
+fail:
+	ei_deinit_dma(dev);
+	return err;
 }
 
 static int ei_init_dma(struct net_device *dev)
 {
 	struct END_DEVICE *ei_local = netdev_priv(dev);
+
+	/* No constructor may publish a ring to an enabled inherited engine. */
+	ra2880stop(ei_local);
 
 	if ((ei_local->features & FE_QDMA_TX) &&
 	    (ei_local->features & FE_QDMA_RX))
@@ -978,24 +1024,56 @@ static void ei_deinit_dma(struct net_device *dev)
 {
 	struct END_DEVICE *ei_local = netdev_priv(dev);
 
-	if (ei_local->features & FE_QDMA_TX) {
+	if (ei_local->dma_stages & FE_DMA_QTX)
 		fe_qdma_tx_dma_deinit(dev);
-		fe_qdma_rx_dma_deinit(dev);
-	} else {
+	if (ei_local->dma_stages & FE_DMA_PTX)
 		fe_pdma_tx_dma_deinit(dev);
-	}
-
-	if (!(ei_local->features & FE_QDMA_RX))
+	if (ei_local->dma_stages & FE_DMA_PRX)
 		fe_pdma_rx_dma_deinit(dev);
-
-	if (ei_local->features & FE_HW_LRO)
-		fe_hw_lro_deinit(dev);
-	else if (ei_local->features & FE_RSS_4RING)
-		fe_rss_4ring_deinit(dev);
-	else if (ei_local->features & FE_RSS_2RING)
-		fe_rss_2ring_deinit(dev);
-
+	if (ei_local->dma_stages & FE_DMA_QRX)
+		fe_qdma_rx_dma_deinit(dev);
+	if (ei_local->dma_stages & FE_DMA_EXTRA_RX) {
+		if (ei_local->features & FE_HW_LRO)
+			fe_hw_lro_deinit(dev);
+		else if (ei_local->features & FE_RSS_4RING)
+			fe_rss_4ring_deinit(dev);
+		else if (ei_local->features & FE_RSS_2RING)
+			fe_rss_2ring_deinit(dev);
+	}
+	ei_local->dma_stages = 0;
 	pr_info("Free TX/RX Ring Memory!\n");
+}
+
+static void ei_start_dma(struct net_device *dev)
+{
+	struct END_DEVICE *ei_local = netdev_priv(dev);
+
+	if (!(ei_local->features & FE_QDMA_RX)) {
+		set_fe_pdma_glo_cfg();
+		SET_PDMA_LRO_RXD_PREFETCH_EN(ADMA_RXD_PREFETCH_EN |
+					     ADMA_MULTI_RXD_PREFETCH_EN);
+	}
+	if (ei_local->features & FE_QDMA_TX)
+		set_fe_qdma_glo_cfg();
+}
+
+static int ei_stop_dma(struct net_device *dev)
+{
+	struct END_DEVICE *ei_local = netdev_priv(dev);
+	int pdma_err, qdma_err = 0;
+
+	ra2880stop(ei_local);
+	pdma_err = fe_pdma_wait_dma_idle();
+	if (ei_local->features & FE_QDMA)
+		qdma_err = fe_qdma_wait_dma_idle();
+	if (pdma_err || qdma_err) {
+		/* Keep all owners and the module pin; a timeout is not DMA retirement. */
+		ei_local->dma_quarantined = true;
+		pr_err("%s: DMA stop failed (%d/%d); keeping rings, reopen blocked\n",
+		       dev->name, pdma_err, qdma_err);
+		return pdma_err ? pdma_err : qdma_err;
+	}
+	return 0;
 }
 
 /* MT7623 PSE reset workaround to do PSE reset */
@@ -1761,16 +1839,25 @@ static inline void ei_receive(void)
 	int rx_processed;
 	unsigned long flags;
 
+	if (!READ_ONCE(ei_local->irq_active))
+		return;
+
 	if (ei_local->tx_ring_full == 0) {
 		rx_processed = ei_local->ei_eth_recv(dev, NULL,
 						     NUM_RX_MAX_PROCESS);
 		if (rx_processed > NUM_RX_MAX_PROCESS) {
+			if (!READ_ONCE(ei_local->irq_active))
+				return;
 			if (likely(ei_local->features & FE_INT_TASKLET))
 				tasklet_hi_schedule(&ei_local->rx_tasklet);
 			else
 				schedule_work(&ei_local->rx_wq);
 		} else {
 			spin_lock_irqsave(&ei_local->irq_lock, flags);
+			if (!ei_local->irq_active) {
+				spin_unlock_irqrestore(&ei_local->irq_lock, flags);
+				return;
+			}
 			/* Enable RX interrupt */
 			reg_int_mask = sys_reg_read(ei_local->fe_rx_int_enable);
 			sys_reg_write(ei_local->fe_rx_int_enable,
@@ -1778,6 +1865,8 @@ static inline void ei_receive(void)
 			spin_unlock_irqrestore(&ei_local->irq_lock, flags);
 		}
 	} else {
+		if (!READ_ONCE(ei_local->irq_active))
+			return;
 		if (likely(ei_local->features & FE_INT_TASKLET))
 			tasklet_schedule(&ei_local->rx_tasklet);
 		else
@@ -1795,129 +1884,196 @@ static void ei_receive_workq(struct work_struct *work)
 	ei_receive();
 }
 
+static int fe_int_disable(struct net_device *dev);
+
+static int fe_request_irq(struct END_DEVICE *ei_local, unsigned int bit,
+	unsigned int irq, irq_handler_t handler, unsigned long flags,
+	const char *name, void *data)
+{
+	int err = request_irq(irq, handler, flags, name, data);
+
+	if (!err)
+		ei_local->irq_requested |= bit;
+	return err;
+}
+
 static int fe_int_enable(struct net_device *dev)
 {
 	struct END_DEVICE *ei_local = netdev_priv(dev);
 	struct device_node *np = ei_local->switch_np;
-	struct platform_device *pdev = of_find_device_by_node(np);
+	struct platform_device *pdev = NULL;
 	int err0 = 0, err1 = 0, err2 = 0, err3 = 0;
 	struct mtk_gsw *gsw;
 	unsigned int reg_val = 0;
 	unsigned long flags;
 
+	if (ei_local->irq_active || ei_local->irq_requested)
+		return -EBUSY;
+	sys_reg_write(RAETH_FE_INT_ENABLE, 0);
+	if (ei_local->features & FE_QDMA)
+		sys_reg_write(QFE_INT_ENABLE, 0);
+	sys_reg_write(FE_INT_ENABLE2, 0);
+	if (ei_local->features & FE_INT_TASKLET) {
+		tasklet_init(&ei_local->rx_tasklet, ei_receive_tasklet, 0);
+	} else if (ei_local->features & FE_INT_WORKQ) {
+		INIT_WORK(&ei_local->rx_wq, ei_receive_workq);
+	} else {
+		if (ei_local->features & FE_INT_NAPI_TX_RX) {
+			napi_enable(&ei_local->napi_tx);
+			napi_enable(&ei_local->napi_rx);
+		} else if (ei_local->features & FE_INT_NAPI_RX_ONLY) {
+			if (ei_local->features & FE_RSS_4RING) {
+				napi_enable(&ei_local->napi_rx_rss0);
+				napi_enable(&ei_local->napi_rx_rss1);
+				napi_enable(&ei_local->napi_rx_rss2);
+				napi_enable(&ei_local->napi_rx_rss3);
+			} else if (ei_local->features & FE_RSS_2RING) {
+				napi_enable(&ei_local->napi_rx_rss0);
+				napi_enable(&ei_local->napi_rx_rss1);
+			} else {
+				napi_enable(&ei_local->napi_rx);
+			}
+		} else {
+			napi_enable(&ei_local->napi);
+		}
+	}
+
+	ei_local->irq_active = true;
+
 	if (ei_local->architecture & (GE1_SGMII_AN | GE2_SGMII_AN)) {
-		err0 = request_irq(ei_local->irq0, ei_fe_interrupt,
+		err0 = fe_request_irq(ei_local, BIT(0), ei_local->irq0, ei_fe_interrupt,
 				   MT_TRIGGER_LOW, dev->name, dev);
 	} else if (ei_local->features & FE_INT_NAPI) {
 		if (ei_local->features & FE_INT_NAPI_TX_RX)
 			err0 =
-			    request_irq(ei_local->irq0, ei_interrupt_napi_sep,
+			    fe_request_irq(ei_local, BIT(0), ei_local->irq0, ei_interrupt_napi_sep,
 					MT_TRIGGER_LOW, dev->name, dev);
 		else if (ei_local->features & FE_INT_NAPI_RX_ONLY)
 			err0 =
-			    request_irq(ei_local->irq0, ei_interrupt_napi_rx_only,
+			    fe_request_irq(ei_local, BIT(0), ei_local->irq0, ei_interrupt_napi_rx_only,
 					MT_TRIGGER_LOW, dev->name, dev);
 		else
 			err0 =
-			    request_irq(ei_local->irq0, ei_interrupt_napi,
+			    fe_request_irq(ei_local, BIT(0), ei_local->irq0, ei_interrupt_napi,
 					MT_TRIGGER_LOW, dev->name, dev);
 	} else
 		err0 =
-		    request_irq(ei_local->irq0, ei_interrupt, MT_TRIGGER_LOW,
+		    fe_request_irq(ei_local, BIT(0), ei_local->irq0, ei_interrupt, MT_TRIGGER_LOW,
 				dev->name, dev);
 
 	if (ei_local->features & FE_IRQ_SEPARATE) {
 		if (ei_local->features & FE_INT_NAPI) {
 			if (ei_local->features & FE_INT_NAPI_TX_RX) {
 				err1 =
-				    request_irq(ei_local->irq1,
+				    fe_request_irq(ei_local, BIT(1), ei_local->irq1,
 						ei_tx_interrupt_napi_sep,
 						MT_TRIGGER_LOW,
 						"eth_tx", dev);
 				err2 =
-				    request_irq(ei_local->irq2,
+				    fe_request_irq(ei_local, BIT(2), ei_local->irq2,
 						ei_rx_interrupt_napi_sep,
 						MT_TRIGGER_LOW,
 						"eth_rx", dev);
 			} else if (ei_local->features & FE_INT_NAPI_RX_ONLY) {
 				err1 =
-				    request_irq(ei_local->irq1,
+				    fe_request_irq(ei_local, BIT(1), ei_local->irq1,
 						ei_tx_interrupt,
 						MT_TRIGGER_LOW,
 						"eth_tx", dev);
 				if (ei_local->features & FE_RSS_4RING) {
 					err2 =
-					    request_irq(ei_local->irq2,
+					    fe_request_irq(ei_local, BIT(2), ei_local->irq2,
 							ei_rx_interrupt_napi_g0,
 							MT_TRIGGER_LOW,
 							"eth_rx_g0", dev);
 					err3 =
-					    request_irq(ei_local->irq3,
+					    fe_request_irq(ei_local, BIT(3), ei_local->irq3,
 							ei_rx_interrupt_napi_g1,
 							MT_TRIGGER_LOW,
 							"eth_rx_g1", dev);
 				} else if (ei_local->features & FE_RSS_2RING) {
 					err2 =
-					    request_irq(ei_local->irq2,
+					    fe_request_irq(ei_local, BIT(2), ei_local->irq2,
 							ei_rx_interrupt_napi_rss0,
 							MT_TRIGGER_LOW,
 							"eth_rx_0", dev);
 					err3 =
-					    request_irq(ei_local->irq3,
+					    fe_request_irq(ei_local, BIT(3), ei_local->irq3,
 							ei_rx_interrupt_napi_rss1,
 							MT_TRIGGER_LOW,
 							"eth_rx_1", dev);
 				} else {
 					err2 =
-					    request_irq(ei_local->irq2,
+					    fe_request_irq(ei_local, BIT(2), ei_local->irq2,
 							ei_rx_interrupt_napi_sep,
 							MT_TRIGGER_LOW,
 							"eth_rx", dev);
 				}
 			} else {
 				err1 =
-				    request_irq(ei_local->irq1,
+				    fe_request_irq(ei_local, BIT(1), ei_local->irq1,
 						ei_tx_interrupt_napi,
 						MT_TRIGGER_LOW,
 						"eth_tx", dev);
 				err2 =
-				    request_irq(ei_local->irq2,
+				    fe_request_irq(ei_local, BIT(2), ei_local->irq2,
 						ei_rx_interrupt_napi,
 						MT_TRIGGER_LOW,
 						"eth_rx", dev);
 			}
 		} else {
 			err1 =
-			    request_irq(ei_local->irq1, ei_tx_interrupt,
+			    fe_request_irq(ei_local, BIT(1), ei_local->irq1, ei_tx_interrupt,
 					MT_TRIGGER_LOW, "eth_tx", dev);
 			err2 =
-			    request_irq(ei_local->irq2, ei_rx_interrupt,
+			    fe_request_irq(ei_local, BIT(2), ei_local->irq2, ei_rx_interrupt,
 					MT_TRIGGER_LOW, "eth_rx", dev);
 		}
 	}
-	if (err0 | err1 | err2 | err3)
-		return (err0 | err1 | err2 | err3);
+	if (err0 || err1 || err2 || err3) {
+		err0 = err0 ? err0 : (err1 ? err1 : (err2 ? err2 : err3));
+		goto fail;
+	}
 
 	if (ei_local->chip_name == MT7623_FE) {
+		pdev = of_find_device_by_node(np);
+		if (!pdev) {
+			err0 = -ENODEV;
+			goto fail;
+		}
 		gsw = platform_get_drvdata(pdev);
-		if (request_threaded_irq(gsw->irq, gsw_interrupt, NULL, 0,
-					 "gsw", NULL))
-			pr_err("fail to request irq\n");
+		if (!gsw) {
+			put_device(&pdev->dev);
+			err0 = -ENODEV;
+			goto fail;
+		}
+		ei_local->switch_irq = gsw->irq;
+		err0 = request_threaded_irq(gsw->irq, gsw_interrupt, NULL, 0,
+					    "gsw", NULL);
+		put_device(&pdev->dev);
+		if (err0)
+			goto fail;
+		ei_local->irq_requested |= BIT(4);
 
 		/* enable switch link change intr */
 		mii_mgr_write(31, 0x7008, 0x1f);
 	} else if (ei_local->chip_name == MT7621_FE) {
-		if (request_threaded_irq(ei_local->esw_irq, gsw_interrupt, NULL, 0,
-					 "gsw", NULL))
-			pr_err("fail to request irq\n");
+		ei_local->switch_irq = ei_local->esw_irq;
+		err0 = request_threaded_irq(ei_local->switch_irq, gsw_interrupt,
+					    NULL, 0, "gsw", NULL);
+		if (err0)
+			goto fail;
+		ei_local->irq_requested |= BIT(4);
 
 		mii_mgr_write(31, 0x7008, 0x1f);
 	}
 
 	if (ei_local->architecture & RAETH_ESW) {
-		err3 = request_irq(ei_local->esw_irq, esw_interrupt, MT_TRIGGER_LOW, "esw", dev);
-		if (err3)
-			return err3;
+		err3 = fe_request_irq(ei_local, BIT(5), ei_local->esw_irq, esw_interrupt, MT_TRIGGER_LOW, "esw", dev);
+		if (err3) {
+			err0 = err3;
+			goto fail;
+		}
 	}
 
 	spin_lock_irqsave(&ei_local->irq_lock, flags);
@@ -2023,55 +2179,45 @@ static int fe_int_enable(struct net_device *dev)
 			sys_reg_write(FE_INT_GRP, 0x21021000);
 	}
 
-	if (ei_local->features & FE_INT_TASKLET) {
-		tasklet_init(&ei_local->rx_tasklet, ei_receive_tasklet, 0);
-	} else if (ei_local->features & FE_INT_WORKQ) {
-		INIT_WORK(&ei_local->rx_wq, ei_receive_workq);
-	} else {
-		if (ei_local->features & FE_INT_NAPI_TX_RX) {
-			napi_enable(&ei_local->napi_tx);
-			napi_enable(&ei_local->napi_rx);
-		} else if (ei_local->features & FE_INT_NAPI_RX_ONLY) {
-			if (ei_local->features & FE_RSS_4RING) {
-				napi_enable(&ei_local->napi_rx_rss0);
-				napi_enable(&ei_local->napi_rx_rss1);
-				napi_enable(&ei_local->napi_rx_rss2);
-				napi_enable(&ei_local->napi_rx_rss3);
-			} else if (ei_local->features & FE_RSS_2RING) {
-				napi_enable(&ei_local->napi_rx_rss0);
-				napi_enable(&ei_local->napi_rx_rss1);
-			} else {
-				napi_enable(&ei_local->napi_rx);
-			}
-		} else {
-			napi_enable(&ei_local->napi);
-		}
-	}
-
 	spin_unlock_irqrestore(&ei_local->irq_lock, flags);
 
 	return 0;
+
+fail:
+	fe_int_disable(dev);
+	return err0;
 }
 
 static int fe_int_disable(struct net_device *dev)
 {
 	struct END_DEVICE *ei_local = netdev_priv(dev);
+	unsigned long flags;
+	bool active;
 
-	/*always request irq0*/
-	free_irq(ei_local->irq0, dev);
+	spin_lock_irqsave(&ei_local->irq_lock, flags);
+	active = ei_local->irq_active;
+	WRITE_ONCE(ei_local->irq_active, false);
 
-	if (ei_local->features & FE_IRQ_SEPARATE) {
+	sys_reg_write(RAETH_FE_INT_ENABLE, 0);
+	if (ei_local->features & FE_QDMA)
+		sys_reg_write(QFE_INT_ENABLE, 0);
+	sys_reg_write(FE_INT_ENABLE2, 0);
+	spin_unlock_irqrestore(&ei_local->irq_lock, flags);
+	if (ei_local->irq_requested & BIT(0))
+		free_irq(ei_local->irq0, dev);
+	if (ei_local->irq_requested & BIT(1))
 		free_irq(ei_local->irq1, dev);
+	if (ei_local->irq_requested & BIT(2))
 		free_irq(ei_local->irq2, dev);
-	}
-
-	if (ei_local->architecture & RAETH_ESW || ei_local->chip_name == MT7621_FE)
-		free_irq(ei_local->esw_irq, dev);
-
-	if (ei_local->features & (FE_RSS_4RING | FE_RSS_2RING))
+	if (ei_local->irq_requested & BIT(3))
 		free_irq(ei_local->irq3, dev);
-
-	cancel_work_sync(&ei_local->reset_task);
+	if (ei_local->irq_requested & BIT(4))
+		free_irq(ei_local->switch_irq, NULL);
+	if (ei_local->irq_requested & BIT(5))
+		free_irq(ei_local->esw_irq, dev);
+	ei_local->irq_requested = 0;
+	if (!active)
+		return 0;
 
 	if (ei_local->features & FE_INT_WORKQ)
 		cancel_work_sync(&ei_local->rx_wq);
@@ -2099,6 +2245,11 @@ static int fe_int_disable(struct net_device *dev)
 		}
 	}
 
+	/* A completion already running at mask time may have rearmed RX. */
+	sys_reg_write(RAETH_FE_INT_ENABLE, 0);
+	if (ei_local->features & FE_QDMA)
+		sys_reg_write(QFE_INT_ENABLE, 0);
+	sys_reg_write(FE_INT_ENABLE2, 0);
 	return 0;
 }
 
@@ -2310,27 +2461,19 @@ struct net_device_stats *virtualif_get_stats(struct net_device *dev)
 	return &p_ad->stat;
 }
 
+int ei_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd);
+
 int virtualif_ioctl(struct net_device *net_dev, struct ifreq *ifr, int cmd)
 {
-	struct ra_mii_ioctl_data mii;
-	unsigned long ret;
+	struct PSEUDO_ADAPTER *p_ad = netdev_priv(net_dev);
 
-	switch (cmd) {
-	case RAETH_MII_READ:
-		ret = copy_from_user(&mii, ifr->ifr_data, sizeof(mii));
-		mii_mgr_read(mii.phy_id, mii.reg_num, &mii.val_out);
-		ret = copy_to_user(ifr->ifr_data, &mii, sizeof(mii));
-		break;
-
-	case RAETH_MII_WRITE:
-		ret = copy_from_user(&mii, ifr->ifr_data, sizeof(mii));
-		mii_mgr_write(mii.phy_id, mii.reg_num, mii.val_in);
-		break;
-	default:
+	/* Preserve the pseudo interface's narrow ABI, sharing authorization,
+	 * checked copies and error propagation with its real hardware owner. */
+	if (cmd != RAETH_MII_READ && cmd != RAETH_MII_WRITE)
 		return -EOPNOTSUPP;
-	}
-
-	return 0;
+	if (!p_ad || !p_ad->raeth_dev)
+		return -ENODEV;
+	return ei_ioctl(p_ad->raeth_dev, ifr, cmd);
 }
 
 static int ei_change_mtu(struct net_device *dev, int new_mtu)
@@ -2550,10 +2693,15 @@ int ei_open(struct net_device *dev)
 		return -ENXIO;
 	}
 
+	if (ei_local->dma_quarantined || ei_local->module_reserved)
+		return -EBUSY;
+
 	if (!try_module_get(THIS_MODULE)) {
 		pr_err("%s: Cannot reserve module\n", __func__);
 		return -1;
 	}
+
+	ei_local->module_reserved = true;
 
 	pr_info("Raeth %s (", RAETH_VERSION);
 	if (ei_local->features & FE_INT_NAPI)
@@ -2568,7 +2716,7 @@ int ei_open(struct net_device *dev)
 
 	err = ei_init_dma(dev);
 	if (err)
-		return err;
+		goto fail_module;
 
 	if (ei_local->chip_name != MT7621_FE) {
 		fe_gmac_reset();
@@ -2591,14 +2739,12 @@ int ei_open(struct net_device *dev)
 	    (ei_local->features & FE_HW_LRO)) {
 		ei_local->kreset_task =
 		    kthread_create(fe_reset_thread, NULL, "FE_reset_kthread");
-		if (IS_ERR(ei_local->kreset_task))
-			return PTR_ERR(ei_local->kreset_task);
-		wake_up_process(ei_local->kreset_task);
+		if (IS_ERR(ei_local->kreset_task)) {
+			err = PTR_ERR(ei_local->kreset_task);
+			ei_local->kreset_task = NULL;
+			goto fail_dma;
+		}
 	}
-
-	netif_start_queue(dev);
-
-	fe_int_enable(dev);
 
 	/*set hw my mac address*/
 	set_mac_address(dev->dev_addr);
@@ -2613,48 +2759,82 @@ int ei_open(struct net_device *dev)
 			if (mac_to_gigaphy_mode_addr2 == 0) {
 				ei_local->kphy_poll_task =
 				    kthread_create(phy_polling_thread, NULL, "phy_polling_kthread");
-				if (IS_ERR(ei_local->kphy_poll_task))
-					return PTR_ERR(ei_local->kphy_poll_task);
-				wake_up_process(ei_local->kphy_poll_task);
+				if (IS_ERR(ei_local->kphy_poll_task)) {
+					err = PTR_ERR(ei_local->kphy_poll_task);
+					ei_local->kphy_poll_task = NULL;
+					goto fail_dma;
+				}
 			}
 		} else if (ei_local->architecture & LEOPARD_EPHY_GMII) {
 			mii_mgr_write(0, 9, 0x200);
 			mii_mgr_write(0, 0, 0x1340);
 		}
 	}
+	err = fe_int_enable(dev);
+	if (err)
+		goto fail_dma;
+	ei_start_dma(dev);
+	if (ei_local->kreset_task)
+		wake_up_process(ei_local->kreset_task);
+	if (ei_local->kphy_poll_task)
+		wake_up_process(ei_local->kphy_poll_task);
+	netif_start_queue(dev);
 	return 0;
+
+fail_dma:
+	/* No DMA enable occurs until all fallible open stages have succeeded. */
+	if (ei_local->kreset_task) {
+		kthread_stop(ei_local->kreset_task);
+		ei_local->kreset_task = NULL;
+	}
+	if (ei_local->kphy_poll_task) {
+		kthread_stop(ei_local->kphy_poll_task);
+		ei_local->kphy_poll_task = NULL;
+	}
+	ei_deinit_dma(dev);
+fail_module:
+	if (!ei_local->dma_quarantined) {
+		ei_local->module_reserved = false;
+		module_put(THIS_MODULE);
+	}
+	return err;
 }
 
 int ei_close(struct net_device *dev)
 {
 	struct END_DEVICE *ei_local = netdev_priv(dev);
+	int err;
 
-	fe_reset();
+	if (ei_local->dma_quarantined)
+		return -EBUSY;
+	if (!ei_local->module_reserved)
+		return 0;
 
-	if ((ei_local->chip_name == MT7623_FE) &&
-	    (ei_local->features & FE_HW_LRO))
-		kthread_stop(ei_local->kreset_task);
-
-	if (ei_local->chip_name == LEOPARD_FE) {
-		if (ei_local->architecture & GE2_RGMII_AN)
-			kthread_stop(ei_local->kphy_poll_task);
-	}
-
-	netif_stop_queue(dev);
-	ra2880stop(ei_local);
-
-	fe_int_disable(dev);
-
-	if (ei_local->features & FE_GE2_SUPPORT)
+	/* Wait for any in-flight xmit before inspecting or releasing DMA owners. */
+	netif_tx_disable(dev);
+	if ((ei_local->features & FE_GE2_SUPPORT) && ei_local->pseudo_dev) {
+		netif_tx_disable(ei_local->pseudo_dev);
 		virtualif_close(ei_local->pseudo_dev);
-
+	}
+	if (ei_local->kreset_task) {
+		kthread_stop(ei_local->kreset_task);
+		ei_local->kreset_task = NULL;
+	}
+	if (ei_local->kphy_poll_task) {
+		kthread_stop(ei_local->kphy_poll_task);
+		ei_local->kphy_poll_task = NULL;
+	}
+	/* Mask and synchronize IRQ/BH users before the final idle observation. */
+	fe_int_disable(dev);
+	err = ei_stop_dma(dev);
+	if (err)
+		return err;
 	ei_deinit_dma(dev);
-
+	fe_reset();
 	if (ei_local->chip_name == MT7622_FE)
 		fe_sw_deinit(ei_local);
-
+	ei_local->module_reserved = false;
 	module_put(THIS_MODULE);
-
 	return 0;
 }
 
@@ -2718,54 +2898,100 @@ int ei_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 	unsigned int offset = 0;
 	unsigned int value = 0;
 	int ret = 0;
-	unsigned long result;
+	unsigned long flags;
 	struct END_DEVICE *ei_local = netdev_priv(dev);
 	struct ra_mii_ioctl_data mii;
 	char ip_tmp[IP4_ADDR_LEN];
+	void *request;
+	size_t request_size;
+	bool reply = false;
 
-	spin_lock_irq(&ei_local->page_lock);
+	/* The core forwards private netdev ioctls without a capability check. */
+	if (!capable(CAP_NET_ADMIN))
+		return -EPERM;
+	if (READ_ONCE(ei_local->dma_quarantined))
+		return -EBUSY;
+	/* User copies may fault and sleep. Marshal before any IRQ/spin lock;
+	 * dev_ioctl already serializes this transaction with open/close via RTNL. */
+	switch (cmd) {
+	case RAETH_MII_READ:
+	case RAETH_MII_WRITE:
+	case RAETH_MII_READ_CL45:
+	case RAETH_MII_WRITE_CL45:
+		request = &mii;
+		request_size = sizeof(mii);
+		reply = cmd == RAETH_MII_READ || cmd == RAETH_MII_READ_CL45;
+		break;
+	case RAETH_ESW_REG_READ:
+	case RAETH_ESW_REG_WRITE:
+	case RAETH_ESW_PHY_DUMP:
+		request = &reg;
+		request_size = sizeof(reg);
+		reply = cmd == RAETH_ESW_REG_READ;
+		break;
+	case RAETH_ESW_INGRESS_RATE:
+	case RAETH_ESW_EGRESS_RATE:
+		request = &ratelimit;
+		request_size = sizeof(ratelimit);
+		break;
+	case RAETH_SET_LAN_IP:
+		request = ip_tmp;
+		request_size = sizeof(ip_tmp);
+		break;
+	case RAETH_SW_IOCTL:
+		request = &ioctl_data;
+		request_size = sizeof(ioctl_data);
+		break;
+	case RAETH_QDMA_IOCTL:
+		request = &qdma_data;
+		request_size = sizeof(qdma_data);
+		break;
+	case RAETH_EPHY_IOCTL:
+		request = &ephy_data;
+		request_size = sizeof(ephy_data);
+		break;
+	default:
+		return -EOPNOTSUPP;
+	}
+	if (copy_from_user(request, ifr->ifr_data, request_size))
+		return -EFAULT;
+
 
 	switch (cmd) {
 	case RAETH_MII_READ:
-		result = copy_from_user(&mii, ifr->ifr_data, sizeof(mii));
-		mii_mgr_read(mii.phy_id, mii.reg_num, &mii.val_out);
-		result = copy_to_user(ifr->ifr_data, &mii, sizeof(mii));
+		if (!mii_mgr_read(mii.phy_id, mii.reg_num, &mii.val_out))
+			ret = -EIO;
 		break;
 
 	case RAETH_MII_WRITE:
-		result = copy_from_user(&mii, ifr->ifr_data, sizeof(mii));
-		mii_mgr_write(mii.phy_id, mii.reg_num, mii.val_in);
+		if (!mii_mgr_write(mii.phy_id, mii.reg_num, mii.val_in))
+			ret = -EIO;
 		break;
 	case RAETH_MII_READ_CL45:
-		result = copy_from_user(&mii, ifr->ifr_data, sizeof(mii));
-		mii_mgr_read_cl45(mii.port_num, mii.dev_addr, mii.reg_addr,
-				  &mii.val_out);
-		result = copy_to_user(ifr->ifr_data, &mii, sizeof(mii));
+		if (!mii_mgr_read_cl45(mii.port_num, mii.dev_addr, mii.reg_addr,
+				  &mii.val_out))
+			ret = -EIO;
 		break;
 	case RAETH_MII_WRITE_CL45:
-		result = copy_from_user(&mii, ifr->ifr_data, sizeof(mii));
-		mii_mgr_write_cl45(mii.port_num, mii.dev_addr, mii.reg_addr,
-				   mii.val_in);
+		if (!mii_mgr_write_cl45(mii.port_num, mii.dev_addr, mii.reg_addr,
+				   mii.val_in))
+			ret = -EIO;
 		break;
 	case RAETH_ESW_REG_READ:
-		result = copy_from_user(&reg, ifr->ifr_data, sizeof(reg));
-		if (reg.off > REG_ESW_MAX) {
+		if (reg.off > REG_ESW_MAX || (reg.off & 3)) {
 			ret = -EINVAL;
 			break;
 		}
 		reg.val = sys_reg_read(RALINK_ETH_SW_BASE + reg.off);
-		result = copy_to_user(ifr->ifr_data, &reg, sizeof(reg));
 		break;
 	case RAETH_ESW_REG_WRITE:
-		result = copy_from_user(&reg, ifr->ifr_data, sizeof(reg));
-		if (reg.off > REG_ESW_MAX) {
+		if (reg.off > REG_ESW_MAX || (reg.off & 3)) {
 			ret = -EINVAL;
 			break;
 		}
 		sys_reg_write(RALINK_ETH_SW_BASE + reg.off, reg.val);
 		break;
 	case RAETH_ESW_PHY_DUMP:
-		result = copy_from_user(&reg, ifr->ifr_data, sizeof(reg));
 		/* SPEC defined Register 0~15
 		 * Global Register 16~31 for each page
 		 * Local Register 16~31 for each page
@@ -2826,8 +3052,6 @@ int ei_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 		break;
 
 	case RAETH_ESW_INGRESS_RATE:
-		result = copy_from_user(&ratelimit, ifr->ifr_data,
-					sizeof(ratelimit));
 		offset = 0x1800 + (0x100 * ratelimit.port);
 		value = sys_reg_read(RALINK_ETH_SW_BASE + offset);
 
@@ -2856,8 +3080,6 @@ int ei_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 		break;
 
 	case RAETH_ESW_EGRESS_RATE:
-		result = copy_from_user(&ratelimit, ifr->ifr_data,
-					sizeof(ratelimit));
 		offset = 0x1040 + (0x100 * ratelimit.port);
 		value = sys_reg_read(RALINK_ETH_SW_BASE + offset);
 
@@ -2886,7 +3108,10 @@ int ei_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 		break;
 
 	case RAETH_SET_LAN_IP:
-		result = copy_from_user(ip_tmp, ifr->ifr_data, IP4_ADDR_LEN);
+		if (!memchr(ip_tmp, 0, sizeof(ip_tmp))) {
+			ret = -EINVAL;
+			break;
+		}
 		strncpy(ei_local->lan_ip4_addr, ip_tmp, IP4_ADDR_LEN);
 		pr_info("RAETH_SET_LAN_IP: %s\n", ei_local->lan_ip4_addr);
 
@@ -2898,27 +3123,23 @@ int ei_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 		break;
 
 	case RAETH_SW_IOCTL:
-		ret =
-		    copy_from_user(&ioctl_data, ifr->ifr_data,
-				   sizeof(ioctl_data));
 		sw_ioctl(&ioctl_data);
 		break;
 
 	case RAETH_QDMA_IOCTL:
 
-		ret =
-		    copy_from_user(&qdma_data, ifr->ifr_data,
-				   sizeof(qdma_data));
-		ei_qdma_ioctl(dev, ifr, &qdma_data);
+		/* Only the QDMA page + TX-shared table transaction needs page_lock.
+		 * Its helper accepts a kernel request and performs no user access. */
+		reply = qdma_data.cmd == RAETH_QDMA_REG_READ;
+		spin_lock_irqsave(&ei_local->page_lock, flags);
+		ret = ei_qdma_ioctl(dev, ifr, &qdma_data);
+		spin_unlock_irqrestore(&ei_local->page_lock, flags);
 
 		break;
 
 	case RAETH_EPHY_IOCTL:
 
-		ret =
-		    copy_from_user(&ephy_data, ifr->ifr_data,
-				   sizeof(ephy_data));
-		ephy_ioctl(dev, ifr, &ephy_data);
+		ret = ephy_ioctl(dev, ifr, &ephy_data);
 
 		break;
 
@@ -2927,7 +3148,8 @@ int ei_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 		break;
 	}
 
-	spin_unlock_irq(&ei_local->page_lock);
+	if (!ret && reply && copy_to_user(ifr->ifr_data, request, request_size))
+		return -EFAULT;
 	return ret;
 }
 

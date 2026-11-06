@@ -6,12 +6,13 @@
 
 static NTSTATUS hw_ctrl_flow_v1_open(struct WIFI_SYS_CTRL *wsys)
 {
+	NTSTATUS status;
 	struct wifi_dev *wdev = wsys->wdev;
 	struct _RTMP_ADAPTER *ad = wdev->sys_handle;
 	struct _DEV_INFO_CTRL_T *devinfo =  &wsys->DevInfoCtrl;
 
 	if (devinfo->EnableFeature) {
-		AsicDevInfoUpdate(
+		status = AsicDevInfoUpdate(
 			ad,
 			devinfo->OwnMacIdx,
 			devinfo->OwnMacAddr,
@@ -19,10 +20,13 @@ static NTSTATUS hw_ctrl_flow_v1_open(struct WIFI_SYS_CTRL *wsys)
 			devinfo->Active,
 			devinfo->EnableFeature
 		);
+		if (status != NDIS_STATUS_SUCCESS || RtmpDmaQuarantined(ad))
+			return status != NDIS_STATUS_SUCCESS ? status : NDIS_STATUS_FAILURE;
 		/*update devinfo to wdev*/
 		wifi_sys_update_devinfo(ad, wdev, devinfo);
 	}
 
+	wlan_operate_set_state(wdev, WLAN_OPER_STATE_VALID);
 	return NDIS_STATUS_SUCCESS;
 }
 
@@ -31,12 +35,13 @@ static NTSTATUS hw_ctrl_flow_v1_open(struct WIFI_SYS_CTRL *wsys)
 */
 static NTSTATUS hw_ctrl_flow_v1_close(struct WIFI_SYS_CTRL *wsys)
 {
+	NTSTATUS status;
 	struct wifi_dev *wdev = wsys->wdev;
 	struct _RTMP_ADAPTER *ad = (PRTMP_ADAPTER)wdev->sys_handle;
 	struct _DEV_INFO_CTRL_T *devinfo =  &wsys->DevInfoCtrl;
 
 	if (devinfo->EnableFeature) {
-		AsicDevInfoUpdate(
+		status = AsicDevInfoUpdate(
 			ad,
 			devinfo->OwnMacIdx,
 			devinfo->OwnMacAddr,
@@ -44,9 +49,13 @@ static NTSTATUS hw_ctrl_flow_v1_close(struct WIFI_SYS_CTRL *wsys)
 			devinfo->Active,
 			devinfo->EnableFeature
 		);
+		if (status != NDIS_STATUS_SUCCESS || RtmpDmaQuarantined(ad))
+			return status != NDIS_STATUS_SUCCESS ? status : NDIS_STATUS_FAILURE;
 		/*update devinfo to wdev*/
 		wifi_sys_update_devinfo(ad, wdev, devinfo);
 	}
+	wlan_operate_set_state(wdev, WLAN_OPER_STATE_INVALID);
+	UpdateDot11hForWdev(ad, wdev, FALSE);
 	return NDIS_STATUS_SUCCESS;
 }
 
@@ -55,6 +64,7 @@ static NTSTATUS hw_ctrl_flow_v1_close(struct WIFI_SYS_CTRL *wsys)
 */
 static NTSTATUS hw_ctrl_flow_v1_link_up(struct WIFI_SYS_CTRL *wsys)
 {
+	NTSTATUS status;
 	struct wifi_dev *wdev = wsys->wdev;
 	struct _RTMP_ADAPTER *ad = wdev->sys_handle;
 	UINT16 txop_level = TXOP_0;
@@ -63,15 +73,17 @@ static NTSTATUS hw_ctrl_flow_v1_link_up(struct WIFI_SYS_CTRL *wsys)
 	struct _BSS_INFO_ARGUMENT_T *bss = &wsys->BssInfoCtrl;
 
 	if (bss->u4BssInfoFeature) {
-		AsicBssInfoUpdate(ad, wsys->BssInfoCtrl);
+		status = AsicBssInfoUpdate(ad, wsys->BssInfoCtrl);
+		if (status != NDIS_STATUS_SUCCESS || RtmpDmaQuarantined(ad))
+			return status != NDIS_STATUS_SUCCESS ? status : NDIS_STATUS_FAILURE;
 		HcSetEdca(wdev);
-		/*update bssinfo to wdev*/
-		wifi_sys_update_bssinfo(ad, wdev, bss);
 	}
 
 	if (sta_rec->EnableFeature & ~STA_REC_INSTALL_KEY_FEATURE) {
 		AsicUpdateRxWCIDTable(ad, sta_rec->WlanIdx, tr_entry->Addr, TRUE, FALSE); /* Haipin: check IsReset */
-		AsicStaRecUpdate(ad, sta_rec);
+		status = AsicStaRecUpdate(ad, sta_rec);
+		if (status != NDIS_STATUS_SUCCESS || RtmpDmaQuarantined(ad))
+			return status != NDIS_STATUS_SUCCESS ? status : NDIS_STATUS_FAILURE;
 	}
 
 	if (sta_rec->EnableFeature & STA_REC_INSTALL_KEY_FEATURE)
@@ -80,6 +92,10 @@ static NTSTATUS hw_ctrl_flow_v1_link_up(struct WIFI_SYS_CTRL *wsys)
 	/*update bmc starec to tr_entry*/
 	if (sta_rec->EnableFeature)
 		wifi_sys_update_starec(ad, sta_rec);
+
+	/* Publish link readiness only after both firmware stages completed. */
+	if (bss->u4BssInfoFeature)
+		wifi_sys_update_bssinfo(ad, wdev, bss);
 
 	if (ad->CommonCfg.bEnableTxBurst) {
 		txop_level = TXOP_80;
@@ -109,13 +125,16 @@ static NTSTATUS hw_ctrl_flow_v1_link_up(struct WIFI_SYS_CTRL *wsys)
 */
 static NTSTATUS hw_ctrl_flow_v1_link_down(struct WIFI_SYS_CTRL *wsys)
 {
+	NTSTATUS status;
 	struct wifi_dev *wdev = wsys->wdev;
 	struct _RTMP_ADAPTER *ad = wdev->sys_handle;
 	struct _STA_REC_CTRL_T *sta_rec = &wsys->StaRecCtrl;
 	struct _BSS_INFO_ARGUMENT_T *bss = &wsys->BssInfoCtrl;
 
 	if (sta_rec->EnableFeature & ~STA_REC_INSTALL_KEY_FEATURE) {
-		AsicStaRecUpdate(ad, sta_rec);
+		status = AsicStaRecUpdate(ad, sta_rec);
+		if (status != NDIS_STATUS_SUCCESS || RtmpDmaQuarantined(ad))
+			return status != NDIS_STATUS_SUCCESS ? status : NDIS_STATUS_FAILURE;
 		AsicDelWcidTab(ad, sta_rec->WlanIdx);
 		wifi_sys_update_starec(ad, sta_rec);
 	}
@@ -124,7 +143,9 @@ static NTSTATUS hw_ctrl_flow_v1_link_down(struct WIFI_SYS_CTRL *wsys)
 		hw_set_tx_burst(ad, wdev, AC_BE, PRIO_DEFAULT, TXOP_0, 0);
 
 	if (bss->u4BssInfoFeature) {
-		AsicBssInfoUpdate(ad, wsys->BssInfoCtrl);
+		status = AsicBssInfoUpdate(ad, wsys->BssInfoCtrl);
+		if (status != NDIS_STATUS_SUCCESS || RtmpDmaQuarantined(ad))
+			return status != NDIS_STATUS_SUCCESS ? status : NDIS_STATUS_FAILURE;
 		wifi_sys_update_bssinfo(ad, wdev, bss);
 	}
 
@@ -136,12 +157,16 @@ static NTSTATUS hw_ctrl_flow_v1_link_down(struct WIFI_SYS_CTRL *wsys)
 */
 static NTSTATUS hw_ctrl_flow_v1_disconnt_act(struct WIFI_SYS_CTRL *wsys)
 {
+	NTSTATUS status;
 	struct wifi_dev *wdev = wsys->wdev;
 	struct _RTMP_ADAPTER *ad = wdev->sys_handle;
 	struct _STA_REC_CTRL_T *sta_rec = &wsys->StaRecCtrl;
 
-	if (sta_rec->EnableFeature & ~STA_REC_INSTALL_KEY_FEATURE)
-		AsicStaRecUpdate(ad, sta_rec);
+	if (sta_rec->EnableFeature & ~STA_REC_INSTALL_KEY_FEATURE) {
+		status = AsicStaRecUpdate(ad, sta_rec);
+		if (status != NDIS_STATUS_SUCCESS || RtmpDmaQuarantined(ad))
+			return status != NDIS_STATUS_SUCCESS ? status : NDIS_STATUS_FAILURE;
+	}
 
 	/* Delete this entry from ASIC on-chip WCID Table*/
 	if (!((sta_rec->WlanIdx >= GET_MAX_UCAST_NUM(ad)) && (sta_rec->WlanIdx != WCID_ALL)))
@@ -176,9 +201,9 @@ static NTSTATUS hw_ctrl_flow_v1_disconnt_act(struct WIFI_SYS_CTRL *wsys)
 */
 static NTSTATUS hw_ctrl_flow_v1_connt_act(struct WIFI_SYS_CTRL *wsys)
 {
+	NTSTATUS status;
 	struct wifi_dev *wdev = wsys->wdev;
 	struct _RTMP_ADAPTER *ad = wdev->sys_handle;
-	PEER_LINKUP_HWCTRL *lu_ctrl = (PEER_LINKUP_HWCTRL *)wsys->priv;
 	UINT16 txop_level = TXOP_0;
 	struct _STA_REC_CTRL_T *sta_rec = &wsys->StaRecCtrl;
 	struct _STA_TR_ENTRY *tr_entry = (struct _STA_TR_ENTRY *)sta_rec->priv;
@@ -192,7 +217,9 @@ static NTSTATUS hw_ctrl_flow_v1_connt_act(struct WIFI_SYS_CTRL *wsys)
 
 	if (sta_rec->EnableFeature & ~STA_REC_INSTALL_KEY_FEATURE) {
 		AsicUpdateRxWCIDTable(ad, sta_rec->WlanIdx, tr_entry->Addr, FALSE, FALSE); /* Haipin: Check IsReset */
-		AsicStaRecUpdate(ad, sta_rec);
+		status = AsicStaRecUpdate(ad, sta_rec);
+		if (status != NDIS_STATUS_SUCCESS || RtmpDmaQuarantined(ad))
+			return status != NDIS_STATUS_SUCCESS ? status : NDIS_STATUS_FAILURE;
 	}
 
 	if (sta_rec->EnableFeature & STA_REC_INSTALL_KEY_FEATURE)
@@ -211,19 +238,7 @@ static NTSTATUS hw_ctrl_flow_v1_connt_act(struct WIFI_SYS_CTRL *wsys)
 
 	hw_set_tx_burst(ad, wdev, AC_BE, PRIO_DEFAULT, txop_level, 1);
 
-	if (wdev->wdev_type == WDEV_TYPE_AP) {
-#ifdef DOT11_N_SUPPORT
-
-		if (lu_ctrl->bRdgCap) {
-		}
-
-#endif
-	}
-
 end:
-	if (lu_ctrl)
-		os_free_mem(lu_ctrl);
-
 	return NDIS_STATUS_SUCCESS;
 }
 
@@ -232,6 +247,7 @@ end:
 */
 static NTSTATUS hw_ctrl_flow_v1_peer_update(struct WIFI_SYS_CTRL *wsys)
 {
+	NTSTATUS status;
 	struct wifi_dev *wdev = wsys->wdev;
 	struct _RTMP_ADAPTER *ad = (PRTMP_ADAPTER)wdev->sys_handle;
 	struct _STA_REC_CTRL_T *sta_rec = &wsys->StaRecCtrl;
@@ -239,30 +255,31 @@ static NTSTATUS hw_ctrl_flow_v1_peer_update(struct WIFI_SYS_CTRL *wsys)
 	UINT32 featues = 0;
 
 	/*update ra rate*/
-	if ((sta_rec->EnableFeature & STA_REC_RA_UPDATE_FEATURE) && wsys->priv) {
-		AsicRaParamStaRecUpdate(ad,
+	if (sta_rec->EnableFeature & STA_REC_RA_UPDATE_FEATURE) {
+		if (!wsys->ra_param_valid)
+			return NDIS_STATUS_INVALID_DATA;
+		return AsicRaParamStaRecUpdate(ad,
 								sta_rec->WlanIdx,
-								(CMD_STAREC_AUTO_RATE_UPDATE_T *)wsys->priv,
+								&wsys->RaParam,
 								STA_REC_RA_UPDATE_FEATURE);
-
-		if (wsys->priv)
-			os_free_mem(wsys->priv);
-
-		return NDIS_STATUS_SUCCESS;
 	}
 
 	/*update ra reldated setting, can't change the order*/
 	if (sta_rec->EnableFeature & STA_REC_RA_COMMON_INFO_FEATURE) {
 		featues = sta_rec->EnableFeature;
 		sta_rec->EnableFeature = STA_REC_RA_COMMON_INFO_FEATURE;
-		AsicStaRecUpdate(ad, sta_rec);
+		status = AsicStaRecUpdate(ad, sta_rec);
+		if (status != NDIS_STATUS_SUCCESS || RtmpDmaQuarantined(ad))
+			return status != NDIS_STATUS_SUCCESS ? status : NDIS_STATUS_FAILURE;
 		sta_rec->EnableFeature = featues & (~STA_REC_RA_COMMON_INFO_FEATURE);
 	}
 
 	if (sta_rec->EnableFeature & STA_REC_RA_FEATURE) {
 		featues = sta_rec->EnableFeature;
 		sta_rec->EnableFeature = STA_REC_RA_FEATURE;
-		AsicStaRecUpdate(ad, sta_rec);
+		status = AsicStaRecUpdate(ad, sta_rec);
+		if (status != NDIS_STATUS_SUCCESS || RtmpDmaQuarantined(ad))
+			return status != NDIS_STATUS_SUCCESS ? status : NDIS_STATUS_FAILURE;
 		sta_rec->EnableFeature = featues & (~STA_REC_RA_FEATURE);
 	}
 
@@ -275,7 +292,9 @@ static NTSTATUS hw_ctrl_flow_v1_peer_update(struct WIFI_SYS_CTRL *wsys)
 
 	/*normal update*/
 	if (sta_rec->EnableFeature) {
-		AsicStaRecUpdate(ad, sta_rec);
+		status = AsicStaRecUpdate(ad, sta_rec);
+		if (status != NDIS_STATUS_SUCCESS || RtmpDmaQuarantined(ad))
+			return status != NDIS_STATUS_SUCCESS ? status : NDIS_STATUS_FAILURE;
 		/*update starec to tr_entry*/
 		wifi_sys_update_starec_info(ad, sta_rec);
 	}

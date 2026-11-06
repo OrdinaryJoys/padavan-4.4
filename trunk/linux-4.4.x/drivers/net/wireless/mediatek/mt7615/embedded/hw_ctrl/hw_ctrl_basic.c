@@ -634,6 +634,11 @@ NDIS_STATUS HwCtrlEnqueueCmd(
 	wait_time = HwCtrlTxd.wait_time ? HwCtrlTxd.wait_time : HWCTRL_CMD_TIMEOUT;
 	if (!RTMP_OS_WAIT_FOR_COMPLETION_TIMEOUT(&cmdqelmt->ack_done, RTMPMsecsToJiffies(wait_time))) {
 		status = NDIS_STATUS_FAILURE;
+		/* Wsys still borrows adapter-owned wdev/tr_entry objects. A timed-out
+		 * handler may finish later: contain traffic and retain those owners.
+		 */
+		if (HwCtrlTxd.CmdType == HWCMD_TYPE_WIFISYS)
+			RtmpDmaQuarantine(pAd);
 		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s(): HwCtrl CmdTimeout, TYPE:%d,ID:%d!!\n",
 			__func__, cmdqelmt->type, cmdqelmt->command));
 	} else {

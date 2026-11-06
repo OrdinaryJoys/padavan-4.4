@@ -80,6 +80,8 @@ VOID TRTableResetEntry(RTMP_ADAPTER *pAd, UCHAR tr_tb_idx)
 	INT qidx;
 	struct qm_ops *ops = pAd->qm_ops;
 
+	if (RtmpDmaQuarantined(pAd))
+		return;
 	if (tr_tb_idx >= MAX_LEN_OF_TR_TABLE)
 		return;
 
@@ -499,6 +501,8 @@ MAC_TABLE_ENTRY *MacTableInsertEntry(
 	/* ASIC_SEC_INFO Info = {0}; */
 	struct _RTMP_CHIP_CAP *cap;
 
+	if (RtmpDmaQuarantined(pAd))
+		return NULL;
 	if (pAd->MacTab.Size >= GET_MAX_UCAST_NUM(pAd))
 		return NULL;
 
@@ -906,16 +910,19 @@ static INT32 MacTableDelEntryFromHash(RTMP_ADAPTER *pAd, MAC_TABLE_ENTRY *pEntry
 		Delete a specified client from MAC table
 	==========================================================================
  */
-static VOID mac_entry_disconn_act(struct _RTMP_ADAPTER *pAd, struct _MAC_TABLE_ENTRY *pEntry)
+static BOOLEAN mac_entry_disconn_act(struct _RTMP_ADAPTER *pAd, struct _MAC_TABLE_ENTRY *pEntry)
 {
 	STA_TR_ENTRY *tr_entry = NULL;
-	struct wifi_dev *wdev = pEntry->wdev;
+	struct wifi_dev *wdev;
 
+	if (RtmpDmaQuarantined(pAd))
+		return FALSE;
 	if (!pEntry || IS_ENTRY_NONE(pEntry))
-		return;
+		return TRUE;
 
+	wdev = pEntry->wdev;
 	if (!wdev)
-		return;
+		return FALSE;
 
 	/* Set port secure to NOT_SECURED here to avoid race condition with ba_ori_session_start */
 	tr_entry = &pAd->MacTab.tr_entry[pEntry->tr_tb_idx];
@@ -927,9 +934,12 @@ static VOID mac_entry_disconn_act(struct _RTMP_ADAPTER *pAd, struct _MAC_TABLE_E
 	IF_DEV_CONFIG_OPMODE_ON_AP(pAd) {
 		/* peer link up needs pEntry type information to decide txop disable or not*/
 		/* so invalid pEntry type later */
-		if (wdev_do_disconn_act(pEntry->wdev, pEntry) != TRUE)
+		if (wdev_do_disconn_act(pEntry->wdev, pEntry) != TRUE) {
 			MTWF_LOG(DBG_CAT_MLME, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s(): disconnection fail!\n", __func__));
+			return FALSE;
+		}
 	}
+	return TRUE;
 }
 
 BOOLEAN MacTableDeleteEntry(RTMP_ADAPTER *pAd, USHORT wcid, UCHAR *pAddr)
@@ -971,8 +981,9 @@ BOOLEAN MacTableDeleteEntry(RTMP_ADAPTER *pAd, USHORT wcid, UCHAR *pAddr)
 	pEntry = &pAd->MacTab.Content[wcid];
 	tr_entry = &pAd->MacTab.tr_entry[wcid];
 
-	/*disconnect first*/
-	mac_entry_disconn_act(pAd, pEntry);
+	/* A failed/uncertain disconnect still owns its live peer resources. */
+	if (!mac_entry_disconn_act(pAd, pEntry))
+		return FALSE;
 
 	NdisAcquireSpinLock(&pAd->MacTabLock);
 

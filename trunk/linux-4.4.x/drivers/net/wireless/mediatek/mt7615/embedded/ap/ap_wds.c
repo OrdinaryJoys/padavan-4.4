@@ -1503,6 +1503,9 @@ VOID WDS_Remove(RTMP_ADAPTER *pAd)
 
 	MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s():\n", __func__));
 
+	if (!pAd || RtmpDmaQuarantined(pAd))
+		return;
+
 	for (index = 0; index < MAX_WDS_ENTRY; index++) {
 		wdev = &pAd->WdsTab.WdsEntry[index].wdev;
 

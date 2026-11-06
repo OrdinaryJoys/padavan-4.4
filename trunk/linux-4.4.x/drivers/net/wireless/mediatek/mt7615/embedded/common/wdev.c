@@ -421,8 +421,7 @@ INT32 wdev_attr_update(RTMP_ADAPTER *pAd, struct wifi_dev *wdev)
 		break;
 	}
 
-	HcAcquireRadioForWdev(pAd, wdev);
-	return TRUE;
+	return HcAcquireRadioForWdev(pAd, wdev) == HC_STATUS_OK ? TRUE : FALSE;
 }
 
 
@@ -436,6 +435,9 @@ INT32 wdev_attr_update(RTMP_ADAPTER *pAd, struct wifi_dev *wdev)
  */
 INT32 wdev_deinit(RTMP_ADAPTER *pAd, struct wifi_dev *wdev)
 {
+	if (RtmpDmaQuarantined(pAd))
+		return FALSE;
+
 	deinit_vie_ctrl(wdev);
 
 	wlan_operate_exit(wdev);

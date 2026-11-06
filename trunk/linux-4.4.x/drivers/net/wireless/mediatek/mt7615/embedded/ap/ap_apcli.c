@@ -4129,6 +4129,9 @@ VOID ApCli_Remove(RTMP_ADAPTER *pAd)
 	UINT index;
 	struct wifi_dev *wdev;
 
+	if (!pAd || RtmpDmaQuarantined(pAd))
+		return;
+
 	for (index = 0; index < MAX_APCLI_NUM; index++) {
 		wdev = &pAd->ApCfg.ApCliTab[index].wdev;
 
@@ -5591,15 +5594,15 @@ INT apcli_link_up(struct wifi_dev *wdev, struct _MAC_TABLE_ENTRY *entry)
 	struct _RTMP_ADAPTER *ad = (struct _RTMP_ADAPTER *)wdev->sys_handle;
 	struct _APCLI_STRUCT *apcli = &ad->ApCfg.ApCliTab[wdev->func_idx];
 
-	if (WDEV_BSS_STATE(wdev) == BSS_INIT) {
-		apcli->Valid = TRUE;
-		MSDU_FORBID_CLEAR(wdev, MSDU_FORBID_CONNECTION_NOT_READY);
-		wdev->PortSecured = WPA_802_1X_PORT_SECURED;
-
+	if (WDEV_BSS_STATE(wdev) <= BSS_INITED) {
 		if (wifi_sys_linkup(wdev, entry) != TRUE) {
 			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
 					 ("%s():link up fail!\n", __func__));
+			return FALSE;
 		}
+		apcli->Valid = TRUE;
+		MSDU_FORBID_CLEAR(wdev, MSDU_FORBID_CONNECTION_NOT_READY);
+		wdev->PortSecured = WPA_802_1X_PORT_SECURED;
 	}
 	call_usermodehelper(path, argv, envp,UMH_WAIT_PROC);
 	return TRUE;

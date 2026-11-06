@@ -1548,11 +1548,19 @@ static VOID CmdExtDevInfoUpdateRsp(struct cmd_msg *msg, char *Data, UINT16 Len)
 {
 	P_EVENT_DEVINFO_UPDATE_T EventExtCmdResult = (P_EVENT_DEVINFO_UPDATE_T)Data;
 
+	if (!msg)
+		return;
+	if (!Data || Len < sizeof(EVENT_DEVINFO_UPDATE_T)) {
+		msg->cmd_return_status = NDIS_STATUS_INVALID_DATA;
+		return;
+	}
+
 	MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 			 ("%s: EventExtCmdResult.ucExTenCID = 0x%x\n",
 			  __func__, EventExtCmdResult->ucExtenCID));
 	EventExtCmdResult->u4Status = le2cpu32(EventExtCmdResult->u4Status);
 	EventExtCmdResult->u2TotalElementNum = le2cpu16(EventExtCmdResult->u2TotalElementNum);
+	msg->cmd_return_status = EventExtCmdResult->u4Status;
 
 	if (EventExtCmdResult->u4Status != 0) {
 		MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
@@ -1573,6 +1581,13 @@ static VOID CmdExtDevInfoUpdateRsp(struct cmd_msg *msg, char *Data, UINT16 Len)
 static VOID CmdExtStaRecUpdateRsp(struct cmd_msg *msg, char *Data, UINT16 Len)
 {
 	P_EVENT_STAREC_UPDATE_T EventExtCmdResult = (P_EVENT_STAREC_UPDATE_T)(Data);
+
+	if (!msg)
+		return;
+	if (!Data || Len < sizeof(EVENT_STAREC_UPDATE_T)) {
+		msg->cmd_return_status = NDIS_STATUS_INVALID_DATA;
+		return;
+	}
 
 	MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_INFO,
 			 ("%s::EventExtCmdResult.ucExTenCID = 0x%x\n",
@@ -1603,11 +1618,19 @@ static VOID CmdExtBssInfoUpdateRsp(struct cmd_msg *msg, char *Data, UINT16 Len)
 {
 	P_EVENT_BSSINFO_UPDATE_T EventExtCmdResult = (P_EVENT_BSSINFO_UPDATE_T)Data;
 
+	if (!msg)
+		return;
+	if (!Data || Len < sizeof(EVENT_BSSINFO_UPDATE_T)) {
+		msg->cmd_return_status = NDIS_STATUS_INVALID_DATA;
+		return;
+	}
+
 	MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_TRACE,
 			 ("%s: EventExtCmdResult.ucExTenCID = 0x%x\n",
 			  __func__, EventExtCmdResult->ucExtenCID));
 	EventExtCmdResult->u4Status = le2cpu32(EventExtCmdResult->u4Status);
 	EventExtCmdResult->u2TotalElementNum = le2cpu16(EventExtCmdResult->u2TotalElementNum);
+	msg->cmd_return_status = EventExtCmdResult->u4Status;
 
 	if (EventExtCmdResult->u4Status != 0) {
 		MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
