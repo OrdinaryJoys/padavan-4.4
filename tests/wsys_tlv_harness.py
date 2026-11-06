@@ -10,7 +10,8 @@ SOURCE_PATHS = {'fw': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/mc
  'core': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/embedded/mcu/andes_core.c',
  'header': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/include/mcu/mt_cmd.h',
  'sys': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/embedded/common/wifi_sys_info.c',
- 'os_header': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/include/os/rt_linux.h'}
+ 'os_header': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/include/os/rt_linux.h',
+ 'core_header': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/embedded/include/mcu/andes_core.h'}
 FUNCTION_SOURCES = {'pTlvAppend': 'fw',
  'StaRecUpdateBasic': 'fw',
  'StaRecUpdateRa': 'fw',
@@ -54,7 +55,8 @@ SOURCE_DECLARATIONS = {'^#define NDIS_STATUS_SUCCESS\\s+0x00\\s*$': 'os_header',
  '^#define NDIS_STATUS_FAILURE\\s+0x01\\s*$': 'os_header',
  '^#define NDIS_STATUS_INVALID_DATA\\s+0x02\\s*$': 'os_header',
  '^#define NDIS_STATUS_RESOURCES\\s+0x03\\s*$': 'os_header',
- '^static STAREC_HANDLE_T StaRecHandle\\[\\] = \\{[\\s\\S]*?^\\};': 'fw'}
+ '^static STAREC_HANDLE_T StaRecHandle\\[\\] = \\{[\\s\\S]*?^\\};': 'fw',
+ '^VOID AndesForceFreeCmdMsg\\(struct cmd_msg \\*msg\\);$': 'core_header'}
 MODEL_VARIANT = {'kind': 'mt7615-current-tlv-construction',
  'DOT11_N_SUPPORT': True,
  'DOT11_VHT_AC': True,

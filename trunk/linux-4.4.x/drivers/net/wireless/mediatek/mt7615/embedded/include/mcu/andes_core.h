@@ -198,6 +198,7 @@ VOID AndesInitCmdMsg(struct cmd_msg *msg, CMD_ATTRIBUTE attr);
 VOID AndesAppendCmdMsg(struct cmd_msg *msg, char *data, unsigned int len);
 VOID AndesAppendHeadCmdMsg(struct cmd_msg *msg, char *data, unsigned int len);
 VOID AndesFreeCmdMsg(struct cmd_msg *msg);
+VOID AndesForceFreeCmdMsg(struct cmd_msg *msg);
 VOID AndesQueueTailCmdMsg(DL_LIST *list, struct cmd_msg *msg,
 						  enum cmd_msg_state state);
 VOID AndesIncErrorCount(struct MCU_CTRL *ctl, enum cmd_msg_error_type type);

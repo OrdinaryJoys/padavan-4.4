@@ -52,7 +52,7 @@ class WsysTlvTests(unittest.TestCase):
  def test_whole_bodies_and_source_only_contract_have_no_hardware_claim(self):
   self.assertEqual((len(h.CASE_NAMES),len(h.FUNCTION_SOURCES),len(h.SOURCE_ONLY_FUNCTION_SOURCES)),(37,19,2))
   self.assertEqual(set(h.CASE_NAMES),set(h.EXPECTED_ROWS));self.assertEqual(set(h.BODY_ORDER),set(h.FUNCTION_SOURCES))
-  self.assertEqual(len(h.source_declarations(self.texts)),5)
+  self.assertEqual(len(h.source_declarations(self.texts)),6)
   for n,k in h.FUNCTION_SOURCES.items():self.assertEqual(self.generated.count(h.function(self.texts[k],n)),1)
   self.assertIn(h.table(self.texts['fw']),self.generated)
   resync=h.function(self.texts['fw'],'CmdExtStaRecUpdate_ReSyncDelete');self.assertIn('StaRecCfgForDel.u4EnableFeature = STA_REC_BASIC_STA_RECORD_FEATURE;',resync)
@@ -100,5 +100,57 @@ class WsysTlvTests(unittest.TestCase):
   with self.assertRaises(ValueError):h.generate_source(self.texts,'legacy')
   bad=dict(self.texts);bad['fw']=bad['fw'].replace('static STAREC_HANDLE_T StaRecHandle[]','static STAREC_HANDLE_T Other[]')
   with self.assertRaises(ValueError):h.generate_source(bad)
+
+ def test_force_free_public_prototype_compiles_an_independent_caller_and_real_definition(self):
+  import re
+  patterns=[p for p,k in h.SOURCE_DECLARATIONS.items()if k=='core_header'];self.assertEqual(len(patterns),1)
+  hits=list(re.finditer(patterns[0],self.texts['core_header'],re.M));self.assertEqual(len(hits),1)
+  declaration=hits[0].group();definition=h.function(self.texts['core'],'AndesForceFreeCmdMsg')
+  signature=definition.split('{',1)[0].strip()
+  self.assertEqual(re.sub(r'\s+','',declaration[:-1]),re.sub(r'\s+','',signature))
+  directory=self.directory/'public-prototype';directory.mkdir()
+  header=directory/'contract.h';header_prefix='typedef void VOID;\nstruct cmd_msg;\n'
+  caller=directory/'caller.c';caller.write_text('#include "contract.h"\nstatic void invoke(struct cmd_msg *msg) { AndesForceFreeCmdMsg(msg); }\nint main(void) { invoke((struct cmd_msg *)0); return 0; }\n')
+  self.assertNotIn(definition,caller.read_text())
+  prefix=r'''#include "contract.h"
+#include <stdlib.h>
+typedef unsigned long ULONG;
+struct MCU_CTRL { int msg_lock, free_cmd_msg; };
+typedef struct _RTMP_ADAPTER { struct MCU_CTRL MCUCtrl; } RTMP_ADAPTER;
+struct cmd_msg { void *priv, *retry_pkt, *net_pkt; int sync, ack_done; };
+#define MTWF_LOG(...) ((void)0)
+#define IS_CMD_MSG_NEED_SYNC_WITH_FW_FLAG_SET(msg) ((msg)->sync)
+#define RTMP_OS_EXIT_COMPLETION(p) ((void)(p))
+#define OS_SPIN_LOCK_IRQSAVE(p,f) do { (void)(p); (void)(f); } while (0)
+#define OS_SPIN_UNLOCK_IRQRESTORE(p,f) do { (void)(p); (void)(f); } while (0)
+static void RTMPFreeNdisPacket(RTMP_ADAPTER *ad, void *packet) { (void)ad; free(packet); }
+static void os_free_mem(void *pointer) { free(pointer); }
+'''
+  implementation=directory/'definition.c';implementation.write_text(prefix+definition+'\n')
+  gnu=shutil.which('gcc-16')or('/opt/homebrew/bin/gcc-16'if Path('/opt/homebrew/bin/gcc-16').is_file()else shutil.which('gcc'))
+  for label,compiler in (('clang',shutil.which('clang')),('gcc',gnu)):
+   with self.subTest(compiler=label):
+    flags=['-std=gnu99','-Os','-Wall','-Wextra','-Werror','-Werror=implicit-function-declaration','-Werror=incompatible-pointer-types']
+    if label=='clang':flags+=['-fsanitize=address,undefined']
+    def compile_tu(path,tag):
+     return subprocess.run([compiler,*flags,'-c',str(path),'-o',str(directory/(label+'-'+tag+'.o'))],capture_output=True,text=True,timeout=60)
+    header.write_text(header_prefix+declaration+'\n')
+    # The independent caller compiles before any implementation is visible.
+    c=compile_tu(caller,'caller');self.assertEqual(c.returncode,0,c.stderr)
+    d=compile_tu(implementation,'definition');self.assertEqual(d.returncode,0,d.stderr)
+    binary=directory/(label+'-linked')
+    linked=subprocess.run([compiler,*flags,str(directory/(label+'-caller.o')),str(directory/(label+'-definition.o')),'-o',str(binary)],capture_output=True,text=True,timeout=60)
+    self.assertEqual(linked.returncode,0,linked.stderr)
+    ran=subprocess.run([str(binary)],capture_output=True,text=True,timeout=10);self.assertEqual(ran.returncode,0,ran.stderr)
+    header.write_text(header_prefix)
+    missing=compile_tu(caller,'missing');self.assertNotEqual(missing.returncode,0);self.assertIn('AndesForceFreeCmdMsg',missing.stderr);self.assertRegex(missing.stderr.lower(),r'implicit|undeclared')
+    wrong=declaration.replace('struct cmd_msg *msg','int *msg');self.assertNotEqual(wrong,declaration)
+    header.write_text(header_prefix+wrong+'\n')
+    incompatible=compile_tu(caller,'wrong-argument');self.assertNotEqual(incompatible.returncode,0);self.assertIn('AndesForceFreeCmdMsg',incompatible.stderr);self.assertIn('incompatible',incompatible.stderr.lower())
+    # void* accepts a call, but must conflict with the actual definition in
+    # its own TU; permissive caller conversion cannot hide the wrong signature.
+    header.write_text(header_prefix+declaration.replace('struct cmd_msg *msg','void *msg')+'\n')
+    permissive=compile_tu(caller,'void-argument');self.assertEqual(permissive.returncode,0,permissive.stderr)
+    conflict=compile_tu(implementation,'wrong-definition');self.assertNotEqual(conflict.returncode,0);self.assertIn('AndesForceFreeCmdMsg',conflict.stderr);self.assertIn('conflicting',conflict.stderr.lower())
 
 if __name__=='__main__':unittest.main()
