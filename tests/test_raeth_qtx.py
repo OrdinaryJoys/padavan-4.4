@@ -43,6 +43,11 @@ class RaethQtxTests(unittest.TestCase):
         self.rows(('map-fail-1','map-fail-2','map-fail-3'))
     def test_valid_linear_fragment_and_split_packets_retain_dma_ownership(self):
         self.rows(('linear','fragment','three-fragments','split-fragment','split-head'))
+    def test_pseudo_allocation_failure_cannot_reach_null_queue_wake(self):
+        self.rows(('no-pseudo-complete',))
+        before='if ((ei_local->features & FE_GE2_SUPPORT) && ei_local->pseudo_dev)\n\t\tnetif_wake_queue(ei_local->pseudo_dev);'
+        self.assertEqual(self.code.count(before),1)
+        self.reject(self.code.replace(before,'if (ei_local->features & FE_GE2_SUPPORT)\n\t\tnetif_wake_queue(ei_local->pseudo_dev);'),'no-pseudo-complete','missing-pseudo-guard')
     def test_completion_unmaps_exactly_once_before_packet_release(self):
         self.rows(('complete','complete-split','double-complete'))
     def test_idle_owner_release_and_repeated_unmap_are_idempotent(self):
@@ -54,7 +59,7 @@ class RaethQtxTests(unittest.TestCase):
     def test_quarantined_stopped_missing_owner_and_full_ring_admission(self):
         self.rows(('quarantine','stopped','no-owner','no-space'))
     def test_full_function_and_explicit_inert_layout_boundaries(self):
-        self.assertEqual(len(h.CASE_NAMES),30);self.assertEqual(set(h.CASE_NAMES),set(h.EXPECTED_ROWS))
+        self.assertEqual(len(h.CASE_NAMES),31);self.assertEqual(set(h.CASE_NAMES),set(h.EXPECTED_ROWS))
         self.assertEqual(len(h.function_manifest(self.texts)),11);self.assertEqual(len(h.source_only_manifest(self.texts)),2)
         for name,key in h.FUNCTION_SOURCES.items():self.assertEqual(self.code.count(h.function(self.texts[key],name)),1)
         self.assertTrue(h.MODEL_VARIANT['synthetic_skb_and_descriptor_layout'])

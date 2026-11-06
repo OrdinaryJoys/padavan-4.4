@@ -1458,7 +1458,7 @@ int ei_qdma_xmit_housekeeping(struct net_device *netdev, int budget)
 	/* atomic_add(rls_cnt, &ei_local->free_txd_num[0]); */
 	ei_local->rls_cpu_idx = ctx_offset;
 	netif_wake_queue(netdev);
-	if (ei_local->features & FE_GE2_SUPPORT)
+	if ((ei_local->features & FE_GE2_SUPPORT) && ei_local->pseudo_dev)
 		netif_wake_queue(ei_local->pseudo_dev);
 	ei_local->tx_ring_full = 0;
 	sys_reg_write(QTX_CRX_PTR,

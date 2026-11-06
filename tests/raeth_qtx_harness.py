@@ -64,7 +64,8 @@ CASE_NAMES = ('linear',
  'ctor-success',
  'ctor-duplicate',
  'gso-linear',
- 'gso-linear-complete')
+ 'gso-linear-complete',
+ 'no-pseudo-complete')
 # Independent fixed semantic rows: successes own maps until completion/idle;
 # every failed map leaves the free list and hardware producer untouched.
 EXPECTED_ROWS = {'linear': {'ret': 0,
@@ -396,7 +397,18 @@ EXPECTED_ROWS = {'linear': {'ret': 0,
                          'freed': 1,
                          'dropped': 0,
                          'locks': 2,
-                         'errors': 0}}
+                         'errors': 0},
+ 'no-pseudo-complete': {'ret': 0,
+                        'maps': 3,
+                        'unmaps': 3,
+                        'live': 0,
+                        'hw': 1,
+                        'free_desc': 30,
+                        'queued': 1,
+                        'freed': 1,
+                        'dropped': 0,
+                        'locks': 2,
+                        'errors': 0}}
 PREFIX = r'''
 #include <stdio.h>
 #include <stdbool.h>
@@ -524,7 +536,7 @@ static inline void dma_sync_single_for_device(struct device*d,dma_addr_t a,unsig
 static inline unsigned int sys_reg_read(int r){return regs[r];}
 static inline void sys_reg_write(int r,unsigned int v){if(!lock_depth&&!constructor)errors++;regs[r]=v;if(r==QTX_CTX_PTR)hw++;}
 static inline void dev_kfree_skb_any(struct sk_buff*s){if(!s)return;if(s==magic_id||s->freed){errors++;return;}s->freed=1;freed++;}
-static inline void netif_wake_queue(struct net_device*d){(void)d;}
+static inline void netif_wake_queue(struct net_device*d){if(!d)errors++;}
 '''
 SUFFIX = r'''
 int main(int argc,char **argv){
@@ -569,9 +581,10 @@ int main(int argc,char **argv){
   goto report;
  }
  if(!strncmp(name,"gso-linear",10)){packet.sh.nr_frags=0;packet.data_len=0;packet.len=4;packet.sh.gso_segs=2;packet.sh.gso_size=1460;((struct iphdr*)bytes)->version=4;((struct iphdr*)bytes)->protocol=IPPROTO_TCP;}
+ if(!strcmp(name,"no-pseudo-complete"))e.pseudo_dev=NULL;
  ret=ei_qdma_start_xmit(&packet,&nd,1);
  if(!strcmp(name,"two-netdevs")){second=packet;second.freed=0;ei_qdma_start_xmit(&second,&nd,2);}
- if(!strcmp(name,"gso-linear-complete")||!strcmp(name,"complete")||!strcmp(name,"complete-split")||!strcmp(name,"double-complete")||!strcmp(name,"two-netdevs")){
+ if(!strcmp(name,"no-pseudo-complete")||!strcmp(name,"gso-linear-complete")||!strcmp(name,"complete")||!strcmp(name,"complete-split")||!strcmp(name,"double-complete")||!strcmp(name,"two-netdevs")){
   for(i=0;i<32;i++){last=idx;idx=(desc[idx].txd_info2.NDP-e.phy_txd_pool)/16;if(idx==e.tx_cpu_idx)break;}
   if(i==32)errors++;
   regs[QTX_DRX_PTR]=e.phy_txd_pool+last*16;ei_qdma_xmit_housekeeping(&nd,32);
