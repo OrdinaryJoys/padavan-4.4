@@ -132,6 +132,9 @@ static VOID free_hwcmd(os_kref *ref)
 		os_free_mem(cmd->buffer);
 		cmd->buffer = NULL;
 	}
+	if (cmd->RspBuffer != NULL)
+		os_free_mem(cmd->RspBuffer);
+	NdisFreeSpinLock(&cmd->lock);
 	os_free_mem(cmd);
 }
 
@@ -142,22 +145,27 @@ static VOID HwCtrlCmdHandler(RTMP_ADAPTER *pAd)
 	NTSTATUS		ntStatus;
 	HwCmdHdlr		Handler = NULL;
 	HW_CTRL_T *pHwCtrl = &pAd->HwCtrl;
+	BOOLEAN running;
 
-	while (pAd && pHwCtrl->HwCtrlQ.size > 0) {
+	while (pAd) {
 		NdisStatus = NDIS_STATUS_SUCCESS;
 		NdisAcquireSpinLock(&pHwCtrl->HwCtrlQLock);
 		HwCtrlDequeueCmd(&pHwCtrl->HwCtrlQ, &cmdqelmt);
+		running = pHwCtrl->HwCtrlQ.CmdQState == RTMP_TASK_STAT_RUNNING;
 		NdisReleaseSpinLock(&pHwCtrl->HwCtrlQLock);
 
 		if (cmdqelmt == NULL)
 			break;
 
 
-		if (!RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_NIC_NOT_EXIST) && RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_START_UP)) {
+		if (running &&
+			!RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_NIC_NOT_EXIST) &&
+			RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_START_UP)) {
 			Handler = HwCtrlValidCmd(cmdqelmt);
 
 			if (Handler) {
 				ntStatus = Handler(pAd, cmdqelmt);
+				cmdqelmt->result = ntStatus;
 
 				if (cmdqelmt->CallbackFun)
 					cmdqelmt->CallbackFun(pAd, cmdqelmt->CallbackArgs);
@@ -183,15 +191,17 @@ static VOID HwCtrlFlagHandler(RTMP_ADAPTER *pAd)
 	NTSTATUS		ntStatus;
 	HwFlagHdlr		Handler = NULL;
 	HwFlagCtrl      HwCtrlFlag;
+	BOOLEAN running;
 
 	NdisAcquireSpinLock(&pHwCtrl->HwCtrlQLock);
 	HwCtrlFlag.FlagId = pHwCtrlFlag->FlagId;
 	HwCtrlFlag.IsFlagSet = pHwCtrlFlag->IsFlagSet;
 	pHwCtrlFlag->FlagId = 0;
 	pHwCtrlFlag->IsFlagSet = 0;
+	running = pHwCtrl->HwCtrlQ.CmdQState == RTMP_TASK_STAT_RUNNING;
 	NdisReleaseSpinLock(&pHwCtrl->HwCtrlQLock);
 
-	if (!RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_NIC_NOT_EXIST)) {
+	if (running && !RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_NIC_NOT_EXIST)) {
 		while (HwCtrlFlag.FlagId) {
 			Handler = HwCtrlValidFlag(&HwCtrlFlag);
 
@@ -220,23 +230,25 @@ static INT HwCtrlThread(ULONG Context)
 	pHwCtrl = &pAd->HwCtrl;
 	RtmpOSTaskCustomize(pTask);
 	NdisAcquireSpinLock(&pHwCtrl->HwCtrlQLock);
-	pHwCtrl->HwCtrlQ.CmdQState = RTMP_TASK_STAT_RUNNING;
+	/* A worker first scheduled during exit must not reopen admissions. */
+	if (pHwCtrl->HwCtrlQ.CmdQState == RTMP_TASK_STAT_INITED)
+		pHwCtrl->HwCtrlQ.CmdQState = RTMP_TASK_STAT_RUNNING;
 	NdisReleaseSpinLock(&pHwCtrl->HwCtrlQLock);
 
-	while (pHwCtrl->HwCtrlQ.CmdQState == RTMP_TASK_STAT_RUNNING) {
+	while (READ_ONCE(pHwCtrl->HwCtrlQ.CmdQState) == RTMP_TASK_STAT_RUNNING) {
 		if (RtmpOSTaskWait(pAd, pTask, &status) == FALSE) {
 			RTMP_SET_FLAG(pAd, fRTMP_ADAPTER_HALT_IN_PROGRESS);
 			break;
 		}
 
-		if (pHwCtrl->HwCtrlQ.CmdQState == RTMP_TASK_STAT_STOPED)
+		if (READ_ONCE(pHwCtrl->HwCtrlQ.CmdQState) == RTMP_TASK_STAT_STOPED)
 			break;
 
 		/*every time check command formate event*/
 		HwCtrlCmdHandler(pAd);
 
 		/*support flag type*/
-		if (pHwCtrl->HwCtrlFlag.IsFlagSet)
+		if (READ_ONCE(pHwCtrl->HwCtrlFlag.IsFlagSet))
 			HwCtrlFlagHandler(pAd);
 
 		pHwCtrl->TotalCnt++;
@@ -485,10 +497,23 @@ VOID HwCtrlExit(RTMP_ADAPTER *pAd)
 #ifdef ERR_RECOVERY
 	HwCtrlSerExit(pAd);
 #endif
-	/*flush all queued command*/
-	HwCtrlCmdHandler(pAd);
-	/*kill task*/
+	/* Close admissions before joining the sole command consumer. Running
+	 * callbacks may finish, but exit must never execute another handler in
+	 * parallel. The worker discards queued commands and completes waiters.
+	 */
+	NdisAcquireSpinLock(&pHwCtrl->HwCtrlQLock);
+	pHwCtrl->HwCtrlQ.CmdQState = RTMP_TASK_STAT_STOPED;
+	NdisReleaseSpinLock(&pHwCtrl->HwCtrlQLock);
 	ret = RtmpOSTaskKill(&pHwCtrl->HwCtrlTask);
+	if (RTMP_OS_TASK_LEGALITY(&pHwCtrl->HwCtrlTask)) {
+		RtmpDmaQuarantine(pAd);
+		return;
+	}
+	/* kthread_stop can join a task before its threadfn ever ran. In that
+	 * case its exit loop did not drain INITED commands. Only after the
+	 * join may this owner discard leftovers; STOPED prevents callbacks. */
+	HwCtrlCmdHandler(pAd);
+	HwCtrlFlagHandler(pAd);
 	NdisFreeSpinLock(&pHwCtrl->HwCtrlQLock);
 	pHwCtrl->HwCtrlQ.CmdQState = RTMP_TASK_STAT_UNKNOWN;
 	hwctrl_ops->wifi_sys_open = NULL;
@@ -516,10 +541,11 @@ NDIS_STATUS HwCtrlEnqueueCmd(
 	UINT32 wait_time = 0;
 	HW_CTRL_T *pHwCtrl = &pAd->HwCtrl;
 
-	if (RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_NIC_NOT_EXIST)) {
-		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("--->%s - NIC is not exist!!\n", __func__));
+	if (RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_NIC_NOT_EXIST) ||
+		(HwCtrlTxd.InformationBufferLength && !HwCtrlTxd.pInformationBuffer) ||
+		(HwCtrlTxd.RespBufferLength &&
+		 (!HwCtrlTxd.NeedWait || !HwCtrlTxd.pRespBuffer)))
 		return NDIS_STATUS_FAILURE;
-	}
 
 	status = os_alloc_mem(pAd, (PUCHAR *)&cmdqelmt, sizeof(HwCmdQElmt));
 
@@ -527,6 +553,7 @@ NDIS_STATUS HwCtrlEnqueueCmd(
 		return NDIS_STATUS_RESOURCES;
 
 	NdisZeroMemory(cmdqelmt, sizeof(HwCmdQElmt));
+	cmdqelmt->result = NDIS_STATUS_FAILURE;
 	/*initial lock*/
 	NdisAllocateSpinLock(NULL, &cmdqelmt->lock);
 	/*creat wait */
@@ -538,6 +565,8 @@ NDIS_STATUS HwCtrlEnqueueCmd(
 
 	if (HwCtrlTxd.NeedWait)
 		RTMP_OS_INIT_COMPLETION(&cmdqelmt->ack_done);
+	/* Every fallible allocation below must already own a releasable ref. */
+	os_kref_init(&cmdqelmt->refcnt);
 
 	if (HwCtrlTxd.InformationBufferLength > 0) {
 		status = os_alloc_mem(pAd, (PUCHAR *)&cmdqelmt->buffer, HwCtrlTxd.InformationBufferLength);
@@ -552,13 +581,21 @@ NDIS_STATUS HwCtrlEnqueueCmd(
 	/*initial cmd element*/
 	cmdqelmt->command = HwCtrlTxd.CmdId;
 	cmdqelmt->type = HwCtrlTxd.CmdType;
-	cmdqelmt->RspBuffer = HwCtrlTxd.pRespBuffer;
+	/* A timed-out sender may return before the worker. Never publish its
+	 * borrowed response pointer into the queue; copy back only on completion.
+	 */
+	if (HwCtrlTxd.RespBufferLength) {
+		status = os_alloc_mem(pAd, (PUCHAR *)&cmdqelmt->RspBuffer,
+			HwCtrlTxd.RespBufferLength);
+		if (!cmdqelmt->RspBuffer) {
+			status = NDIS_STATUS_RESOURCES;
+			goto end;
+		}
+		NdisZeroMemory(cmdqelmt->RspBuffer, HwCtrlTxd.RespBufferLength);
+	}
 	cmdqelmt->RspBufferLen = HwCtrlTxd.RespBufferLength;
 	cmdqelmt->CallbackFun = HwCtrlTxd.CallbackFun;
 	cmdqelmt->CallbackArgs = HwCtrlTxd.CallbackArgs;
-
-	/*create reference count*/
-	os_kref_init(&cmdqelmt->refcnt);
 
 	NdisAcquireSpinLock(&pHwCtrl->HwCtrlQLock);
 	/*check queue status*/
@@ -599,6 +636,11 @@ NDIS_STATUS HwCtrlEnqueueCmd(
 		status = NDIS_STATUS_FAILURE;
 		MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s(): HwCtrl CmdTimeout, TYPE:%d,ID:%d!!\n",
 			__func__, cmdqelmt->type, cmdqelmt->command));
+	} else {
+		status = cmdqelmt->result;
+		if (status == NDIS_STATUS_SUCCESS && HwCtrlTxd.RespBufferLength)
+			os_move_mem(HwCtrlTxd.pRespBuffer, cmdqelmt->RspBuffer,
+				HwCtrlTxd.RespBufferLength);
 	}
 end:
 	os_kref_put(&cmdqelmt->refcnt, free_hwcmd);
@@ -618,6 +660,10 @@ NDIS_STATUS HwCtrlSetFlag(
 	}
 
 	NdisAcquireSpinLock(&pHwCtrl->HwCtrlQLock);
+	if (!(pHwCtrl->HwCtrlQ.CmdQState & RTMP_TASK_CAN_DO_INSERT)) {
+		NdisReleaseSpinLock(&pHwCtrl->HwCtrlQLock);
+		return NDIS_STATUS_FAILURE;
+	}
 	pHwCtrl->HwCtrlFlag.IsFlagSet = TRUE;
 	pHwCtrl->HwCtrlFlag.FlagId |= FlagId;
 	NdisReleaseSpinLock(&pHwCtrl->HwCtrlQLock);

@@ -184,6 +184,7 @@ typedef struct _HwCmdQElmt {
 	VOID *CallbackArgs;
 	NDIS_SPIN_LOCK lock;
 	os_kref refcnt;
+	NDIS_STATUS result;
 #ifdef DBG_STARVATION
 	struct starv_dbg starv;
 #endif /*DBG_STARVATION*/

@@ -164,6 +164,8 @@ INT rtmp_sys_task_exit(RTMP_ADAPTER *pAd)
 	HwCtrlSerExit(pAd);
 #endif
 	HwCtrlExit(pAd);
+	if (RtmpDmaQuarantined(pAd))
+		return NDIS_STATUS_FAILURE;
 	RtmpMgmtTaskExit(pAd);
 #ifdef ERR_RECOVERY
 	if (!pAd->ErrRecoveryCtl.queues_retired) {
@@ -329,8 +331,11 @@ fail:
 		return FALSE;
 	}
 	/* Retire software producers while the objects they observe still exist. */
-	if (hw)
+	if (hw) {
 		HwCtrlExit(pAd);
+		if (RtmpDmaQuarantined(pAd))
+			return FALSE;
+	}
 	if (mgmt)
 		RtmpMgmtTaskExit(pAd);
 	if (qm)
@@ -842,6 +847,8 @@ VOID RTMPDrvClose(VOID *pAdSrc, VOID *net_dev)
 	MlmeHalt(pAd);
 	/* Flush/join hardware command and SER workers while MCU/IRQ still live. */
 	HwCtrlExit(pAd);
+	if (RtmpDmaQuarantined(pAd))
+		return;
 	/* A firmware restart acknowledgement is not a DMA drain barrier. */
 	if (!RtmpDmaStopping(pAd) && NICRestartFirmware(pAd) != NDIS_STATUS_SUCCESS)
 		MTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR,

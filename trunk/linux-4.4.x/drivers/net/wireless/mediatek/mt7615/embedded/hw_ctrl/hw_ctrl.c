@@ -1208,9 +1208,15 @@ static NTSTATUS HwCtrlCheckRssi(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
 static NTSTATUS HwCtrlGetTemperature(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
 {
 	UINT32 temperature = 0;
+	NTSTATUS status;
+
+	if (!CMDQelmt->RspBuffer || CMDQelmt->RspBufferLen != sizeof(temperature))
+		return NDIS_STATUS_FAILURE;
 	/*ActionIdx 0 means get temperature*/
-	MtCmdGetThermalSensorResult(pAd, 0, &temperature);
-	os_move_mem(CMDQelmt->RspBuffer, &temperature, CMDQelmt->RspBufferLen);
+	status = MtCmdGetThermalSensorResult(pAd, 0, &temperature);
+	if (status != NDIS_STATUS_SUCCESS)
+		return status;
+	os_move_mem(CMDQelmt->RspBuffer, &temperature, sizeof(temperature));
 	return NDIS_STATUS_SUCCESS;
 }
 

@@ -1766,8 +1766,11 @@ int debug_proc_init(void)
 {
 	struct END_DEVICE *ei_local = netdev_priv(dev_raether);
 
+	if (proc_reg_dir)
+		return -EBUSY;
+	proc_reg_dir = proc_mkdir(PROCREG_DIR, NULL);
 	if (!proc_reg_dir)
-		proc_reg_dir = proc_mkdir(PROCREG_DIR, NULL);
+		return -ENOMEM;
 
 	if (ei_local->features & FE_HW_LRO)
 		hwlro_debug_proc_init(proc_reg_dir);
@@ -1874,65 +1877,15 @@ int debug_proc_init(void)
 
 void debug_proc_exit(void)
 {
-	struct END_DEVICE *ei_local = netdev_priv(dev_raether);
-
-	if (ei_local->features & FE_HW_LRO)
-		hwlro_debug_proc_exit(proc_reg_dir);
-	else if (ei_local->features & (FE_RSS_4RING | FE_RSS_2RING))
-		rss_debug_proc_exit(proc_reg_dir);
-
-	if (ei_local->features & FE_HW_IOCOHERENT)
-		hwioc_debug_proc_exit(proc_reg_dir);
-
-	if (proc_sys_cp0)
-		remove_proc_entry(PROCREG_CP0, proc_reg_dir);
-
-	if (proc_gmac)
-		remove_proc_entry(PROCREG_GMAC, proc_reg_dir);
-
-	if (ei_local->features & (FE_ETHTOOL | FE_GE2_SUPPORT)) {
-		if (proc_gmac)
-			remove_proc_entry(PROCREG_GMAC, proc_reg_dir);
-	}
-
-	if (proc_skb_free)
-		remove_proc_entry(PROCREG_SKBFREE, proc_reg_dir);
-
-	if (proc_tx_ring)
-		remove_proc_entry(PROCREG_TXRING, proc_reg_dir);
-
-	if (proc_rx_ring)
-		remove_proc_entry(PROCREG_RXRING, proc_reg_dir);
-
-	if (ei_local->features & FE_TSO) {
-		if (proc_num_of_txd)
-			remove_proc_entry(PROCREG_NUM_OF_TXD, proc_reg_dir);
-
-		if (proc_tso_len)
-			remove_proc_entry(PROCREG_TSO_LEN, proc_reg_dir);
-	}
-
-	if (ei_local->features & FE_SW_LRO) {
-		if (proc_lro_stats)
-			remove_proc_entry(PROCREG_LRO_STATS, proc_reg_dir);
-	}
-
-	if (ei_local->features & USER_SNMPD) {
-		if (proc_ra_snmp)
-			remove_proc_entry(PROCREG_SNMP, proc_reg_dir);
-	}
-
-	if (proc_esw_cnt)
-		remove_proc_entry(PROCREG_ESW_CNT, proc_reg_dir);
-
-	if (ei_local->chip_name == MT7622_FE || ei_local->chip_name == LEOPARD_FE) {
-		if (proc_eth_cnt)
-			remove_proc_entry(PROCREG_ETH_CNT, proc_reg_dir);
-	}
-
-	/* if (proc_reg_dir) */
-	/* remove_proc_entry(PROCREG_DIR, 0); */
-
-	pr_debug("proc exit\n");
+	/* The directory is our publication owner. Remove every child, including
+	 * optional/partially created diagnostics, and drain active proc callbacks
+	 * before probe rollback can free dev_raether or its register mappings. */
+	proc_remove(proc_reg_dir);
+	proc_reg_dir = NULL;
+	proc_gmac = proc_gmac2 = proc_sys_cp0 = NULL;
+	proc_tx_ring = proc_rx_ring = proc_skb_free = NULL;
+	proc_ra_snmp = proc_num_of_txd = proc_tso_len = NULL;
+	proc_lro_stats = proc_sche = proc_int_dbg = NULL;
+	proc_set_lan_ip = proc_esw_cnt = proc_eth_cnt = NULL;
 }
 EXPORT_SYMBOL(proc_reg_dir);

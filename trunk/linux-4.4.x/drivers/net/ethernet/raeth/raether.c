@@ -704,7 +704,7 @@ static void ei_func_register(struct END_DEVICE *ei_local)
 #endif
 }
 
-static int __init ei_init(struct net_device *dev)
+static int ei_init(struct net_device *dev)
 {
 	struct END_DEVICE *ei_local = netdev_priv(dev);
 
@@ -778,17 +778,27 @@ static void ei_uninit(struct net_device *dev)
 {
 	struct END_DEVICE *ei_local = netdev_priv(dev);
 
-	unregister_netdev(dev);
-	free_netdev(dev);
-
-	if (ei_local->features & FE_GE2_SUPPORT) {
-		unregister_netdev(ei_local->pseudo_dev);
-		free_netdev(ei_local->pseudo_dev);
+	/* ndo_uninit runs inside unregister/register rollback; core owns netdev. */
+	if (!(ei_local->features & FE_INT_NAPI))
+		return;
+	if (ei_local->features & FE_INT_NAPI_TX_RX) {
+		netif_napi_del(&ei_local->napi_tx);
+		netif_napi_del(&ei_local->napi_rx);
+	} else if (ei_local->features & FE_INT_NAPI_RX_ONLY) {
+		if (ei_local->features & FE_RSS_4RING) {
+			netif_napi_del(&ei_local->napi_rx_rss0);
+			netif_napi_del(&ei_local->napi_rx_rss1);
+			netif_napi_del(&ei_local->napi_rx_rss2);
+			netif_napi_del(&ei_local->napi_rx_rss3);
+		} else if (ei_local->features & FE_RSS_2RING) {
+			netif_napi_del(&ei_local->napi_rx_rss0);
+			netif_napi_del(&ei_local->napi_rx_rss1);
+		} else {
+			netif_napi_del(&ei_local->napi_rx);
+		}
+	} else {
+		netif_napi_del(&ei_local->napi);
 	}
-
-	pr_info("Free ei_local and unregister netdev...\n");
-
-	debug_proc_exit();
 }
 
 static void ei_mac_addr_setting(struct net_device *dev)
@@ -3157,42 +3167,110 @@ void raeth_arch_setting(struct END_DEVICE *ei_local, struct platform_device *pde
 	}
 }
 
-void fe_tx_rx_dec(struct END_DEVICE *ei_local, struct platform_device *pdev)
+/* These arrays belong to an unpublished probe until register_netdev succeeds. */
+static void fe_tx_rx_dec_free(struct END_DEVICE *ei_local)
 {
-	u32 val;
-	u8 i;
+	unsigned int i;
 
-	of_property_read_u32(pdev->dev.of_node, "gmac1_txq_num", &val);
-	gmac1_txq_num = val;
-	of_property_read_u32(pdev->dev.of_node, "gmac1_txq_txd_num", &val);
-	gmac1_txq_txd_num = val;
-	gmac1_txd_num = gmac1_txq_num * gmac1_txq_txd_num;
+	kfree(ei_local->free_skb);
+	ei_local->free_skb = NULL;
+	kfree(ei_local->free_txd_num);
+	ei_local->free_txd_num = NULL;
+	kfree(ei_local->free_txd_head);
+	ei_local->free_txd_head = NULL;
+	kfree(ei_local->free_txd_tail);
+	ei_local->free_txd_tail = NULL;
+	kfree(ei_local->txd_pool_info);
+	ei_local->txd_pool_info = NULL;
+	kfree(ei_local->skb_free);
+	ei_local->skb_free = NULL;
+	kfree(ei_local->rls_cnt);
+	ei_local->rls_cnt = NULL;
+	for (i = 0; i < MAX_RX_RING_NUM; i++) {
+		kfree(ei_local->netrx_skb_data[i]);
+		ei_local->netrx_skb_data[i] = NULL;
+	}
+	kfree(ei_local->netrx0_skb_data);
+	ei_local->netrx0_skb_data = NULL;
+}
 
-	of_property_read_u32(pdev->dev.of_node, "gmac2_txq_num", &val);
-	gmac2_txq_num = val;
-	of_property_read_u32(pdev->dev.of_node, "gmac2_txq_txd_num", &val);
-	gmac2_txq_txd_num = val;
-	gmac2_txd_num = gmac2_txq_num * gmac2_txq_txd_num;
+static int fe_tx_rx_dec(struct END_DEVICE *ei_local, struct platform_device *pdev)
+{
+	u32 txq1, txq2, txd1, txd2, rx, tx1, tx2, tx, txq;
+	unsigned int i;
 
-	num_tx_desc = gmac1_txd_num + gmac2_txd_num;
-	total_txq_num = gmac1_txq_num + gmac2_txq_num;
-
-	of_property_read_u32(pdev->dev.of_node, "num_rx_desc", &val);
-	num_rx_desc = val;
-	num_tx_max_process = num_tx_desc;
-
-	ei_local->free_skb = kmalloc_array(num_tx_desc, sizeof(struct sk_buff *), GFP_KERNEL);
-
-	ei_local->free_txd_num = kmalloc_array(total_txq_num, sizeof(atomic_t), GFP_KERNEL);
-	ei_local->free_txd_head = kmalloc_array(total_txq_num, sizeof(unsigned int), GFP_KERNEL);
-	ei_local->free_txd_tail = kmalloc_array(total_txq_num, sizeof(unsigned int), GFP_KERNEL);
-	ei_local->txd_pool_info = kmalloc_array(num_tx_desc, sizeof(unsigned int), GFP_KERNEL);
-	ei_local->skb_free = kmalloc_array(num_tx_desc, sizeof(struct sk_buff *), GFP_KERNEL);
-	ei_local->rls_cnt = kmalloc_array(total_txq_num, sizeof(unsigned int), GFP_KERNEL);
+	/* Never overwrite an existing owner, even on a failed retry. */
+	if (ei_local->free_skb || ei_local->free_txd_num ||
+	    ei_local->free_txd_head || ei_local->free_txd_tail ||
+	    ei_local->txd_pool_info || ei_local->skb_free ||
+	    ei_local->rls_cnt || ei_local->netrx0_skb_data)
+		return -EBUSY;
 	for (i = 0; i < MAX_RX_RING_NUM; i++)
-		ei_local->netrx_skb_data[i] =
-			kmalloc_array(num_rx_desc, sizeof(void *), GFP_KERNEL);
-	ei_local->netrx0_skb_data = kmalloc_array(num_rx_desc, sizeof(void *), GFP_KERNEL);
+		if (ei_local->netrx_skb_data[i])
+			return -EBUSY;
+
+	if (of_property_read_u32(pdev->dev.of_node, "gmac1_txq_num", &txq1) ||
+	    of_property_read_u32(pdev->dev.of_node, "gmac1_txq_txd_num", &txd1) ||
+	    of_property_read_u32(pdev->dev.of_node, "gmac2_txq_num", &txq2) ||
+	    of_property_read_u32(pdev->dev.of_node, "gmac2_txq_txd_num", &txd2) ||
+	    of_property_read_u32(pdev->dev.of_node, "num_rx_desc", &rx))
+		return -EINVAL;
+	if (!txq1 || !txd1 || !rx || (txq2 && !txd2) ||
+	    txq1 > (~0U) / txd1 || (txq2 && txq2 > (~0U) / txd2))
+		return -EINVAL;
+	tx1 = txq1 * txd1;
+	tx2 = txq2 * txd2;
+	if (tx1 > (~0U) - tx2 || txq1 > (~0U) - txq2)
+		return -EINVAL;
+	tx = tx1 + tx2;
+	txq = txq1 + txq2;
+
+	/* Zero unused slots so later partial initialization cannot invent owners. */
+	ei_local->free_skb = kcalloc(tx, sizeof(struct sk_buff *), GFP_KERNEL);
+	if (!ei_local->free_skb)
+		goto no_mem;
+	ei_local->free_txd_num = kcalloc(txq, sizeof(atomic_t), GFP_KERNEL);
+	if (!ei_local->free_txd_num)
+		goto no_mem;
+	ei_local->free_txd_head = kcalloc(txq, sizeof(unsigned int), GFP_KERNEL);
+	if (!ei_local->free_txd_head)
+		goto no_mem;
+	ei_local->free_txd_tail = kcalloc(txq, sizeof(unsigned int), GFP_KERNEL);
+	if (!ei_local->free_txd_tail)
+		goto no_mem;
+	ei_local->txd_pool_info = kcalloc(tx, sizeof(unsigned int), GFP_KERNEL);
+	if (!ei_local->txd_pool_info)
+		goto no_mem;
+	ei_local->skb_free = kcalloc(tx, sizeof(struct sk_buff *), GFP_KERNEL);
+	if (!ei_local->skb_free)
+		goto no_mem;
+	ei_local->rls_cnt = kcalloc(txq, sizeof(unsigned int), GFP_KERNEL);
+	if (!ei_local->rls_cnt)
+		goto no_mem;
+	for (i = 0; i < MAX_RX_RING_NUM; i++) {
+		ei_local->netrx_skb_data[i] = kcalloc(rx, sizeof(void *), GFP_KERNEL);
+		if (!ei_local->netrx_skb_data[i])
+			goto no_mem;
+	}
+	ei_local->netrx0_skb_data = kcalloc(rx, sizeof(void *), GFP_KERNEL);
+	if (!ei_local->netrx0_skb_data)
+		goto no_mem;
+
+	gmac1_txq_num = txq1;
+	gmac1_txq_txd_num = txd1;
+	gmac2_txq_num = txq2;
+	gmac2_txq_txd_num = txd2;
+	gmac1_txd_num = tx1;
+	gmac2_txd_num = tx2;
+	num_tx_desc = tx;
+	total_txq_num = txq;
+	num_rx_desc = rx;
+	num_tx_max_process = tx;
+	return 0;
+
+no_mem:
+	fe_tx_rx_dec_free(ei_local);
+	return -ENOMEM;
 }
 
 /* static struct wakeup_source eth_wake_lock; */
@@ -3206,6 +3284,11 @@ static int rather_probe(struct platform_device *pdev)
 	const char *mac_addr;
 	int ret;
 	int i;
+	bool clocks_enabled = false;
+	bool proc_initialized = false;
+
+	if (dev_raether)
+		return -EBUSY;
 
 	netdev = alloc_etherdev_mqs(sizeof(struct END_DEVICE),
 				    1, 1);
@@ -3222,7 +3305,9 @@ static int rather_probe(struct platform_device *pdev)
 	fe_architecture_config(ei_local);
 	fe_chip_name_config(ei_local, pdev);
 	raeth_arch_setting(ei_local, pdev);
-	fe_tx_rx_dec(ei_local, pdev);
+	ret = fe_tx_rx_dec(ei_local, pdev);
+	if (ret)
+		goto err_free_dev;
 
 	ret = of_property_read_bool(pdev->dev.of_node, "dma-coherent");
 	if (ret)
@@ -3248,19 +3333,31 @@ static int rather_probe(struct platform_device *pdev)
 
 	/* iomap registers */
 	node = of_parse_phandle(pdev->dev.of_node, "mediatek,ethsys", 0);
+	if (!node) {
+		ret = -ENODEV;
+		goto err_free_dev;
+	}
 	ethdma_sysctl_base = of_iomap(node, 0);
-	if (IS_ERR(ethdma_sysctl_base)) {
+	of_node_put(node);
+	if (!ethdma_sysctl_base) {
 		dev_err(&pdev->dev, "no ethdma_sysctl_base found\n");
-		return PTR_ERR(ethdma_sysctl_base);
+		ret = -ENOMEM;
+		goto err_free_dev;
 	}
 
 	ethdma_frame_engine_base = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(ethdma_frame_engine_base)) {
 		dev_err(&pdev->dev, "no ethdma_frame_engine_base found\n");
-		return PTR_ERR(ethdma_frame_engine_base);
+		ret = PTR_ERR(ethdma_frame_engine_base);
+		ethdma_frame_engine_base = NULL;
+		goto err_free_dev;
 	}
 
 	ethdma_mac_base = ioremap(0x1b110000, 0x300);
+	if (!ethdma_mac_base) {
+		ret = -ENOMEM;
+		goto err_free_dev;
+	}
 
 	/* get clock ctrl */
 	if (ei_local->chip_name != MT7621_FE) {
@@ -3304,6 +3401,7 @@ static int rather_probe(struct platform_device *pdev)
 	}
 
 	ei_clock_enable(ei_local);
+	clocks_enabled = true;
 
 	if (ei_local->chip_name == MT7622_FE || ei_local->chip_name == LEOPARD_FE)
 		ei_ioc_setting(pdev, ei_local);
@@ -3333,6 +3431,8 @@ static int rather_probe(struct platform_device *pdev)
 		goto err_free_dev;
 	}
 
+	proc_initialized = true;
+
 	/* Register net device for the driver */
 	ret = register_netdev(netdev);
 	if (ret) {
@@ -3358,6 +3458,24 @@ static int rather_probe(struct platform_device *pdev)
 	return 0;
 
 err_free_dev:
+	if (proc_initialized)
+		debug_proc_exit();
+	if (clocks_enabled)
+		ei_clock_disable(ei_local);
+	of_node_put(ei_local->switch_np);
+	if (ethdma_mac_base) {
+		iounmap(ethdma_mac_base);
+		ethdma_mac_base = NULL;
+	}
+	if (ethdma_sysctl_base) {
+		iounmap(ethdma_sysctl_base);
+		ethdma_sysctl_base = NULL;
+	}
+	if (ei_local->qdma_pdev && ei_local->qdma_pdev != pdev)
+		platform_device_put(ei_local->qdma_pdev);
+	fe_tx_rx_dec_free(ei_local);
+	ethdma_frame_engine_base = NULL;
+	dev_raether = NULL;
 	free_netdev(netdev);
 	return ret;
 }
@@ -3399,6 +3517,8 @@ static struct platform_driver raeth_driver = {
 	.driver = {
 		   .name = raeth_string,
 		   .owner = THIS_MODULE,
+		   /* remove cannot yet retire active DMA; reject manual detach. */
+		   .suppress_bind_attrs = true,
 		   .of_match_table = raether_of_ids,
 		   /* .pm = &raeth_pm_ops, */
 		   },

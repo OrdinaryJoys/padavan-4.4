@@ -383,6 +383,17 @@ static int spi_nor_lock_and_prep(struct spi_nor *nor, enum spi_nor_ops ops)
 			return ret;
 		}
 	}
+	/* A failed transport or ready poll can leave the previous operation
+	 * active after its caller drops this mutex. Do not let the next read,
+	 * WREN or erase report success for a command ignored while WIP is set.
+	 * Keep the existing ready deadline and settle under the same prepared
+	 * controller/lock ownership as the operation being admitted. */
+	ret = spi_nor_wait_till_ready(nor);
+	if (ret) {
+		if (nor->unprepare)
+			nor->unprepare(nor, ops);
+		mutex_unlock(&nor->lock);
+	}
 	return ret;
 }
 
@@ -685,7 +696,7 @@ static int spi_nor_lock(struct mtd_info *mtd, loff_t ofs, uint64_t len)
 
 	ret = nor->flash_lock(nor, ofs, len);
 
-	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_UNLOCK);
+	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_LOCK);
 	return ret;
 }
 
@@ -700,7 +711,7 @@ static int spi_nor_unlock(struct mtd_info *mtd, loff_t ofs, uint64_t len)
 
 	ret = nor->flash_unlock(nor, ofs, len);
 
-	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_LOCK);
+	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_UNLOCK);
 	return ret;
 }
 
@@ -715,7 +726,7 @@ static int spi_nor_is_locked(struct mtd_info *mtd, loff_t ofs, uint64_t len)
 
 	ret = nor->flash_is_locked(nor, ofs, len);
 
-	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_LOCK);
+	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_UNLOCK);
 	return ret;
 }
 

@@ -99,6 +99,7 @@ typedef void VOID,*PVOID,*PNDIS_PACKET;typedef unsigned char UCHAR,UINT8,*PUCHAR
 typedef unsigned short UINT16;typedef uint32_t UINT32;typedef unsigned long ULONG;
 typedef int INT,INT32,NTSTATUS,NDIS_STATUS,BOOLEAN,NDIS_SPIN_LOCK;typedef char RTMP_STRING;
 #define RtmpDmaResourcesMayRelease(p) ((void)(p),1)
+#define RtmpDmaQuarantined(p) ((p)->dma_quarantined)
 #define TRUE 1
 #define FALSE 0
 #define NDIS_STATUS_SUCCESS 0
@@ -196,7 +197,6 @@ static int RTPCICmdThread(ULONG n){(void)n;return 0;}
 static int RtmpOSTaskAttach(RTMP_OS_TASK *p,INT(*fn)(ULONG),ULONG n){assert(fn);assert(n==(ULONG)p);assert(!p->kthread_task);
  attach_attempts++;if(attach_attempts==attach_fail_at)return 3;p->kthread_task=p;tasks++;return 0;}
 static int RtmpOSTaskKill(RTMP_OS_TASK *p){if(p->kthread_task){p->kthread_task=NULL;tasks--;}return 0;}
-static void HwCtrlCmdHandler(RTMP_ADAPTER *ad){assert(ad->HwCtrl.HwCtrlQLock);assert(ad->HwCtrl.HwCtrlQ.size==0);}
 VOID HwCtrlExit(RTMP_ADAPTER *ad);
 static void RtmpCmdQInit(RTMP_ADAPTER *ad){alloc_lock(&ad->CmdQLock);ad->CmdQ.CmdQState=RTMP_TASK_STAT_INITED;}
 static void RtmpCmdQExit(RTMP_ADAPTER *ad){assert(ad->CmdQLock);}
