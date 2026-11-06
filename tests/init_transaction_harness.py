@@ -198,6 +198,10 @@ static int RtmpOSTaskAttach(RTMP_OS_TASK *p,INT(*fn)(ULONG),ULONG n){assert(fn);
  attach_attempts++;if(attach_attempts==attach_fail_at)return 3;p->kthread_task=p;tasks++;return 0;}
 static int RtmpOSTaskKill(RTMP_OS_TASK *p){if(p->kthread_task){p->kthread_task=NULL;tasks--;}return 0;}
 VOID HwCtrlExit(RTMP_ADAPTER *ad);
+/* This init model owns task stages only. Command/flag data retirement is
+ * executed by hwcmd_owner_harness; these seams require a completed join. */
+static VOID HwCtrlCmdHandler(RTMP_ADAPTER *ad){assert(ad->HwCtrl.HwCtrlQ.CmdQState==RTMP_TASK_STAT_STOPED);assert(!RTMP_OS_TASK_LEGALITY(&ad->HwCtrl.HwCtrlTask));}
+static VOID HwCtrlFlagHandler(RTMP_ADAPTER *ad){assert(ad->HwCtrl.HwCtrlQ.CmdQState==RTMP_TASK_STAT_STOPED);assert(!RTMP_OS_TASK_LEGALITY(&ad->HwCtrl.HwCtrlTask));}
 static void RtmpCmdQInit(RTMP_ADAPTER *ad){alloc_lock(&ad->CmdQLock);ad->CmdQ.CmdQState=RTMP_TASK_STAT_INITED;}
 static void RtmpCmdQExit(RTMP_ADAPTER *ad){assert(ad->CmdQLock);}
 static void ba_enqueue_head(struct reordering_list *l,struct reordering_mpdu *m){m->next=l->next;l->next=m;l->qlen++;}
