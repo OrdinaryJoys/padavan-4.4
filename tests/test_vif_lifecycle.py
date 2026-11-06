@@ -94,4 +94,12 @@ class VifLifecycleTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode,0)
 
 
+    def test_terminal_callback_failure_quarantines_while_all_owners_stay_live(self):
+        for binary in self.binaries:
+            result=subprocess.run([str(binary),'down-callback-error'],check=True,capture_output=True,text=True,timeout=10)
+            row=json.loads(result.stdout)
+            self.assertEqual(row,h.EXPECTED_ROWS['down-callback-error'])
+            self.assertEqual(row[6],1)
+            for index in (4,5,7,8,9,10):self.assertEqual(row[index],1)
+
 if __name__=='__main__':unittest.main()

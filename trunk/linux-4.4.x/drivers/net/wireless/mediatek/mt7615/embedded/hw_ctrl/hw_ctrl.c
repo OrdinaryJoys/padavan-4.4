@@ -1333,6 +1333,9 @@ static NTSTATUS HwCtrlWifiSysOpen(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
 		!wsys->wdev || wsys->wdev->sys_handle != pAd)
 		return NDIS_STATUS_INVALID_DATA;
 
+	if (RtmpDmaStopping(pAd))
+		return NDIS_STATUS_FAILURE;
+
 	if (pAd->HwCtrl.hwctrl_ops.wifi_sys_open)
 		return pAd->HwCtrl.hwctrl_ops.wifi_sys_open(wsys);
 	else {
@@ -1352,6 +1355,9 @@ static NTSTATUS HwCtrlWifiSysClose(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
 	if (CMDQelmt->bufferlength != sizeof(*wsys) || !wsys ||
 		!wsys->wdev || wsys->wdev->sys_handle != pAd)
 		return NDIS_STATUS_INVALID_DATA;
+
+	if (RtmpDmaStopping(pAd))
+		return wifi_sys_retire(pAd, wsys, HWCMD_ID_WIFISYS_CLOSE);
 
 	if (pAd->HwCtrl.hwctrl_ops.wifi_sys_close)
 		return pAd->HwCtrl.hwctrl_ops.wifi_sys_close(wsys);
@@ -1373,6 +1379,9 @@ static NTSTATUS HwCtrlWifiSysLinkUp(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
 		!wsys->wdev || wsys->wdev->sys_handle != pAd)
 		return NDIS_STATUS_INVALID_DATA;
 
+	if (RtmpDmaStopping(pAd))
+		return NDIS_STATUS_FAILURE;
+
 	if (pAd->HwCtrl.hwctrl_ops.wifi_sys_link_up)
 		return pAd->HwCtrl.hwctrl_ops.wifi_sys_link_up(wsys);
 	else {
@@ -1392,6 +1401,9 @@ static NTSTATUS HwCtrlWifiSysLinkDown(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
 	if (CMDQelmt->bufferlength != sizeof(*wsys) || !wsys ||
 		!wsys->wdev || wsys->wdev->sys_handle != pAd)
 		return NDIS_STATUS_INVALID_DATA;
+
+	if (RtmpDmaStopping(pAd))
+		return wifi_sys_retire(pAd, wsys, HWCMD_ID_WIFISYS_LINKDOWN);
 
 	if (pAd->HwCtrl.hwctrl_ops.wifi_sys_link_down)
 		return pAd->HwCtrl.hwctrl_ops.wifi_sys_link_down(wsys);
@@ -1413,6 +1425,9 @@ static NTSTATUS HwCtrlWifiSysPeerLinkDown(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelm
 		!wsys->wdev || wsys->wdev->sys_handle != pAd)
 		return NDIS_STATUS_INVALID_DATA;
 
+	if (RtmpDmaStopping(pAd))
+		return wifi_sys_retire(pAd, wsys, HWCMD_ID_WIFISYS_PEER_LINKDOWN);
+
 	if (pAd->HwCtrl.hwctrl_ops.wifi_sys_disconnt_act)
 		return pAd->HwCtrl.hwctrl_ops.wifi_sys_disconnt_act(wsys);
 	else {
@@ -1433,6 +1448,9 @@ static NTSTATUS HwCtrlWifiSysPeerLinkUp(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
 		!wsys->wdev || wsys->wdev->sys_handle != pAd)
 		return NDIS_STATUS_INVALID_DATA;
 
+	if (RtmpDmaStopping(pAd))
+		return NDIS_STATUS_FAILURE;
+
 	if (pAd->HwCtrl.hwctrl_ops.wifi_sys_connt_act)
 		return pAd->HwCtrl.hwctrl_ops.wifi_sys_connt_act(wsys);
 	else {
@@ -1452,6 +1470,9 @@ static NTSTATUS HwCtrlWifiSysPeerUpdate(RTMP_ADAPTER *pAd, HwCmdQElmt *CMDQelmt)
 	if (CMDQelmt->bufferlength != sizeof(*wsys) || !wsys ||
 		!wsys->wdev || wsys->wdev->sys_handle != pAd)
 		return NDIS_STATUS_INVALID_DATA;
+
+	if (RtmpDmaStopping(pAd))
+		return NDIS_STATUS_FAILURE;
 
 	if (pAd->HwCtrl.hwctrl_ops.wifi_sys_peer_update)
 		return pAd->HwCtrl.hwctrl_ops.wifi_sys_peer_update(wsys);

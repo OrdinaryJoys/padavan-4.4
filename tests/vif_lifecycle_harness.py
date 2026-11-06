@@ -42,7 +42,7 @@ CASE_NAMES=('first-up-failure','first-callback-missing','first-hardware-open-fai
 FIELDS=('result','vif_count','if_up','other_if_up','hardware_live','pinned','quarantined',
  'irq_live','rings_live','tokens_live','wdev_published','hardware_opens','hardware_closes',
  'callback_opens','callback_closes','lookups','teardown_checks','unsafe_frees')
-EXPECTED_ROWS={'first-up-failure': [-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 0],
+EXPECTED_ROWS = {'first-up-failure': [-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 0],
  'first-callback-missing': [-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0],
  'first-hardware-open-failure': [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0],
  'nonlast-up-failure': [-1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 1, 0, 1, 0, 0],
@@ -66,7 +66,7 @@ EXPECTED_ROWS={'first-up-failure': [-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0
  'last-down-idle': [0, 0, 0, 0, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0],
  'last-down-busy': [-5, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 0],
  'nonlast-down': [0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0],
- 'down-callback-error': [-1, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0],
+ 'down-callback-error': [-1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0],
  'last-deinit-idle': [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0],
  'last-deinit-busy': [-5, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 1, 0],
  'nonlast-deinit': [0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0]}
@@ -112,11 +112,12 @@ static struct wifi_dev *wdev_search_by_netdev(RTMP_ADAPTER *ad,struct net_device
  assert(ad==active&&net==ad->net_dev);lookups++;return lookup_ok?&wdev:NULL;}
 static int RtmpDmaQuarantined(RTMP_ADAPTER *ad){assert(ad==active);return ad->dma_quarantined;}
 static int RtmpDmaStopping(RTMP_ADAPTER *ad){assert(ad==active);return ad->dma_stopping||ad->dma_quarantined;}
+static void RtmpDmaQuarantine(RTMP_ADAPTER *ad){assert(ad==active);ad->dma_stopping=ad->dma_quarantined=1;}
 static void RtmpDmaLifecycleLock(RTMP_ADAPTER *ad){assert(!pthread_mutex_lock(&ad->lifecycle));}
 static void RtmpDmaLifecycleUnlock(RTMP_ADAPTER *ad){assert(!pthread_mutex_unlock(&ad->lifecycle));}
 static int RtmpDmaTeardownCheck(RTMP_ADAPTER *ad){assert(ad==active);teardown_checks++;
  if(busy||stop_failure||ad->dma_quarantined){ad->dma_quarantined=1;ad->dma_stopping=1;return FALSE;}
- return TRUE;}
+ ad->dma_stopping=1;return TRUE;}
 static int mt_wifi_open(void *net){assert(net==active->net_dev);hardware_opens++;
  if(hardware_open_status)return hardware_open_status;
  assert(!hardware_live);hardware_live=irq_live=rings_live=tokens_live=1;active->dma_lifecycle_pinned=1;return 0;}

@@ -720,6 +720,9 @@ int virtual_if_down_handler(VOID *dev)
 	wdev_if_up_down(pAd, wdev, FALSE);
 
 	if (wdev_do_close(wdev) != TRUE) {
+		/* A terminal software retirement failure cannot authorize outer frees. */
+		if (RtmpDmaStopping(pAd))
+			RtmpDmaQuarantine(pAd);
 		retval = -1;
 		MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s() inf_down (idx %d) fail!!!\n",
 			__func__, wdev->wdev_idx));

@@ -110,7 +110,9 @@ VOID WcReleaseEdca(struct hdev_obj *obj)
 		pEdca->bValid = FALSE;
 		pEdca->RefCnt = 0;
 		pEdca->WmmSet = WmmIdx;
-		AsicSetEdcaParm(pAd, pEdca, pAd->wdev_list[obj->Idx]);
+		/* Keep terminal reference retirement host-only after MCU/DMA stop. */
+		if (!RtmpDmaStopping(pAd))
+			AsicSetEdcaParm(pAd, pEdca, pAd->wdev_list[obj->Idx]);
 	}
 
 	obj->WmmIdx = 0;

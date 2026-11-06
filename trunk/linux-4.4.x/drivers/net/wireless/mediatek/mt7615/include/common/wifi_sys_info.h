@@ -256,6 +256,7 @@ VOID WifiSysUpdatePortSecur(struct _RTMP_ADAPTER *pAd, struct _MAC_TABLE_ENTRY *
 INT wifi_sys_open(struct wifi_dev *wdev);
 INT wifi_sys_close(struct wifi_dev *wdev);
 INT wifi_sys_abort_open(struct wifi_dev *wdev);
+INT wifi_sys_retire(struct _RTMP_ADAPTER *ad, struct WIFI_SYS_CTRL *wsys, UINT32 id);
 INT wifi_sys_conn_act(struct wifi_dev *wdev, struct _MAC_TABLE_ENTRY *entry);
 INT wifi_sys_disconn_act(struct wifi_dev *wdev, struct _MAC_TABLE_ENTRY *entry);
 INT wifi_sys_linkup(struct wifi_dev *wdev, struct _MAC_TABLE_ENTRY *entry);

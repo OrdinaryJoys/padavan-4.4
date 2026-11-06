@@ -70,7 +70,9 @@ class HwcmdOwnerTests(unittest.TestCase):
    ('HwCtrlThread','if (pHwCtrl->HwCtrlQ.CmdQState == RTMP_TASK_STAT_INITED)','if (TRUE)','exit-before-start'),
    ('HwCtrlExit','NdisAcquireSpinLock(&pHwCtrl->HwCtrlQLock);\n\tpHwCtrl->HwCtrlQ.CmdQState = RTMP_TASK_STAT_STOPED;\n\tNdisReleaseSpinLock(&pHwCtrl->HwCtrlQLock);','HwCtrlCmdHandler(pAd);','active-worker-vs-exit'),
    ('HwCtrlGetTemperature','CMDQelmt->RspBufferLen != sizeof(temperature)','FALSE','temperature-too-large'),
-   ('HwCtrlExit','HwCtrlCmdHandler(pAd);','/* missing post-join drain */','exit-without-threadfn'))
+   ('HwCtrlExit','HwCtrlCmdHandler(pAd);','/* missing post-join drain */','exit-without-threadfn'),
+   ('HwCtrlEnqueueCmd','&& RtmpDmaStopping(pAd) &&','&& FALSE &&','wsys-delayed-producer-stop'),
+   ('HwCtrlEnqueueCmd','!RtmpDmaResourcesMayRelease(pAd)','FALSE','wsys-terminal-busy'))
   for index,(name,old,new,case)in enumerate(mutations):
    with self.subTest(function=name,case=case):
     body=h.function(self.texts[h.FUNCTION_SOURCES[name]],name)
@@ -88,14 +90,22 @@ class HwcmdOwnerTests(unittest.TestCase):
  def test_wsys_timeout_quarantines_and_late_queue_or_running_retirement_retains_owners(self):
   self.cases(('wsys-timeout-queued','wsys-timeout-running'))
 
+ def test_delayed_wsys_producers_cannot_publish_after_terminal_retirement_barrier(self):
+  self.cases(h.CASE_NAMES[32:])
+
+ def test_wsys_recheck_precedes_publish_under_the_fifo_lock(self):
+  body=h.function(self.texts['basic'],'HwCtrlEnqueueCmd')
+  self.assertLess(body.index('NdisAcquireSpinLock(&pHwCtrl->HwCtrlQLock);'),body.index('&& RtmpDmaStopping(pAd) &&'))
+  self.assertLess(body.index('&& RtmpDmaStopping(pAd) &&'),body.index('os_kref_get(&cmdqelmt->refcnt);'))
+
  def test_whole_function_declaration_and_case_contract_is_complete(self):
-  self.assertEqual(len(h.CASE_NAMES),32)
+  self.assertEqual(len(h.CASE_NAMES),39)
   self.assertEqual(set(h.CASE_NAMES),set(h.EXPECTED_ROWS))
   self.assertEqual(len(h.function_manifest(self.texts)),9)
-  self.assertEqual(len(h.source_only_function_manifest(self.texts)),8)
+  self.assertEqual(len(h.source_only_function_manifest(self.texts)),10)
   for name,key in h.FUNCTION_SOURCES.items():
    self.assertEqual(self.generated.count(h.function(self.texts[key],name)),1)
-  self.assertEqual(len(h.source_declarations(self.texts)),14)
+  self.assertEqual(len(h.source_declarations(self.texts)),15)
   self.assertIn('if (!test_bit(KTHREAD_SHOULD_STOP, &self.flags)) {',self.texts['kernel_task'])
   self.assertIn('ret = threadfn(data);',self.texts['kernel_task'])
   with self.assertRaises(ValueError):h.generate_source({})

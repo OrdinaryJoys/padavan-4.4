@@ -732,6 +732,10 @@ static NDIS_STATUS wifi_sys_queue_work(struct _RTMP_ADAPTER *ad, UINT32 id, stru
 	}
 	if (!wsys || !wsys->wdev || RtmpDmaQuarantined(ad))
 		return NDIS_STATUS_FAILURE;
+	if (RtmpDmaStopping(ad) &&
+		((id != HWCMD_ID_WIFISYS_CLOSE && id != HWCMD_ID_WIFISYS_LINKDOWN &&
+		  id != HWCMD_ID_WIFISYS_PEER_LINKDOWN) || !RtmpDmaResourcesMayRelease(ad)))
+		return NDIS_STATUS_FAILURE;
 
 	HW_CTRL_TXD_BASIC(
 		ad,
@@ -830,7 +834,7 @@ NDIS_STATUS HW_WIFISYS_RA_UPDATE(
 {
 	UINT32 ret;
 
-	if (!wsys || !wsys->wdev || RtmpDmaQuarantined(pAd))
+	if (!wsys || !wsys->wdev || RtmpDmaStopping(pAd))
 		return NDIS_STATUS_FAILURE;
 	ret = HW_CTRL_BASIC_ENQ(pAd,
 							HWCMD_TYPE_WIFISYS,

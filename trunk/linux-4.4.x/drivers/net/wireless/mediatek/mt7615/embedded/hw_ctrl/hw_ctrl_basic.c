@@ -604,6 +604,18 @@ NDIS_STATUS HwCtrlEnqueueCmd(
 		status = NDIS_STATUS_FAILURE;
 		goto end;
 	}
+	/* Serialize delayed Wsys producers with the terminal FIFO barrier. The
+	 * caller's early stopping check may predate a complete VIF retirement.
+	 */
+	if (HwCtrlTxd.CmdType == HWCMD_TYPE_WIFISYS && RtmpDmaStopping(pAd) &&
+		((HwCtrlTxd.CmdId != HWCMD_ID_WIFISYS_CLOSE &&
+		  HwCtrlTxd.CmdId != HWCMD_ID_WIFISYS_LINKDOWN &&
+		  HwCtrlTxd.CmdId != HWCMD_ID_WIFISYS_PEER_LINKDOWN) ||
+		 !RtmpDmaResourcesMayRelease(pAd))) {
+		NdisReleaseSpinLock(&pHwCtrl->HwCtrlQLock);
+		status = NDIS_STATUS_FAILURE;
+		goto end;
+	}
 	/*add reference count for cmd due to send to thread*/
 	os_kref_get(&cmdqelmt->refcnt);
 

@@ -32,7 +32,8 @@ BODY_ORDER=('HwCtrlGetTemperature',
  'HwCtrlSetFlag')
 SOURCE_ONLY_FUNCTION_SOURCES={'HwCtrlValidCmd':'basic','HwCtrlValidFlag':'basic',
  'rtmp_sys_init':'init','rtmp_sys_task_exit':'init','RTMPDrvClose':'init',
- 'RTMP_GET_TEMPERATURE':'cmd','RtmpDmaQuarantined':'os','RtmpDmaQuarantine':'os'}
+ 'RTMP_GET_TEMPERATURE':'cmd','RtmpDmaQuarantined':'os','RtmpDmaQuarantine':'os',
+ 'RtmpDmaStopping':'os','RtmpDmaResourcesMayRelease':'os'}
 CASE_NAMES=('node-oom-sync','node-oom-async','payload-oom-sync','payload-oom-async',
  'response-oom','reject-stopped-sync','reject-stopped-async','normal-sync','normal-async',
  'response-complete','response-timeout-queued','null-input','null-response','async-response',
@@ -40,10 +41,20 @@ CASE_NAMES=('node-oom-sync','node-oom-async','payload-oom-sync','payload-oom-asy
  'exit-retirement-failure','repeat-exit','command-stop-before-handler','normal-callback',
  'response-handler-failure','response-no-handler','response-exit-before-start',
  'temperature-too-large','temperature-null','temperature-api-failure',
- 'exit-without-threadfn','response-exit-without-threadfn','wsys-timeout-queued','wsys-timeout-running')
+ 'exit-without-threadfn','response-exit-without-threadfn','wsys-timeout-queued','wsys-timeout-running',
+ 'wsys-delayed-producer-stop','wsys-late-ra-async','wsys-terminal-busy',
+ 'wsys-terminal-close-idle','wsys-terminal-linkdown-idle','wsys-terminal-peerdown-idle',
+ 'wsys-terminal-quarantined')
 FIELDS=('result','allocs','frees','live','locks','completion_init','completion_close',
  'callbacks','flag_callbacks','wakes','kills','quarantined','caller','early_live','stop_join_seen')
-EXPECTED_ROWS={'wsys-timeout-queued':[1,2,2,0,0,1,1,0,0,1,1,1,9,2,1],
+EXPECTED_ROWS={'wsys-delayed-producer-stop':[1,4,4,0,0,2,2,1,0,1,1,0,9,0,1],
+ 'wsys-late-ra-async':[1,2,2,0,0,0,0,0,0,0,1,0,9,0,1],
+ 'wsys-terminal-busy':[1,2,2,0,0,1,1,0,0,0,1,0,9,0,1],
+ 'wsys-terminal-close-idle':[0,2,2,0,0,1,1,1,0,1,1,0,9,0,1],
+ 'wsys-terminal-linkdown-idle':[0,2,2,0,0,1,1,1,0,1,1,0,9,0,1],
+ 'wsys-terminal-peerdown-idle':[0,2,2,0,0,1,1,1,0,1,1,0,9,0,1],
+ 'wsys-terminal-quarantined':[1,2,2,0,0,1,1,0,0,0,1,1,9,0,1],
+ 'wsys-timeout-queued':[1,2,2,0,0,1,1,0,0,1,1,1,9,2,1],
  'wsys-timeout-running':[1,2,2,0,0,1,1,1,0,1,1,1,9,2,1],
  'node-oom-sync': [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 9, 0, 1],
  'node-oom-async': [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 9, 0, 1],
@@ -76,6 +87,7 @@ EXPECTED_ROWS={'wsys-timeout-queued':[1,2,2,0,0,1,1,0,0,1,1,1,9,2,1],
  'exit-without-threadfn': [0, 2, 2, 0, 0, 0, 0, 0, 0, 1, 1, 0, 9, 2, 1],
  'response-exit-without-threadfn': [1, 3, 3, 0, 0, 1, 1, 0, 0, 1, 1, 0, 9, 0, 1]}
 SOURCE_DECLARATIONS={
+ r'enum \{\n\tHWCMD_ID_FIRST[\s\S]*?\n\};':'header',
  r'enum \{\n\tHWCMD_TYPE_FIRST[\s\S]*?\n\};':'header',
  r'typedef struct _HwCmdQElmt \{[\s\S]*?\} HwCmdQElmt, \*PHwCmdQElmt;':'header',
  r'typedef struct _HwCmdQ \{[\s\S]*?\} HwCmdQ, \*PHwCmdQ;':'header',
@@ -91,6 +103,7 @@ STATUS_DECLARATIONS={'^#define NDIS_STATUS_SUCCESS\\s+(0x[0-9a-fA-F]+)\\s*$': 0,
  '^#define NDIS_STATUS_FAILURE\\s+(0x[0-9a-fA-F]+)\\s*$': 1,
  '^#define NDIS_STATUS_RESOURCES\\s+(0x[0-9a-fA-F]+)\\s*$': 3}
 MODEL_BOUNDARY={'native_pthread_one_selected_worker_exit_race':True,
+ 'selected_native_delayed_Wsys_producer_vs_terminal_barrier':True,
  'kernel_thread_or_DMA_executed':False,'SER_hooks_are_inert':True,
  'external_raw_adapter_callers_are_not_proven_drained':True,
  'callback_argument_borrowing_not_generalized':True,
@@ -99,6 +112,7 @@ MODEL_BOUNDARY={'native_pthread_one_selected_worker_exit_race':True,
  'all_functions_whole_current_bodies':True}
 PREFIX=r'''
 #include <assert.h>
+#include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -136,11 +150,12 @@ typedef NTSTATUS(*HwCmdCb)(struct _RTMP_ADAPTER*,VOID*);
 typedef NTSTATUS(*HwCmdHdlr)(struct _RTMP_ADAPTER*,void*);
 typedef NTSTATUS(*HwFlagHdlr)(struct _RTMP_ADAPTER*);
 SOURCE_DEFINITIONS
-typedef struct _RTMP_ADAPTER {HW_CTRL_T HwCtrl;int flags,quarantined;} RTMP_ADAPTER,*PRTMP_ADAPTER;
+typedef struct _RTMP_ADAPTER {HW_CTRL_T HwCtrl;int flags,quarantined,stopping,release_allowed;} RTMP_ADAPTER,*PRTMP_ADAPTER;
 static int allocs,frees,live,attempts,fail_at,locks,completion_init,completion_close;
 static int callbacks,flag_callbacks,wakes,kills,process_on_wait,kill_fail,early_live,stop_join_seen;
 static int thread_created,block_handler,handler_entered,release_handler,exit_join_entered,worker_ready;
-static pthread_t worker;
+static pthread_t worker,producer;
+static int delayed_publish,producer_started,start_producer,producer_paused,release_producer;
 static pthread_mutex_t schedule_lock=PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t schedule_cond=PTHREAD_COND_INITIALIZER;
 static int wake_budget,sensor_fail,no_handler,skip_threadfn;
@@ -149,7 +164,14 @@ static void lock_create(NDIS_SPIN_LOCK *p){assert(!p->initialized);assert(!pthre
 static void lock_delete(NDIS_SPIN_LOCK *p){assert(p->initialized);assert(!pthread_mutex_destroy(&p->mutex));p->initialized=0;__sync_sub_and_fetch(&locks,1);}
 #define NdisAllocateSpinLock(a,p) ((void)(a),lock_create(p))
 #define NdisFreeSpinLock(p) lock_delete(p)
-#define NdisAcquireSpinLock(p) do{assert((p)->initialized);assert(!pthread_mutex_lock(&(p)->mutex));}while(0)
+static void lock_acquire(NDIS_SPIN_LOCK *p){assert(p->initialized);
+ if(delayed_publish&&pthread_equal(pthread_self(),producer)){
+  pthread_mutex_lock(&schedule_lock);producer_paused=1;pthread_cond_broadcast(&schedule_cond);
+  while(!release_producer){pthread_cond_wait(&schedule_cond,&schedule_lock);}
+  pthread_mutex_unlock(&schedule_lock);
+ }
+ assert(!pthread_mutex_lock(&p->mutex));}
+#define NdisAcquireSpinLock(p) lock_acquire(p)
 #define NdisReleaseSpinLock(p) do{assert((p)->initialized);assert(!pthread_mutex_unlock(&(p)->mutex));}while(0)
 static NDIS_STATUS os_alloc_mem(RTMP_ADAPTER *ad,PUCHAR *out,size_t n){void *allocation=NULL;(void)ad;attempts++;memcpy(out,&allocation,sizeof(allocation));if(attempts==fail_at)return 3;allocation=malloc(n);assert(allocation);memcpy(out,&allocation,sizeof(allocation));allocs++;live++;return 0;}
 static void os_free_mem(void *p){assert(p);__sync_add_and_fetch(&frees,1);__sync_sub_and_fetch(&live,1);free(p);}
@@ -175,6 +197,10 @@ static int RtmpOSTaskNotifyToExit(RTMP_OS_TASK *task){assert(task->priv==active)
 static void HwCtrlSerExit(RTMP_ADAPTER *ad){assert(ad==active);}
 static INT ser_exit(RTMP_ADAPTER *ad){assert(ad==active);return 0;}
 static void RtmpDmaQuarantine(RTMP_ADAPTER *ad){ad->quarantined=1;ad->flags&=~fRTMP_ADAPTER_START_UP;}
+static void require_publication_lock(RTMP_ADAPTER *ad){int rc=pthread_mutex_trylock(&ad->HwCtrl.HwCtrlQLock.mutex);if(!rc)pthread_mutex_unlock(&ad->HwCtrl.HwCtrlQLock.mutex);assert(rc==EBUSY);}
+static int __attribute__((unused)) RtmpDmaStopping(RTMP_ADAPTER *ad){require_publication_lock(ad);return ad->stopping||ad->quarantined;}
+static int __attribute__((unused)) RtmpDmaResourcesMayRelease(RTMP_ADAPTER *ad){require_publication_lock(ad);return ad->release_allowed&&!ad->quarantined;}
+
 static int RtmpOSTaskKill(RTMP_OS_TASK *task){kills++;assert(active->HwCtrl.HwCtrlQ.CmdQState==RTMP_TASK_STAT_STOPED);stop_join_seen=1;if(kill_fail)return 1;
  pthread_mutex_lock(&schedule_lock);task->killed=1;exit_join_entered=1;pthread_cond_broadcast(&schedule_cond);pthread_mutex_unlock(&schedule_lock);
  if(thread_created){assert(!pthread_join(worker,NULL));thread_created=0;}else if(!skip_threadfn) HwCtrlThread((ULONG)task);
@@ -190,6 +216,9 @@ static NTSTATUS callback(RTMP_ADAPTER *ad,void *arg){assert(ad==active&&arg==(vo
 '''
 SUFFIX=r'''
 static void *worker_entry(void *p){HwCtrlThread((ULONG)p);return NULL;}
+struct producer_job {RTMP_ADAPTER *ad;HW_CTRL_TXD tx;int result;};
+static void *producer_entry(void *p){struct producer_job *job=p;pthread_mutex_lock(&schedule_lock);producer_started=1;pthread_cond_broadcast(&schedule_cond);while(!start_producer)pthread_cond_wait(&schedule_cond,&schedule_lock);pthread_mutex_unlock(&schedule_lock);job->result=HwCtrlEnqueueCmd(job->ad,job->tx);return NULL;}
+
 static void *exit_entry(void *p){HwCtrlExit(p);return NULL;}
 int main(int argc,char **argv){const char *name;RTMP_ADAPTER ad;HW_CTRL_TXD tx;UINT32 input=12,caller=9;int result=0;HwCmdQElmt direct;pthread_t closer;assert(argc==2);name=argv[1];CASE_ADMISSION
  memset(&ad,0,sizeof(ad));memset(&tx,0,sizeof(tx));active=&ad;ad.flags=fRTMP_ADAPTER_START_UP;ad.HwCtrl.HwCtrlQ.CmdQState=RTMP_TASK_STAT_RUNNING;ad.HwCtrl.HwCtrlTask.priv=&ad;ad.HwCtrl.HwCtrlTask.kthread_task=&ad.HwCtrl.HwCtrlTask;lock_create(&ad.HwCtrl.HwCtrlQLock);
@@ -198,6 +227,13 @@ int main(int argc,char **argv){const char *name;RTMP_ADAPTER ad;HW_CTRL_TXD tx;U
  if(!strncmp(name,"node-oom",8))fail_at=1;
  if(!strncmp(name,"payload-oom",11))fail_at=2;
  if(!strcmp(name,"response-oom"))fail_at=3;
+ if(!strcmp(name,"wsys-late-ra-async")||!strncmp(name,"wsys-terminal-",14)){
+  tx.CmdType=HWCMD_TYPE_WIFISYS;ad.stopping=1;ad.release_allowed=strstr(name,"-idle")!=NULL;tx.NeedWait=TRUE;process_on_wait=1;
+  tx.CmdId=strstr(name,"linkdown")?HWCMD_ID_WIFISYS_LINKDOWN:(strstr(name,"peerdown")?HWCMD_ID_WIFISYS_PEER_LINKDOWN:HWCMD_ID_WIFISYS_CLOSE);
+  if(!strcmp(name,"wsys-late-ra-async")){tx.CmdId=HWCMD_ID_WIFISYS_PEER_UPDATE;tx.NeedWait=FALSE;}
+  if(!strcmp(name,"wsys-terminal-quarantined"))ad.quarantined=1;
+ }
+
  if(!strncmp(name,"wsys-timeout-",13)){tx.NeedWait=TRUE;tx.CmdType=HWCMD_TYPE_WIFISYS;}
  if(!strncmp(name,"reject-stopped",14)||!strcmp(name,"command-stop-before-handler"))ad.HwCtrl.HwCtrlQ.CmdQState=RTMP_TASK_STAT_STOPED;
  if(!strcmp(name,"null-input"))tx.pInformationBuffer=NULL;
@@ -220,6 +256,11 @@ int main(int argc,char **argv){const char *name;RTMP_ADAPTER ad;HW_CTRL_TXD tx;U
   ad.HwCtrl.HwCtrlQ.CmdQState=RTMP_TASK_STAT_STOPED;
   if(!strcmp(name,"flag-late-stop"))result=HwCtrlSetFlag(&ad,1);
   else{ad.HwCtrl.HwCtrlFlag.FlagId=1;ad.HwCtrl.HwCtrlFlag.IsFlagSet=1;HwCtrlFlagHandler(&ad);}
+ }else if(!strcmp(name,"wsys-delayed-producer-stop")){
+  struct producer_job job={&ad,tx,99};job.tx.CmdType=HWCMD_TYPE_WIFISYS;job.tx.CmdId=HWCMD_ID_WIFISYS_OPEN;job.tx.NeedWait=TRUE;delayed_publish=1;
+  assert(!pthread_create(&producer,NULL,producer_entry,&job));pthread_mutex_lock(&schedule_lock);while(!producer_started)pthread_cond_wait(&schedule_cond,&schedule_lock);start_producer=1;pthread_cond_broadcast(&schedule_cond);while(!producer_paused)pthread_cond_wait(&schedule_cond,&schedule_lock);pthread_mutex_unlock(&schedule_lock);
+  ad.stopping=1;ad.release_allowed=1;tx.CmdType=HWCMD_TYPE_WIFISYS;tx.CmdId=HWCMD_ID_WIFISYS_CLOSE;tx.NeedWait=TRUE;process_on_wait=1;assert(HwCtrlEnqueueCmd(&ad,tx)==0&&callbacks==1);
+  pthread_mutex_lock(&schedule_lock);release_producer=1;pthread_cond_broadcast(&schedule_cond);pthread_mutex_unlock(&schedule_lock);assert(!pthread_join(producer,NULL));result=job.result;early_live=live;assert(result==1&&callbacks==1&&!ad.HwCtrl.HwCtrlQ.size&&live==0);
  }else if(!strcmp(name,"wsys-timeout-running")){
   ad.HwCtrl.HwCtrlQ.CmdQState=RTMP_TASK_STAT_INITED;block_handler=1;process_on_wait=3;thread_created=1;assert(!pthread_create(&worker,NULL,worker_entry,&ad.HwCtrl.HwCtrlTask));
   pthread_mutex_lock(&schedule_lock);while(!worker_ready)pthread_cond_wait(&schedule_cond,&schedule_lock);pthread_mutex_unlock(&schedule_lock);

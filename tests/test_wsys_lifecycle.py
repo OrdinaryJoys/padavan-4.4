@@ -49,7 +49,7 @@ class WsysLifecycleTests(unittest.TestCase):
   self.cases(h.CASE_NAMES)
 
  def test_whole_body_and_literal_case_contract(self):
-  self.assertEqual(len(h.FUNCTION_SOURCES),71)
+  self.assertEqual(len(h.FUNCTION_SOURCES),72)
   self.assertEqual(len(h.CASE_NAMES),171)
   self.assertEqual(set(h.BODY_ORDER),set(h.FUNCTION_SOURCES))
   self.assertEqual(set(h.EXPECTED_ROWS),set(h.CASE_NAMES))

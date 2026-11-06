@@ -510,7 +510,9 @@ INT wifi_sys_update_devinfo(struct _RTMP_ADAPTER *ad, struct wifi_dev *wdev, str
 	os_move_mem(&wdev->DevInfo, new, len);
 #ifdef CONFIG_AP_SUPPORT
 #ifdef IGMP_SNOOP_SUPPORT
-	update_igmpinfo(wdev, new->Active);
+	/* Terminal host retirement must not restart a stopped MCU transport. */
+	if (!RtmpDmaStopping(ad))
+		update_igmpinfo(wdev, new->Active);
 #endif
 #endif
 	if (new->Active) {
@@ -1049,6 +1051,47 @@ INT wifi_sys_linkdown(struct wifi_dev *wdev)
 	}
 
 	return TRUE;
+}
+
+/* Last-VIF/remove teardown has already stopped DMA and MCU admissions.
+ * Run on the serialized HwCtrl worker: earlier commands retire before these
+ * software owners. This is not an acknowledgement from the stopped firmware. */
+INT wifi_sys_retire(struct _RTMP_ADAPTER *ad, struct WIFI_SYS_CTRL *wsys, UINT32 id)
+{
+	struct wifi_dev *wdev = wsys->wdev;
+	struct _STA_REC_CTRL_T *sta = &wsys->StaRecCtrl;
+
+	if (!RtmpDmaStopping(ad) || !RtmpDmaResourcesMayRelease(ad))
+		return NDIS_STATUS_FAILURE;
+	if ((id == HWCMD_ID_WIFISYS_LINKDOWN || id == HWCMD_ID_WIFISYS_PEER_LINKDOWN) &&
+		sta->EnableFeature && (!sta->priv || sta->ConnectionState != STATE_DISCONNECT))
+		return NDIS_STATUS_INVALID_DATA;
+
+	switch (id) {
+	case HWCMD_ID_WIFISYS_CLOSE:
+		if (wsys->DevInfoCtrl.Active)
+			return NDIS_STATUS_INVALID_DATA;
+		if (wsys->DevInfoCtrl.EnableFeature)
+			wifi_sys_update_devinfo(ad, wdev, &wsys->DevInfoCtrl);
+		wlan_operate_set_state(wdev, WLAN_OPER_STATE_INVALID);
+		UpdateDot11hForWdev(ad, wdev, FALSE);
+		break;
+	case HWCMD_ID_WIFISYS_LINKDOWN:
+		if (wsys->BssInfoCtrl.bss_state >= BSS_ACTIVE)
+			return NDIS_STATUS_INVALID_DATA;
+		if (sta->EnableFeature)
+			wifi_sys_update_starec(ad, sta);
+		if (wsys->BssInfoCtrl.u4BssInfoFeature)
+			wifi_sys_update_bssinfo(ad, wdev, &wsys->BssInfoCtrl);
+		break;
+	case HWCMD_ID_WIFISYS_PEER_LINKDOWN:
+		if (sta->EnableFeature)
+			wifi_sys_update_starec(ad, sta);
+		break;
+	default:
+		return NDIS_STATUS_FAILURE;
+	}
+	return NDIS_STATUS_SUCCESS;
 }
 
 /* Retire every owner published by a failed AP open before its VIF is dropped. */
