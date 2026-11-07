@@ -1,0 +1,14 @@
+{
+  "source_commit": "f9c361f682eb742423dd9ebd422a1952af2ec6e0",
+  "source_path": "trunk/linux-4.4.x/drivers/watchdog/mt7621_wdt.c",
+  "functions": {
+    "mt762x_wdt_stop": {
+      "body": "static int mt762x_wdt_stop(struct watchdog_device *w)\n{\n\tu32 t;\n\n\tmt762x_wdt_ping(w);\n\n\tt = rt_wdt_r32(TIMER_REG_TMR1CTL);\n\tt &= ~TMR1CTL_ENABLE;\n\trt_wdt_w32(TIMER_REG_TMR1CTL, t);\n\n\treturn 0;\n}",
+      "sha256": "f9207d3b6242f80c161a61ea98c29b98acaed6af1dd3303ac193f40c05f10634"
+    },
+    "mt762x_wdt_probe": {
+      "body": "static int mt762x_wdt_probe(struct platform_device *pdev)\n{\n\tstruct resource *res;\n\tint ret;\n\n\tres = platform_get_resource(pdev, IORESOURCE_MEM, 0);\n\tmt762x_wdt_base = devm_ioremap_resource(&pdev->dev, res);\n\tif (IS_ERR(mt762x_wdt_base))\n\t\treturn PTR_ERR(mt762x_wdt_base);\n\n\tdevice_reset(&pdev->dev);\n\n\tmt762x_wdt_dev.dev = &pdev->dev;\n\tmt762x_wdt_dev.bootstatus = mt762x_wdt_bootcause();\n\tmt762x_wdt_dev.max_timeout = (0xfffful / 1000);\n\tmt762x_wdt_dev.timeout = mt762x_wdt_dev.max_timeout;\n\n\twatchdog_set_nowayout(&mt762x_wdt_dev, nowayout);\n\n\tret = watchdog_register_device(&mt762x_wdt_dev);\n\tif (!ret)\n\t\tdev_info(&pdev->dev, \"Initialized\\n\");\n\n\treturn 0;\n}",
+      "sha256": "8ddf5c5ff628948346f2a170301cc327351a677bf98c6b0aa81f7f3e8bbed102"
+    }
+  }
+}

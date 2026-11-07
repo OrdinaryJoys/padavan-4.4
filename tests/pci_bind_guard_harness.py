@@ -161,7 +161,8 @@ static void pci_free_dynids(struct pci_driver *drv)
 int __pci_register_driver(struct pci_driver *,struct module *,const char *);
 void pci_unregister_driver(struct pci_driver *);
 #define pci_register_driver(p) __pci_register_driver((p),THIS_MODULE,"fixture-module")
-'''
+''' '\n/* Bind-policy fixture has no adapter; complete DMA shutdown is modeled separately. */\n#define TRUE 1\ntypedef struct { int dma_removing; } RTMP_ADAPTER;\nstruct net_device { RTMP_ADAPTER *adapter; };\n#define GET_PAD_FROM_NET_DEV(a,d) ((a)=(d)->adapter)\nstatic struct net_device *pci_get_drvdata(struct pci_dev *p) { assert(p==&fixture_device);return NULL; }\nstatic void rtnl_lock(void) { }\nstatic void rtnl_unlock(void) { }\nstatic void RtmpDmaLifecycleLock(RTMP_ADAPTER *ad) { assert(ad); }\nstatic void RtmpDmaLifecycleUnlock(RTMP_ADAPTER *ad) { assert(ad); }\nstatic void netif_device_detach(struct net_device *d) { assert(d); }\nstatic void netif_tx_stop_all_queues(struct net_device *d) { assert(d); }\nstatic int RtmpDmaTeardownCheck(RTMP_ADAPTER *ad) { assert(ad);return 1; }\nstatic void RtmpDmaQuarantine(RTMP_ADAPTER *ad) { assert(ad); }\n'
+
 
 SUFFIX = r'''
 static int driver_register(struct device_driver *drv)

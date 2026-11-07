@@ -359,7 +359,8 @@ static void pm_runtime_get_sync(struct device *dev){assert(dev==&active_pci->dev
 static void pm_runtime_put_noidle(struct device *dev){assert(dev==&active_pci->dev);pm_calls++;}
 static void pm_runtime_put_sync(struct device *dev){assert(dev==&active_pci->dev);pm_calls++;}
 static void pcibios_free_irq(struct pci_dev *p){assert(p==active_pci);event(30);core_irq_frees++;}
-"""
+""" '\n/* Core restart API recorder; old owner/event observations stay unchanged. */\n#define REBOOT_DMA_RAETH (1U << 0)\n#define REBOOT_DMA_MT7615 (1U << 1)\nstatic unsigned int restart_failure_reports;\nstatic void reboot_dma_failure_report(unsigned int reasons) { restart_failure_reports |= reasons; }\n'
+
 SUFFIX=r"""
 
 static void retained(void){

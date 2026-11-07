@@ -826,7 +826,8 @@ PREFIX = ('\n'
  'static void ether_setup(struct net_device *d) { (void)d; }\n'
  'static void ethtool_virt_init(struct net_device *d) { (void)d; }\n'
  'static int register_netdev(struct net_device *d) { pseudo_register++;if(register_fail)return '
- '-12;d->reg_state=NETREG_REGISTERED;return 0; }\n')
+ '-12;d->reg_state=NETREG_REGISTERED;return 0; }\n' '\n/* Core restart API recorder; old owner/event observations stay unchanged. */\n#define REBOOT_DMA_RAETH (1U << 0)\n#define REBOOT_DMA_MT7615 (1U << 1)\nstatic unsigned int restart_failure_reports;\nstatic void reboot_dma_failure_report(unsigned int reasons) { restart_failure_reports |= reasons; }\n')
+
 SUFFIX = ('\n'
  'static int bus_remove(struct device *d) { check(d==&parent.dev);ret=raether_remove(&parent);return ret; }\n'
  'static void setup(void) {\n'

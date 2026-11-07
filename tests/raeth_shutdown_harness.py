@@ -1077,7 +1077,8 @@ PREFIX = ('\n'
  'static struct platform_driver *to_platform_driver(struct device_driver *d) { '
  'check(d==&raeth_driver.driver);return &raeth_driver; }\n'
  'static void dev_pm_domain_detach(struct device *d,bool off) { '
- 'check(d==&parent.dev&&off&&!rtnl_depth);pm_detach++; }\n')
+ 'check(d==&parent.dev&&off&&!rtnl_depth);pm_detach++; }\n' '\n/* Core restart API recorder; old owner/event observations stay unchanged. */\n#define REBOOT_DMA_RAETH (1U << 0)\n#define REBOOT_DMA_MT7615 (1U << 1)\nstatic unsigned int restart_failure_reports;\nstatic void reboot_dma_failure_report(unsigned int reasons) { restart_failure_reports |= reasons; }\n')
+
 
 SUFFIX = ('\n'
  'int main(int argc,char **argv)\n'

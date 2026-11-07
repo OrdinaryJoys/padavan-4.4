@@ -39,7 +39,7 @@ PREFIX = r'''
 #define VOID void
 #define DEVEXIT
 typedef unsigned long ULONG;
-typedef struct fixture_adapter { int unused; } ADAPTER,RTMP_ADAPTER;
+typedef struct fixture_adapter { int unused,dma_removing; } ADAPTER,RTMP_ADAPTER;
 struct net_device { unsigned long base_addr; ADAPTER *adapter; };
 typedef struct net_device *PNET_DEV;
 struct pci_dev { struct net_device *data; int enabled, master; };
@@ -103,7 +103,8 @@ static void RtmpOSNetDevFree(struct net_device *dev) {
         invalid++;
     netdev_live = 0;
 }
-'''
+''' '\n#define TRUE 1\nstatic int restart_shutdown_attempts,restart_quarantine_reports;\nstatic void RtmpDmaLifecycleLock(RTMP_ADAPTER *ad) { assert(ad); }\nstatic void RtmpDmaLifecycleUnlock(RTMP_ADAPTER *ad) { assert(ad); }\nstatic void netif_device_detach(struct net_device *dev) { assert(dev); }\nstatic void netif_tx_stop_all_queues(struct net_device *dev) { assert(dev); }\n/* Real stop/idle and sticky reporting execute in restart_veto_harness. */\nstatic int RtmpDmaTeardownCheck(RTMP_ADAPTER *ad) { assert(ad);restart_shutdown_attempts++;return !dma_busy; }\nstatic void RtmpDmaQuarantine(RTMP_ADAPTER *ad) { assert(ad);restart_quarantine_reports++; }\n'
+
 
 SUFFIX = r'''
 int main(int argc, char **argv) {

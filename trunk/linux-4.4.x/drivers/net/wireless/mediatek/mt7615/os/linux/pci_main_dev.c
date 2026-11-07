@@ -33,6 +33,7 @@
 #include "rt_os_util.h"
 #include "rt_os_net.h"
 #include <linux/pci.h>
+#include <linux/reboot.h>
 #include "rt_config.h"
 
 #if (KERNEL_VERSION(3, 8, 0) <= LINUX_VERSION_CODE)
@@ -569,10 +570,31 @@ static VOID DEVEXIT rt_pci_remove(struct pci_dev *pci_dev)
 
 static VOID rt_pci_shutdown(struct pci_dev *pci_dev)
 {
-	/* Ordinary reboot does not clear bus mastering in the PCI core.  Keep
-	 * all DMA ownership intact here: disabling new transactions is not an
-	 * acknowledgement that the device has completed in-flight DMA.
-	 */
+	struct net_device *net_dev = pci_get_drvdata(pci_dev);
+	RTMP_ADAPTER *pAd = NULL;
+
+	/* Shutdown is containment, never removal. Keep every DMA/PCI owner. */
+	if (net_dev) {
+		GET_PAD_FROM_NET_DEV(pAd, net_dev);
+		if (pAd) {
+			rtnl_lock();
+			netif_device_detach(net_dev);
+			netif_tx_stop_all_queues(net_dev);
+			RtmpDmaLifecycleLock(pAd);
+			pAd->dma_removing = TRUE;
+			/* Existing active-DMA quarantine is already sticky. Re-report
+			 * it here as well; a later cached idle must not admit reset.
+			 */
+			if (!RtmpDmaTeardownCheck(pAd)) {
+				RtmpDmaQuarantine(pAd);
+				MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_ERROR,
+					("%s: shutdown DMA stop failed; retaining all owners\n", __func__));
+			}
+			RtmpDmaLifecycleUnlock(pAd);
+			rtnl_unlock();
+		}
+	}
+	/* No claim that clearing master drains transactions already in flight. */
 	pci_clear_master(pci_dev);
 }
 

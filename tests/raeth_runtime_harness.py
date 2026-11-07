@@ -1268,7 +1268,8 @@ PREFIX = ('/* Inert seams include optional-profile stubs and production signed l
  '\n'
  '#define CONFIG_RAETH_ESW_CONTROL 1\n'
  'static int fail_esw_post;\n'
- 'static int esw_ioctl_init_post(void) { return fail_esw_post; }\n')
+ 'static int esw_ioctl_init_post(void) { return fail_esw_post; }\n' '\n/* Core restart API recorder; old owner/event observations stay unchanged. */\n#define REBOOT_DMA_RAETH (1U << 0)\n#define REBOOT_DMA_MT7615 (1U << 1)\nstatic unsigned int restart_failure_reports;\nstatic void reboot_dma_failure_report(unsigned int reasons) { restart_failure_reports |= reasons; }\n')
+
 SUFFIX = ('\n'
  'int main(int argc,char **argv) {\n'
  ' if(argc!=2)return 2;const char *name=argv[1];CASE_ADMISSION\n'

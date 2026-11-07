@@ -20,6 +20,7 @@
 #include "raether_hwlro.h"
 #include "ra_ethtool.h"
 #include <linux/capability.h>
+#include <linux/reboot.h>
 
 #include "mtk_hnat/nf_hnat_mtk.h"
 
@@ -1067,6 +1068,7 @@ static int ei_stop_dma(struct net_device *dev)
 	if (pdma_err || qdma_err) {
 		/* Keep all owners and the module pin; a timeout is not DMA retirement. */
 		ei_local->dma_quarantined = true;
+		reboot_dma_failure_report(REBOOT_DMA_RAETH);
 		pr_err("%s: DMA stop failed (%d/%d); keeping rings, reopen blocked\n",
 		       dev->name, pdma_err, qdma_err);
 		return pdma_err ? pdma_err : qdma_err;
@@ -3890,7 +3892,7 @@ static void raether_shutdown(struct platform_device *pdev)
 		       dev->name, err);
 	/* Keep rings, MMIO, clocks and existing module/parent references even
  * after idle. Foreign consumers are not retired by device_shutdown().
- * The void shutdown API cannot veto the subsequent machine reset. */
+ * Failed DMA stop is latched by ei_stop_dma() for the core restart gate. */
 	rtnl_unlock();
 }
 

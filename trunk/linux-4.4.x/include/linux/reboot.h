@@ -59,6 +59,19 @@ extern void machine_crash_shutdown(struct pt_regs *);
  * Architecture independent implemenations of sys_reboot commands.
  */
 
+/* Boot-lifetime DMA failures: reporters pass stable integer reasons only.
+ * No clear operation exists; module unload must not erase an unsafe DMA fact.
+ */
+enum reboot_dma_failure {
+	REBOOT_DMA_RAETH = 1U << 0,
+	REBOOT_DMA_MT7615 = 1U << 1,
+	REBOOT_DMA_UNKNOWN = 1U << 2,
+};
+extern void reboot_dma_failure_report(unsigned int reasons);
+extern unsigned int reboot_dma_failures(void);
+/* A failed check is terminal. may_sleep is false for emergency/IRQ paths. */
+extern void reboot_dma_failure_check(bool may_sleep);
+
 extern void kernel_restart_prepare(char *cmd);
 extern void kernel_restart(char *cmd);
 extern void kernel_halt(void);

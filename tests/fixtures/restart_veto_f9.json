@@ -1,0 +1,101 @@
+{
+  "commit": "f9c361f682eb742423dd9ebd422a1952af2ec6e0",
+  "kind": "exact whole functions from git show, not a synthesized legacy variant",
+  "functions": {
+    "emergency_restart": {
+      "path": "trunk/linux-4.4.x/kernel/reboot.c",
+      "sha256": "e625afd24d0f54bb21401c2c5029afc975fcbcb0bf3cbf6583a3310f4eab97d9",
+      "body": "void emergency_restart(void)\n{\n\tkmsg_dump(KMSG_DUMP_EMERG);\n\tmachine_emergency_restart();\n}"
+    },
+    "kernel_restart_prepare": {
+      "path": "trunk/linux-4.4.x/kernel/reboot.c",
+      "sha256": "08a61ffc58570a720aa52bfde0a3ec4b303fa2d01e825a17f7f6c922cbcb2667",
+      "body": "void kernel_restart_prepare(char *cmd)\n{\n\tblocking_notifier_call_chain(&reboot_notifier_list, SYS_RESTART, cmd);\n\tsystem_state = SYSTEM_RESTART;\n\tusermodehelper_disable();\n\tdevice_shutdown();\n}"
+    },
+    "kernel_restart": {
+      "path": "trunk/linux-4.4.x/kernel/reboot.c",
+      "sha256": "2f96521ad683639ffa433b9eebd8b0d6d42224f2d838e89a23c2b26280796fa0",
+      "body": "void kernel_restart(char *cmd)\n{\n\tkernel_restart_prepare(cmd);\n\tmigrate_to_reboot_cpu();\n\tsyscore_shutdown();\n\tif (!cmd)\n\t\tpr_emerg(\"Restarting system\\n\");\n\telse\n\t\tpr_emerg(\"Restarting system with command '%s'\\n\", cmd);\n\tkmsg_dump(KMSG_DUMP_RESTART);\n\tmachine_restart(cmd);\n}"
+    },
+    "ralink_restart": {
+      "path": "trunk/linux-4.4.x/arch/mips/ralink/reset.c",
+      "sha256": "20c3136ae861f9a8520604638fc186d9b2a366d2b1036845f26b35bef6fd4c5a",
+      "body": "static void ralink_restart(char *command)\n{\n\tif (IS_ENABLED(CONFIG_PCI)) {\n\t\trt_sysc_m32(0, RSTCTL_RESET_PCI, SYSC_REG_RESET_CTRL);\n\t\tmdelay(50);\n\t}\n\n\tlocal_irq_disable();\n\trt_sysc_w32(RSTCTL_RESET_SYSTEM, SYSC_REG_RESET_CTRL);\n\tunreachable();\n}"
+    },
+    "machine_restart": {
+      "path": "trunk/linux-4.4.x/arch/mips/kernel/reset.c",
+      "sha256": "d3f9976937855816bba29d6f6df8ae95603a98a16cbf89dfb60501fa9024b271",
+      "body": "void machine_restart(char *command)\n{\n\tif (_machine_restart)\n\t\t_machine_restart(command);\n\n#ifdef CONFIG_SMP\n\tpreempt_disable();\n\tsmp_send_stop();\n#endif\n\tdo_kernel_restart(command);\n\tmdelay(1000);\n\tpr_emerg(\"Reboot failed -- System halted\\n\");\n\tlocal_irq_disable();\n\twhile (1);\n}"
+    },
+    "device_shutdown": {
+      "path": "trunk/linux-4.4.x/drivers/base/core.c",
+      "sha256": "8739671afa29526c24695b19a4034721c80a916557de115c0a712c4e7a0371ed",
+      "body": "void device_shutdown(void)\n{\n\tstruct device *dev, *parent;\n\n\tcpufreq_suspend();\n\n\tspin_lock(&devices_kset->list_lock);\n\t/*\n\t * Walk the devices list backward, shutting down each in turn.\n\t * Beware that device unplug events may also start pulling\n\t * devices offline, even as the system is shutting down.\n\t */\n\twhile (!list_empty(&devices_kset->list)) {\n\t\tdev = list_entry(devices_kset->list.prev, struct device,\n\t\t\t\tkobj.entry);\n\n\t\t/*\n\t\t * hold reference count of device's parent to\n\t\t * prevent it from being freed because parent's\n\t\t * lock is to be held\n\t\t */\n\t\tparent = get_device(dev->parent);\n\t\tget_device(dev);\n\t\t/*\n\t\t * Make sure the device is off the kset list, in the\n\t\t * event that dev->*->shutdown() doesn't remove it.\n\t\t */\n\t\tlist_del_init(&dev->kobj.entry);\n\t\tspin_unlock(&devices_kset->list_lock);\n\n\t\t/* hold lock to avoid race with probe/release */\n\t\tif (parent)\n\t\t\tdevice_lock(parent);\n\t\tdevice_lock(dev);\n\n\t\t/* Don't allow any more runtime suspends */\n\t\tpm_runtime_get_noresume(dev);\n\t\tpm_runtime_barrier(dev);\n\n\t\tif (dev->class && dev->class->shutdown) {\n\t\t\tif (initcall_debug)\n\t\t\t\tdev_info(dev, \"shutdown\\n\");\n\t\t\tdev->class->shutdown(dev);\n\t\t} else if (dev->bus && dev->bus->shutdown) {\n\t\t\tif (initcall_debug)\n\t\t\t\tdev_info(dev, \"shutdown\\n\");\n\t\t\tdev->bus->shutdown(dev);\n\t\t} else if (dev->driver && dev->driver->shutdown) {\n\t\t\tif (initcall_debug)\n\t\t\t\tdev_info(dev, \"shutdown\\n\");\n\t\t\tdev->driver->shutdown(dev);\n\t\t}\n\n\t\tdevice_unlock(dev);\n\t\tif (parent)\n\t\t\tdevice_unlock(parent);\n\n\t\tput_device(dev);\n\t\tput_device(parent);\n\n\t\tspin_lock(&devices_kset->list_lock);\n\t}\n\tspin_unlock(&devices_kset->list_lock);\n}"
+    },
+    "pci_device_shutdown": {
+      "path": "trunk/linux-4.4.x/drivers/pci/pci-driver.c",
+      "sha256": "b42c687071cf3d3fc063e8db2b51efe1a008a9cbd6f71d384d444d731c79d522",
+      "body": "static void pci_device_shutdown(struct device *dev)\n{\n\tstruct pci_dev *pci_dev = to_pci_dev(dev);\n\tstruct pci_driver *drv = pci_dev->driver;\n\n\tpm_runtime_resume(dev);\n\n\tif (drv && drv->shutdown)\n\t\tdrv->shutdown(pci_dev);\n\tpci_msi_shutdown(pci_dev);\n\tpci_msix_shutdown(pci_dev);\n\n#ifdef CONFIG_KEXEC_CORE\n\t/*\n\t * If this is a kexec reboot, turn off Bus Master bit on the\n\t * device to tell it to not continue to do DMA. Don't touch\n\t * devices in D3cold or unknown states.\n\t * If it is not a kexec reboot, firmware will hit the PCI\n\t * devices with big hammer and stop their DMA any way.\n\t */\n\tif (kexec_in_progress && (pci_dev->current_state <= PCI_D3hot))\n\t\tpci_clear_master(pci_dev);\n#endif\n}"
+    },
+    "ra2880stop": {
+      "path": "trunk/linux-4.4.x/drivers/net/ethernet/raeth/ra_mac.c",
+      "sha256": "12c335230b28d19744b1d8d5b4955b64c477d37cbd4d5eb16cf10dcb2763ed76",
+      "body": "void ra2880stop(struct END_DEVICE *ei_local)\n{\n\tunsigned int reg_value;\n\n\tpr_info(\"ra2880stop()...\");\n\n\treg_value = sys_reg_read(DMA_GLO_CFG);\n\treg_value &= ~(TX_WB_DDONE | RX_DMA_EN | TX_DMA_EN);\n\tsys_reg_write(DMA_GLO_CFG, reg_value);\n\t/* QDMA owns TX/FQ memory even when RX packets use PDMA. */\n\tif (ei_local->features & FE_QDMA) {\n\t\treg_value = sys_reg_read(QDMA_GLO_CFG);\n\t\treg_value &= ~(TX_WB_DDONE | RX_DMA_EN | TX_DMA_EN);\n\t\tsys_reg_write(QDMA_GLO_CFG, reg_value);\n\t}\n\n\tpr_info(\"Done\\n\");\n}"
+    },
+    "fe_pdma_wait_dma_idle": {
+      "path": "trunk/linux-4.4.x/drivers/net/ethernet/raeth/raether_pdma.c",
+      "sha256": "8e2e7d3ab31c31c230bcbad74a1f7f049990b441c57a40ae7e321af834c71cc0",
+      "body": "int fe_pdma_wait_dma_idle(void)\n{\n\tunsigned int loop_cnt;\n\n\t/* A failed idle observation never authorizes freeing a DMA owner. */\n\tfor (loop_cnt = 0; loop_cnt < 1000; loop_cnt++) {\n\t\tif (!(sys_reg_read(PDMA_GLO_CFG) & (RX_DMA_BUSY | TX_DMA_BUSY)))\n\t\t\treturn 0;\n\t\tudelay(10);\n\t}\n\tpr_err(\"PDMA did not become idle\\n\");\n\treturn -ETIMEDOUT;\n}"
+    },
+    "fe_qdma_wait_dma_idle": {
+      "path": "trunk/linux-4.4.x/drivers/net/ethernet/raeth/raether_qdma.c",
+      "sha256": "5f92ac8a09554ced6e036780e9dff8f545e373d7a24e4390899b7c0410a179eb",
+      "body": "int fe_qdma_wait_dma_idle(void)\n{\n\tunsigned int loop_cnt;\n\n\t/* A failed idle observation never authorizes freeing a DMA owner. */\n\tfor (loop_cnt = 0; loop_cnt < 1000; loop_cnt++) {\n\t\tif (!(sys_reg_read(QDMA_GLO_CFG) & (RX_DMA_BUSY | TX_DMA_BUSY)))\n\t\t\treturn 0;\n\t\tudelay(10);\n\t}\n\tpr_err(\"QDMA did not become idle\\n\");\n\treturn -ETIMEDOUT;\n}"
+    },
+    "ei_stop_dma": {
+      "path": "trunk/linux-4.4.x/drivers/net/ethernet/raeth/raether.c",
+      "sha256": "5acb3a99a31218812d8f8c0684330eb8974a6b9fbeea2b7bc07a3d867d458e61",
+      "body": "static int ei_stop_dma(struct net_device *dev)\n{\n\tstruct END_DEVICE *ei_local = netdev_priv(dev);\n\tint pdma_err, qdma_err = 0;\n\n\tra2880stop(ei_local);\n\tpdma_err = fe_pdma_wait_dma_idle();\n\tif (ei_local->features & FE_QDMA)\n\t\tqdma_err = fe_qdma_wait_dma_idle();\n\tif (pdma_err || qdma_err) {\n\t\t/* Keep all owners and the module pin; a timeout is not DMA retirement. */\n\t\tei_local->dma_quarantined = true;\n\t\tpr_err(\"%s: DMA stop failed (%d/%d); keeping rings, reopen blocked\\n\",\n\t\t       dev->name, pdma_err, qdma_err);\n\t\treturn pdma_err ? pdma_err : qdma_err;\n\t}\n\treturn 0;\n}"
+    },
+    "raether_shutdown": {
+      "path": "trunk/linux-4.4.x/drivers/net/ethernet/raeth/raether.c",
+      "sha256": "7ba9a26a95dab62bf915d8d1fc0f1a70b8c3957f496d8cdbb2d50f3eddfa1d4d",
+      "body": "static void raether_shutdown(struct platform_device *pdev)\n{\n\tstruct net_device *dev = platform_get_drvdata(pdev);\n\tstruct END_DEVICE *ei_local;\n\tstruct net_device *pseudo;\n\tint err;\n\n\tif (!dev)\n\t\treturn;\n\tei_local = netdev_priv(dev);\n\trtnl_lock();\n\tWRITE_ONCE(ei_local->dma_quarantined, true);\n\tpseudo = ei_local->pseudo_dev;\n\tnetif_device_detach(dev);\n\tif (pseudo)\n\t\tnetif_device_detach(pseudo);\n\trtnl_unlock();\n\t/* Readers can need RTNL: retire publication without holding it. */\n\tmii_mgr_detach();\n\tdebug_proc_exit();\n\trtnl_lock();\n\tnetif_tx_disable(dev);\n\tif (pseudo)\n\t\tnetif_tx_disable(pseudo);\n\tif (ei_local->kreset_task) {\n\t\tkthread_stop(ei_local->kreset_task);\n\t\tei_local->kreset_task = NULL;\n\t}\n\tif (ei_local->kphy_poll_task) {\n\t\tkthread_stop(ei_local->kphy_poll_task);\n\t\tei_local->kphy_poll_task = NULL;\n\t}\n\tfe_int_disable(dev);\n\terr = ei_stop_dma(dev);\n\tif (err)\n\t\tpr_err(\"%s: shutdown DMA stop failed (%d); keeping all owners\\n\",\n\t\t       dev->name, err);\n\t/* Keep rings, MMIO, clocks and existing module/parent references even\n * after idle. Foreign consumers are not retired by device_shutdown().\n * The void shutdown API cannot veto the subsequent machine reset. */\n\trtnl_unlock();\n}"
+    },
+    "RtmpDmaLifecycleLock": {
+      "path": "trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/os/linux/rt_main_dev.c",
+      "sha256": "19ab27647bdd129d8bb3c97f6490bb0ff23ed980373f7f0be5a20bed41effd52",
+      "body": "VOID RtmpDmaLifecycleLock(RTMP_ADAPTER *pAd)\n{\n\tPOS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;\n\n\tmutex_lock(&obj->dma_lifecycle_lock);\n}"
+    },
+    "RtmpDmaLifecycleUnlock": {
+      "path": "trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/os/linux/rt_main_dev.c",
+      "sha256": "9dff4f9b6c97ca3b991c26813a227caef9613cbe04c43ac6187b16d1fd061db4",
+      "body": "VOID RtmpDmaLifecycleUnlock(RTMP_ADAPTER *pAd)\n{\n\tPOS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;\n\n\tmutex_unlock(&obj->dma_lifecycle_lock);\n}"
+    },
+    "RtmpDmaQuarantine": {
+      "path": "trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/os/linux/rt_main_dev.c",
+      "sha256": "9759b95d08841cea849345a322fd38fa1238f8aa2eee069da0ea1836b45efa82",
+      "body": "VOID RtmpDmaQuarantine(RTMP_ADAPTER *pAd)\n{\n\tPOS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;\n\tULONG flags;\n\n\tif (!IS_PCI_INF(pAd) && !IS_PCIE_INF(pAd))\n\t\treturn;\n\tspin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);\n\tpAd->dma_quarantined = TRUE;\n\tpAd->dma_stopping = TRUE;\n\tspin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);\n\tRTMP_SET_FLAG(pAd, fRTMP_ADAPTER_HALT_IN_PROGRESS);\n\tRTMP_CLEAR_FLAG(pAd, fRTMP_ADAPTER_START_UP);\n\tif (RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_INTERRUPT_ACTIVE))\n\t\tRTMP_ASIC_INTERRUPT_DISABLE(pAd);\n\tif (pAd->net_dev) {\n\t\tnetif_tx_stop_all_queues(pAd->net_dev);\n\t\tnetif_carrier_off(pAd->net_dev);\n\t}\n\t/* Containment only: clear-master and idle bits do not prove PCI drain.\n\t * Retain adapter, rings/token, IRQ, netdev, BAR, PCI and module owners.\n\t * No dev_hold is taken, since unregister waits for netdev references.\n\t */\n\tpci_clear_master(obj->pci_dev);\n\tMTWF_LOG(DBG_CAT_INIT, DBG_SUBCAT_ALL, DBG_LVL_ERROR,\n\t\t(\"%s: retaining complete PCI DMA owner graph until independent recovery\\n\", __func__));\n}"
+    },
+    "RtmpDmaTeardownCheck": {
+      "path": "trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/os/linux/rt_main_dev.c",
+      "sha256": "5f491e394977defb355947d07a77342d521b82a73c3c5e134c614887aea83781",
+      "body": "BOOLEAN RtmpDmaTeardownCheck(RTMP_ADAPTER *pAd)\n{\n\tBOOLEAN done;\n\tULONG flags;\n\n\tif (!IS_PCI_INF(pAd) && !IS_PCIE_INF(pAd))\n\t\treturn TRUE;\n\tspin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);\n\tif (pAd->dma_quarantined) {\n\t\tspin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);\n\t\treturn FALSE;\n\t}\n\tpAd->dma_stopping = TRUE;\n\tdone = !pAd->dma_lifecycle_pinned || pAd->dma_quiesced;\n\tspin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);\n\tif (done) {\n\t\t/* Cached hardware idle does not retire a partial software stage. */\n\t\tif ((pAd->tm_qm_ops || pAd->tm_hif_ops ||\n\t\t\tREAD_ONCE(pAd->qm_wq_state) || READ_ONCE(pAd->hif_wq_state)) &&\n\t\t\ttm_quiesce(pAd) != NDIS_STATUS_SUCCESS) {\n\t\t\tRtmpDmaQuarantine(pAd);\n\t\t\treturn FALSE;\n\t\t}\n\t\treturn TRUE;\n\t}\n\tRTMP_SET_FLAG(pAd, fRTMP_ADAPTER_HALT_IN_PROGRESS);\n\tif (pAd->dma_irq_registered) {\n\t\tif (RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_INTERRUPT_ACTIVE))\n\t\t\tRTMP_ASIC_INTERRUPT_DISABLE(pAd);\n\t\tsynchronize_irq(pAd->net_dev->irq);\n\t}\n\t/* Joining execution contexts is not a DMA unmap. Keep queues and ops\n\t * available until the hardware stop has actually been accepted.\n\t */\n\tif (tm_quiesce(pAd) != NDIS_STATUS_SUCCESS) {\n\t\tRtmpDmaQuarantine(pAd);\n\t\treturn FALSE;\n\t}\n\tAndesDmaQuiesce(pAd);\n\tif (!RT28XXDMAReset(pAd)) {\n\t\tRtmpDmaQuarantine(pAd);\n\t\treturn FALSE;\n\t}\n\tspin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);\n\tpAd->dma_quiesced = TRUE;\n\tspin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);\n\treturn TRUE;\n}"
+    },
+    "RT28XXDMAStop": {
+      "path": "trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/embedded/common/cmm_mac_pci.c",
+      "sha256": "a975b4328e478c602b57ae582dae294bb5aba00fb8fbdeb0afbd9cfcd93d1315",
+      "body": "BOOLEAN RT28XXDMAStop(RTMP_ADAPTER *pAd)\n{\n\tif (AsicSetWPDMA(pAd, PDMA_TX_RX, FALSE) != TRUE)\n\t\treturn FALSE;\n\n\t/* This is the chip's PDMA idle acknowledgement, not a PCI drain proof. */\n\treturn AsicWaitPDMAIdle(pAd, 200, 1000) == TRUE;\n}"
+    },
+    "RT28XXDMAReset": {
+      "path": "trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/embedded/common/cmm_mac_pci.c",
+      "sha256": "892686f95e7b76c338c338766ddd1d40e16048583e9007e3eeea91923f96ee88",
+      "body": "BOOLEAN RT28XXDMAReset(RTMP_ADAPTER *pAd)\n{\n\tif (!RT28XXDMAStop(pAd))\n\t\treturn FALSE;\n\n\treturn AsicResetWPDMA(pAd);\n}"
+    },
+    "rt_pci_shutdown": {
+      "path": "trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/os/linux/pci_main_dev.c",
+      "sha256": "89d99362961588d942aa5ac4f6c1be8ebb507733378ae343c3d535843c2052eb",
+      "body": "static VOID rt_pci_shutdown(struct pci_dev *pci_dev)\n{\n\t/* Ordinary reboot does not clear bus mastering in the PCI core.  Keep\n\t * all DMA ownership intact here: disabling new transactions is not an\n\t * acknowledgement that the device has completed in-flight DMA.\n\t */\n\tpci_clear_master(pci_dev);\n}"
+    }
+  }
+}

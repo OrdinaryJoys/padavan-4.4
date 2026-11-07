@@ -9,6 +9,7 @@
  */
 
 #include <linux/pm.h>
+#include <linux/reboot.h>
 #include <linux/io.h>
 #include <linux/of.h>
 #include <linux/delay.h>
@@ -86,6 +87,8 @@ void ralink_rst_init(void)
 
 static void ralink_restart(char *command)
 {
+	/* Cover direct/emergency callers and failures reported after prepare. */
+	reboot_dma_failure_check(false);
 	if (IS_ENABLED(CONFIG_PCI)) {
 		rt_sysc_m32(0, RSTCTL_RESET_PCI, SYSC_REG_RESET_CTRL);
 		mdelay(50);

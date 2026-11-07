@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Actual rc upgrade state machine with synthetic files and inert backends."""
 import fcntl
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -9,10 +10,14 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from test_httpd_regressions import source
+from test_httpd_regressions import function, source
 import test_storage_regressions as storage_fixture
 from upgrade_gate_harness import compile_harness, compile_consumer
 import upgrade_gate_harness
+
+OLD_FLASH_BASELINE = 'f9c361f682eb742423dd9ebd422a1952af2ec6e0'
+OLD_FLASH_FILE_SHA256 = '7c4cd01cecdbaeb6ccc67c23dff206671c943725538ceee711a55a1cfb80b8ec'
+OLD_FLASH_BODY_SHA256 = 'f5cd68958a05177c4ec69e183fd6bef818bf50f50b901d07b2b5a7c18aaf1259'
 
 
 class UpgradeStorageGateTests(unittest.TestCase):
@@ -23,6 +28,16 @@ class UpgradeStorageGateTests(unittest.TestCase):
         cls.binary = compile_harness(cls.root)
         cls.superset_binary = compile_harness(cls.root, superset=True)
         cls.queue_binary = compile_consumer(cls.root)
+        # Exact old complete function, not a rearranged fragment or a mutant.
+        cls.old_flash_bytes = (Path(__file__).parent / 'fixtures/upgrade-recovery/f9c361f-flash_firmware.c').read_bytes()
+        cls.old_flash_body = function(cls.old_flash_bytes.decode(), 'flash_firmware')
+        original_source = upgrade_gate_harness.source
+        current_rc = original_source('trunk/user/rc/rc.c')
+        current_flash = function(current_rc, 'flash_firmware')
+        def old_source(path):
+            return current_rc.replace(current_flash, cls.old_flash_body, 1) if path == 'trunk/user/rc/rc.c' else original_source(path)
+        with patch.object(upgrade_gate_harness, 'source', side_effect=old_source):
+            cls.old_binary = compile_harness(cls.root, name='upgrade-f9c361f')
 
     @classmethod
     def tearDownClass(cls):
@@ -42,11 +57,13 @@ class UpgradeStorageGateTests(unittest.TestCase):
 
     def run_case(self, first=0, second=0, hook=False, hook_status=0, kind=1,
                  mask=127, stop_fail=-1, start_fail=-1, hardware=0, stage_fault=0,
-                 mode='flash', marker=False, trusted_mode=0o755, pin_failure=False):
+                 mode='flash', marker=False, trusted_mode=0o755, pin_failure=False,
+                 start_under_pin_enomem=False, unpin_failure=False, binary=None):
         self.prepare_fixture(marker, trusted_mode)
-        result = subprocess.run([str(self.binary), mode, str(first), str(second), str(int(hook)),
+        result = subprocess.run([str(binary or self.binary), mode, str(first), str(second), str(int(hook)),
                                  str(hook_status), str(kind), str(mask), str(stop_fail), str(start_fail),
-                                 str(hardware), str(stage_fault), str(int(pin_failure))], check=True, capture_output=True,
+                                 str(hardware), str(stage_fault), str(int(pin_failure)),
+                                 str(int(start_under_pin_enomem)), str(int(unpin_failure))], check=True, capture_output=True,
                                 text=True, timeout=5)
         return json.loads(result.stdout)
 
@@ -67,6 +84,9 @@ class UpgradeStorageGateTests(unittest.TestCase):
         self.assertEqual(result['running'], [int(bool(mask & (1 << i))) for i in range(7)])
         self.assertEqual(result['starts'], [int(bool(mask & (1 << i))) for i in range(7)])
         self.assertEqual((result['mlocks'], result['munlocks']), (1, 1))
+        self.assertEqual((result['memory_pinned'], result['start_enomems']), (0, 0))
+        self.assertEqual(result['unpin_inhibited'], 1)
+        self.assertEqual((result['active'], result['raw_shared_allowed']), (0, 1))
 
     def test_save_propagates_success_exit_signal_and_system_failure(self):
         for status in (0, 256, -1, 9, 15, 36608):
@@ -205,7 +225,9 @@ class UpgradeStorageGateTests(unittest.TestCase):
                 self.assertEqual(result['hardware_disables'], 1)
                 trace = result['trace'].strip(',').split(',')
                 self.assertLess(trace.index('hardware-disable'), trace.index('writer'))
-                self.assertEqual(trace[-2:], ['start:watchdog', 'unpin'])
+                # Correct the old observation: recovery must begin unlocked.
+                self.assertLess(trace.index('unpin'), min(i for i, event in enumerate(trace) if event.startswith('start:')))
+                self.assertEqual(trace[-1], 'start:watchdog')
                 self.assertEqual([p.name for p in (self.root / 'private').iterdir()], ['firmware-action.lock'])
 
     def test_storage_usb_superset_compiles_without_detach_or_unknown_service_restart(self):
@@ -289,6 +311,54 @@ class UpgradeStorageGateTests(unittest.TestCase):
         self.assertEqual(result['hardware_disables'], 1)
         self.assertEqual(result['starts'], [1] * 7)
         self.assertEqual([p.name for p in (self.root / 'private').iterdir()], ['firmware-action.lock'])
+
+    def test_proven_safe_abort_unpins_before_service_allocations_can_fail_with_enomem(self):
+        for options in ({}, {'kind': 10}, {'hardware': 4}, {'stop_fail': 1}):
+            with self.subTest(options=options):
+                result = self.run_case(start_under_pin_enomem=True, **options)
+                self.assertEqual((result['phase'], result['inhibited'], result['active']), (0, 0, 0))
+                self.assertEqual(result['running'], [1] * 7)
+                self.assertEqual((result['mlocks'], result['munlocks'], result['memory_pinned']), (1, 1, 0))
+                self.assertEqual((result['start_enomems'], result['unpin_inhibited'], result['raw_shared_allowed']), (0, 1, 1))
+                trace = result['trace'].strip(',').split(',')
+                self.assertLess(trace.index('unpin'), min(i for i, event in enumerate(trace) if event.startswith('start:')))
+
+    def test_exact_f9_whole_function_reproduces_service_enomem_then_late_unpin_without_retry(self):
+        self.assertEqual(OLD_FLASH_BASELINE, 'f9c361f682eb742423dd9ebd422a1952af2ec6e0')
+        self.assertEqual(hashlib.sha256(self.old_flash_bytes).hexdigest(), OLD_FLASH_FILE_SHA256)
+        self.assertEqual(hashlib.sha256(self.old_flash_body.encode()).hexdigest(), OLD_FLASH_BODY_SHA256)
+        for kind in (1, 10):
+            with self.subTest(kind=kind):
+                result = self.run_case(kind=kind, start_under_pin_enomem=True, binary=self.old_binary)
+                self.assertEqual((result['phase'], result['inhibited'], result['active']), (0, 0, 0))
+                self.assertEqual(result['starts'], [1] * 7)
+                self.assertEqual(result['running'], [0] * 7)
+                self.assertEqual((result['start_enomems'], result['munlocks'], result['memory_pinned']), (7, 1, 0))
+                self.assertEqual((result['unpin_inhibited'], result['raw_shared_allowed']), (0, 1))
+                trace = result['trace'].strip(',').split(',')
+                self.assertLess(max(i for i, event in enumerate(trace) if event.startswith('start:')), trace.index('unpin'))
+                self.assertEqual(trace[-1], 'unpin')
+
+    def test_safe_abort_unpin_failure_keeps_inhibit_latch_lease_and_stops_recovery(self):
+        for options in ({}, {'kind': 10}, {'hardware': 4}, {'stop_fail': 1}):
+            with self.subTest(options=options):
+                result = self.run_case(unpin_failure=True, start_under_pin_enomem=True, **options)
+                self.assertEqual((result['phase'], result['inhibited'], result['active']), (1, 1, 1))
+                self.assertEqual((result['mlocks'], result['munlocks'], result['memory_pinned']), (1, 1, 1))
+                self.assertEqual((result['start_enomems'], result['unpin_inhibited'], result['raw_shared_allowed']), (0, 1, 0))
+                self.assertEqual(result['starts'], [0] * 7)
+                self.assertEqual(result['criticals'], 1)
+                self.assertEqual(result['reboots'], 0)
+                self.assertTrue(list((self.root / 'private').glob('fwupgrade.*/writer')))
+
+    def test_unpin_fault_is_never_consulted_for_unknown_maybe_or_verified_return(self):
+        for kind in (0, 2, 3, 6, 23):
+            with self.subTest(kind=kind):
+                result = self.run_case(kind=kind, unpin_failure=True, start_under_pin_enomem=True)
+                self.assertEqual((result['phase'], result['inhibited'], result['active']), (1, 1, 1))
+                self.assertEqual((result['mlocks'], result['munlocks'], result['memory_pinned']), (1, 0, 1))
+                self.assertEqual(result['starts'], [0] * 7)
+                self.assertEqual((result['raw_shared_allowed'], result['logs']), (0, 0))
 
     def test_unexpected_verified_normal_exit_holds_without_parent_reset_or_IO(self):
         result = self.run_case(kind=0)

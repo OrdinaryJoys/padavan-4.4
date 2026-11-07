@@ -453,7 +453,7 @@ PREFIX = ('\n'
  'CommonCfg;struct {STA_TR_ENTRY tr_entry[8];MAC_TABLE_ENTRY Content[8];} MacTab;struct {struct '
  '_APCLI_STRUCT ApCliTab[2];} ApCfg;struct {struct {struct wifi_dev wdev;} WdsEntry[2];int flg_wds_init;} '
  'WdsTab;int '
- 'dma_stopping,dma_quarantined,dma_lifecycle_pinned,dma_quiesced,dma_irq_registered,dma_cmd_task_retired,vif_num,Flags,qm_wq_state,hif_wq_state;void '
+ 'dma_running,dma_stopping,dma_quarantined,dma_lifecycle_pinned,dma_quiesced,dma_irq_registered,dma_cmd_task_retired,vif_num,Flags,qm_wq_state,hif_wq_state;void '
  '*tm_qm_ops,*tm_hif_ops,*OS_Cookie;struct net_device *net_dev;struct wifi_dev *wdev_list[8];int '
  'quarantined,flg_apcli_init,ConInPrgress;struct {INT32(*archSetDevMac)(struct '
  '_RTMP_ADAPTER*,UINT8,UINT8*,UINT8,UINT8,UINT32);INT32(*archSetBssid)(struct '
@@ -725,7 +725,8 @@ PREFIX = ('\n'
  'static void APStopRekeyTimer(RTMP_ADAPTER*a,struct wifi_dev*w){assert(a==active&&w);}\n'
  'static void MbssKickOutStas(RTMP_ADAPTER*a,int idx,int why){assert(a==active);(void)idx;(void)why;}\n'
  '#define REASON_DISASSOC_INACTIVE 1\n'
- '#define BCN_UPDATE_DISABLE_TX 2\n')
+ '#define BCN_UPDATE_DISABLE_TX 2\n' '\n/* Core restart API recorder; old owner/event observations stay unchanged. */\n#define REBOOT_DMA_RAETH (1U << 0)\n#define REBOOT_DMA_MT7615 (1U << 1)\nstatic unsigned int restart_failure_reports;\nstatic void reboot_dma_failure_report(unsigned int reasons) { restart_failure_reports |= reasons; }\n')
+
 SUFFIX = ('\n'
  'int main(int argc,char **argv){\n'
  ' const char *name;RTMP_ADAPTER ad={0};struct wifi_dev w={0};struct wifi_dev_ops ops={0};\n'

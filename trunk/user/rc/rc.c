@@ -987,6 +987,17 @@ flash_firmware(void)
 	return 1;
 
 safe_recover:
+	/* Only a proven prewrite abort reaches here. Drop MCL_FUTURE and PID1's
+	 * locked mappings before allowing service fork/exec under memory pressure.
+	 * If unlocking fails, retain the inhibit, lease and active latch instead
+	 * of attempting recovery with the same constrained memory policy. */
+	if (resident) {
+		if (munlockall() != 0) {
+			logmessage("firmware", "CRITICAL: safe upgrade abort could not release resident memory locks; manual recovery required");
+			return 1;
+		}
+		resident = 0;
+	}
 	if (firmware_upgrade_inhibit(0) != 0) {
 		logmessage("firmware", "CRITICAL: cannot clear upgrade inhibit after safe abort; manual recovery required");
 		return 1;

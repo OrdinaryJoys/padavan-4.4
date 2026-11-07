@@ -19,6 +19,7 @@
 #include <linux/miscdevice.h>
 #include <linux/moduleparam.h>
 #include <linux/platform_device.h>
+#include <linux/of.h>
 
 #include <asm/mach-ralink/ralink_regs.h>
 
@@ -90,6 +91,10 @@ static int mt762x_wdt_stop(struct watchdog_device *w)
 	t &= ~TMR1CTL_ENABLE;
 	rt_wdt_w32(TIMER_REG_TMR1CTL, t);
 
+	/* Flush the disable write and do not report an armed timer as stopped. */
+	if (rt_wdt_r32(TIMER_REG_TMR1CTL) & TMR1CTL_ENABLE)
+		return -EIO;
+
 	return 0;
 }
 
@@ -130,7 +135,17 @@ static int mt762x_wdt_probe(struct platform_device *pdev)
 	if (IS_ERR(mt762x_wdt_base))
 		return PTR_ERR(mt762x_wdt_base);
 
-	device_reset(&pdev->dev);
+	/* MT7621 boards may omit a watchdog reset line in their device tree. */
+	if (of_find_property(pdev->dev.of_node, "resets", NULL)) {
+		ret = device_reset(&pdev->dev);
+		if (ret)
+			return ret;
+	}
+
+	/* The core starts inactive; establish the same state in hardware. */
+	ret = mt762x_wdt_stop(&mt762x_wdt_dev);
+	if (ret)
+		return ret;
 
 	mt762x_wdt_dev.dev = &pdev->dev;
 	mt762x_wdt_dev.bootstatus = mt762x_wdt_bootcause();
@@ -143,7 +158,7 @@ static int mt762x_wdt_probe(struct platform_device *pdev)
 	if (!ret)
 		dev_info(&pdev->dev, "Initialized\n");
 
-	return 0;
+	return ret;
 }
 
 static int mt762x_wdt_remove(struct platform_device *pdev)

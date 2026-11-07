@@ -30,6 +30,7 @@
 #define RTMP_MODULE_OS
 
 #include "rt_config.h"
+#include <linux/reboot.h>
 #include "rtmp_comm.h"
 #include "rt_os_util.h"
 #include "rt_os_net.h"
@@ -231,6 +232,12 @@ VOID RtmpDmaQuarantine(RTMP_ADAPTER *pAd)
 	if (!IS_PCI_INF(pAd) && !IS_PCIE_INF(pAd))
 		return;
 	spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+	/* Pure allocation/task setup failure before DMA was active is not a
+	 * hardware DMA failure. Once reported, subsequent idle cannot clear it.
+	 */
+	if (pAd->dma_running ||
+		(pAd->dma_lifecycle_pinned && !pAd->dma_quiesced))
+		reboot_dma_failure_report(REBOOT_DMA_MT7615);
 	pAd->dma_quarantined = TRUE;
 	pAd->dma_stopping = TRUE;
 	spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);

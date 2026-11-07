@@ -56,14 +56,16 @@ static int saves,hooks,time_calls,writer_calls,logs,criticals,reboots,syncs,revi
 static int stop_fail=-1,start_fail=-1,hw_mode,hw_opens,hw_disables,hw_closes,hw_pings,hw_fd=-1;
 static int copy_fd=-1,source_fd=-1,copy_writes,stage_fault,guard_execs;
 static int daemon_marker,daemon_calls,hardware_inits;
-static int pin_failure,mlocks,munlocks;
+static int pin_failure,mlocks,munlocks,memory_pinned,unpin_failure,unpin_inhibited;
+static int start_under_pin_enomem,start_enomems;
 static char trace[8192],last_log[512];
 static void event(const char*s){assert(strlen(trace)+strlen(s)+2<sizeof(trace));strcat(trace,s);strcat(trace,",");}
 static void action(const char*type,int index){char b[80];snprintf(b,sizeof(b),"%s:%s",type,names[index]);event(b);}
 static int index_of(const char*s){int i;for(i=0;i<7;i++)if(!strcmp(s,names[i]))return i;assert(0);return -1;}
 static int pids(const char*s){return running[index_of(s)];}
 static void stop(int i){stops[i]++;action("stop",i);if(i!=stop_fail)running[i]=0;}
-static int start(int i){starts[i]++;action("start",i);if(i!=start_fail)running[i]=1;return 0;}
+/* Deterministic allocation seam, not a measurement of target free memory. */
+static int start(int i){starts[i]++;action("start",i);if(start_under_pin_enomem&&memory_pinned){start_enomems++;event("start-ENOMEM");errno=ENOMEM;return -1;}if(i!=start_fail)running[i]=1;return 0;}
 static void stop_rstats(void){stop(1);} static int start_rstats(void){return start(1);}
 static void stop_detect_internet(void){stop(2);} static int start_detect_internet(int t){assert(t==0);return start(2);}
 static void stop_networkmap(void){stop(3);} static int start_networkmap(int t){assert(t==0);return start(3);}
@@ -116,8 +118,8 @@ static int fixture_ioctl(int fd,unsigned long request,...){assert(fd==hw_fd);if(
 static int fake_reboot(int cmd){assert(cmd==RB_AUTOBOOT);reboots++;event("reboot");errno=EIO;return -1;}
 static void fake_sync(void){syncs++;event("sync");}
 static int fake_usleep(useconds_t t){assert(t==100000);return 0;}
-static int fixture_mlockall(int flags){assert(flags==(MCL_CURRENT|MCL_FUTURE));mlocks++;event("pin");if(pin_failure){errno=ENOMEM;return -1;}return 0;}
-static int fixture_munlockall(void){munlocks++;event("unpin");return 0;}
+static int fixture_mlockall(int flags){assert(flags==(MCL_CURRENT|MCL_FUTURE));mlocks++;event("pin");if(pin_failure){errno=ENOMEM;return -1;}memory_pinned=1;return 0;}
+static int fixture_munlockall(void){munlocks++;event("unpin");unpin_inhibited=access(FW_UPGRADE_PRIVATE "/" FW_UPGRADE_INHIBIT,F_OK)==0;if(unpin_failure){errno=EIO;return -1;}memory_pinned=0;return 0;}
 /* The child creates synthetic protocol records only; it never execs a tool,
  * opens MTD, runs hooks, mounts a filesystem, or changes services. */
 static int firmware_upgrade_spawn(const char*writer,const char*path,int lease,pid_t*child){
@@ -172,22 +174,23 @@ static int firmware_upgrade_spawn(const char*writer,const char*path,int lease,pi
     code += function(watchdog, 'watchdog_main') + '\n'
     code += r'''
 static void json_array(const int*a){int i;putchar('[');for(i=0;i<7;i++)printf("%s%d",i?",":"",a[i]);putchar(']');}
+static int raw_shared_allowed(void){int fd,allowed;fd=open(FW_UPGRADE_PRIVATE "/firmware-action.lock",O_RDWR|O_NOFOLLOW|O_CLOEXEC);if(fd<0){assert(errno==ENOENT);return 1;}allowed=flock(fd,LOCK_SH|LOCK_NB)==0;assert(close(fd)==0);return allowed;}
 int main(int argc,char**argv){
- int i,mask,phase;assert(argc==13);first_status=atoi(argv[2]);second_status=atoi(argv[3]);hook_exists=atoi(argv[4]);hook_status=atoi(argv[5]);kind=atoi(argv[6]);mask=atoi(argv[7]);stop_fail=atoi(argv[8]);start_fail=atoi(argv[9]);hw_mode=atoi(argv[10]);stage_fault=atoi(argv[11]);pin_failure=atoi(argv[12]);
+ int i,mask,phase;assert(argc==15);first_status=atoi(argv[2]);second_status=atoi(argv[3]);hook_exists=atoi(argv[4]);hook_status=atoi(argv[5]);kind=atoi(argv[6]);mask=atoi(argv[7]);stop_fail=atoi(argv[8]);start_fail=atoi(argv[9]);hw_mode=atoi(argv[10]);stage_fault=atoi(argv[11]);pin_failure=atoi(argv[12]);start_under_pin_enomem=atoi(argv[13]);unpin_failure=atoi(argv[14]);
  for(i=0;i<7;i++)running[i]=!!(mask&(1<<i));
  if(!strcmp(argv[1],"status")){printf("{\"status\":%d}\n",write_storage_to_mtd());return 0;}
  if(!strcmp(argv[1],"guard")){int result=start_watchdog();notify_watchdog_time();printf("{\"result\":%d,\"execs\":%d}\n",result,guard_execs);return 0;}
  if(!strncmp(argv[1],"mainguard",9)){int result;daemon_marker=!strcmp(argv[1],"mainguard-late");result=watchdog_main(0,NULL);printf("{\"result\":%d,\"daemon\":%d,\"hardware_inits\":%d}\n",result,daemon_calls,hardware_inits);return 0;}
  phase=flash_firmware();
  printf("{\"phase\":%d,\"saves\":%d,\"hooks\":%d,\"time_calls\":%d,\"writes\":%d,\"logs\":%d,\"criticals\":%d,\"reboots\":%d,\"syncs\":%d,\"mlocks\":%d,\"munlocks\":%d,\"inhibited\":%d,\"hardware_opens\":%d,\"hardware_disables\":%d,\"hardware_closes\":%d,\"hardware_keepalives\":%d,\"snapshot_revisions\":[%d,%d],\"stops\":",phase,saves,hooks,time_calls,writer_calls,logs,criticals,reboots,syncs,mlocks,munlocks,firmware_upgrade_inhibited(),hw_opens,hw_disables,hw_closes,hw_pings,versions[0],versions[1]);
- json_array(stops);printf(",\"starts\":");json_array(starts);printf(",\"running\":");json_array(running);printf(",\"trace\":\"%s\"}\n",trace);return 0;
+ json_array(stops);printf(",\"starts\":");json_array(starts);printf(",\"running\":");json_array(running);printf(",\"memory_pinned\":%d,\"start_enomems\":%d,\"unpin_inhibited\":%d,\"active\":%d,\"raw_shared_allowed\":%d,\"trace\":\"%s\"}\n",memory_pinned,start_enomems,unpin_inhibited,firmware_upgrade_signal_inhibited(),raw_shared_allowed(),trace);return 0;
 }
 '''
     return code
 
 
-def compile_harness(root, superset=False):
-    name = 'upgrade-superset' if superset else 'upgrade'
+def compile_harness(root, superset=False, name=None):
+    name = name or ('upgrade-superset' if superset else 'upgrade')
     path = root / (name + '.c')
     prefix = '#define USE_STORAGE 1\n#define USE_USB_SUPPORT 1\n' if superset else ''
     path.write_text(prefix + generate(root))

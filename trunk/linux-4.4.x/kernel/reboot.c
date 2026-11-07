@@ -6,7 +6,10 @@
 
 #define pr_fmt(fmt)	"reboot: " fmt
 
+#include <linux/atomic.h>
 #include <linux/ctype.h>
+#include <linux/irqflags.h>
+#include <linux/sched.h>
 #include <linux/export.h>
 #include <linux/kexec.h>
 #include <linux/kmod.h>
@@ -50,6 +53,45 @@ int reboot_force;
 
 void (*pm_power_off_prepare)(void);
 
+/* Irreversible for this boot; never retain a reporter/module-owned pointer. */
+static atomic_t reboot_dma_failure_reasons = ATOMIC_INIT(0);
+
+void reboot_dma_failure_report(unsigned int reasons)
+{
+	atomic_or(reasons ? reasons : REBOOT_DMA_UNKNOWN,
+		  &reboot_dma_failure_reasons);
+}
+EXPORT_SYMBOL(reboot_dma_failure_report);
+
+unsigned int reboot_dma_failures(void)
+{
+	return (unsigned int)atomic_read(&reboot_dma_failure_reasons);
+}
+EXPORT_SYMBOL(reboot_dma_failures);
+
+void reboot_dma_failure_check(bool may_sleep)
+{
+	unsigned int reasons = reboot_dma_failures();
+
+	if (!reasons)
+		return;
+	pr_emerg("DMA ownership unsafe (reasons %#x); software restart blocked\n",
+		 reasons);
+	/* device_shutdown() has already run on the normal path. Never return
+	 * to that partially shut-down system, even after a spurious wakeup.
+	 * Emergency/direct reset can arrive with IRQs off and must not sleep.
+	 */
+	if (!may_sleep)
+		local_irq_disable();
+	for (;;) {
+		if (may_sleep)
+			schedule_timeout_uninterruptible(MAX_SCHEDULE_TIMEOUT);
+		else
+			cpu_relax();
+	}
+}
+EXPORT_SYMBOL(reboot_dma_failure_check);
+
 /**
  *	emergency_restart - reboot the system
  *
@@ -60,6 +102,7 @@ void (*pm_power_off_prepare)(void);
  */
 void emergency_restart(void)
 {
+	reboot_dma_failure_check(false);
 	kmsg_dump(KMSG_DUMP_EMERG);
 	machine_emergency_restart();
 }
@@ -71,6 +114,7 @@ void kernel_restart_prepare(char *cmd)
 	system_state = SYSTEM_RESTART;
 	usermodehelper_disable();
 	device_shutdown();
+	reboot_dma_failure_check(true);
 }
 
 /**
