@@ -1,0 +1,8 @@
+{
+  "dl_on_timer": {
+    "source": "trunk/user/rc/detect_link.c",
+    "source_commit": "97b961d3735c2452f64b34d916b3d6dfaf7dae96",
+    "sha256": "0cf3b2ca6e42d50a4de4ee7c933026084165343f048668d2848fc5003b55a08d",
+    "identical_at_commit": "37662a0b52c482e2933f4d3a329fe2f1a9bf3fd5"
+  }
+}

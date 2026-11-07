@@ -83,16 +83,17 @@ rtl8367_ioctl(unsigned int cmd, unsigned int par, unsigned int *value)
 
 	fd = open(RTL8367_DEVPATH, O_RDONLY);
 	if (fd < 0) {
+		retVal = errno;
 		perror(RTL8367_DEVPATH);
-		return errno;
+		return retVal;
 	}
 
 	cmd &= ((1u << RTL8367_IOCTL_CMD_LENGTH_BITS) - 1);
 	cmd |= (par << RTL8367_IOCTL_CMD_LENGTH_BITS);
 
 	if (ioctl(fd, cmd, value) < 0) {
-		perror("ioctl");
 		retVal = errno;
+		perror("ioctl");
 	}
 
 	close(fd);
@@ -147,8 +148,10 @@ int phy_status_port_bytes(int port_id_uapi, uint64_t *rx, uint64_t *tx)
 	int ioctl_result;
 
 	ioctl_result = rtl8367_ioctl(RTL8367_IOCTL_STATUS_BYTES_PORT, port_id_uapi, (unsigned int *)&pb);
-	if (ioctl_result < 0)
-		return ioctl_result;
+	/* Match the byte-sample API while preserving the ioctl wrapper's
+	 * positive-errno convention for its other callers. */
+	if (ioctl_result != 0)
+		return (ioctl_result > 0) ? -ioctl_result : ioctl_result;
 
 	*rx = pb.RX;
 	*tx = pb.TX;

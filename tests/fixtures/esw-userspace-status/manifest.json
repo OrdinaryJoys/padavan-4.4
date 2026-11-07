@@ -1,0 +1,37 @@
+{
+  "mtk-getter.c": {
+    "execution": "whole-function",
+    "function": "phy_status_port_bytes",
+    "sha256": "f2e37d0cf15e2fc285f536de3424158e9902fb32660dabd3a2f37de762334796",
+    "source_commit": "97b961d3735c2452f64b34d916b3d6dfaf7dae96",
+    "source_path": "trunk/user/rc/switch_mtk_esw.c"
+  },
+  "mtk-wrapper.c": {
+    "execution": "whole-function",
+    "function": "mtk_esw_ioctl",
+    "sha256": "38d27a3e1d4e270ba17d54287934b4a03ab36f46c4525aa311f2b5d7456debb8",
+    "source_commit": "97b961d3735c2452f64b34d916b3d6dfaf7dae96",
+    "source_path": "trunk/user/rc/switch_mtk_esw.c"
+  },
+  "rstats-consumer-loop.c": {
+    "execution": "complete-ESW-for-loop-not-whole-function",
+    "function": "process_rstats",
+    "sha256": "20290a2c96ceab4ed9083879b8fa41c7f120b4d397cdba2fcb95ccf9b552d7be",
+    "source_commit": "97b961d3735c2452f64b34d916b3d6dfaf7dae96",
+    "source_path": "trunk/user/rc/rstats.c"
+  },
+  "rtl-getter.c": {
+    "execution": "whole-function",
+    "function": "phy_status_port_bytes",
+    "sha256": "8e8a085e970c4c2b00a251831d636c41da7847a5e727438b11cbf672a24f7001",
+    "source_commit": "97b961d3735c2452f64b34d916b3d6dfaf7dae96",
+    "source_path": "trunk/user/rc/switch_rtl8367.c"
+  },
+  "rtl-wrapper.c": {
+    "execution": "whole-function",
+    "function": "rtl8367_ioctl",
+    "sha256": "720d9dad6bf486d2677f829cfe623042e847559f28e454abdce5be6a05ec228d",
+    "source_commit": "97b961d3735c2452f64b34d916b3d6dfaf7dae96",
+    "source_path": "trunk/user/rc/switch_rtl8367.c"
+  }
+}

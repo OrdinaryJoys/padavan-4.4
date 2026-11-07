@@ -219,23 +219,25 @@ dl_on_timer(void)
 	dl_counter_total++;
 
 	is_link_changed = 0;
-	phy_status_port_link_changed(&is_link_changed);
-	if (is_link_changed || !dl_initialized) {
-		int phy_link;
-		
-		phy_link = get_wan_ether_link_direct(is_ap_mode);
-		if (phy_link >= 0)
-			dl_status_wan = phy_link;
-		
-		phy_link = 0;
-		if (phy_status_port_link_lan_all(&phy_link) == 0)
-			dl_status_lan = phy_link;
-		
-		if (is_ap_mode)
-			dl_status_lan |= dl_status_wan;
-		
-		if (!dl_initialized)
+	if (phy_status_port_link_changed(&is_link_changed) != 0) {
+		/* A failed read is not a confirmed absence of change. */
+		dl_initialized = 0;
+	} else if (is_link_changed || !dl_initialized) {
+		int wan_link = get_wan_ether_link_direct(is_ap_mode);
+		unsigned int lan_link = 0;
+		int lan_result = phy_status_port_link_lan_all(&lan_link);
+		/* The event may already be consumed. Preserve the complete old pair
+		 * on any query error and sample again on the next tick, even without
+		 * another IRQ. Derive AP's aggregate only from a fresh complete pair. */
+		if (wan_link >= 0 && lan_result == 0) {
+			if (is_ap_mode)
+				lan_link |= wan_link;
+			dl_status_wan = wan_link;
+			dl_status_lan = lan_link;
 			dl_initialized = 1;
+		} else {
+			dl_initialized = 0;
+		}
 	}
 
 	if (!is_ap_mode) {

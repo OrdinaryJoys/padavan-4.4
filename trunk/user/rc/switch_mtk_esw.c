@@ -91,16 +91,17 @@ mtk_esw_ioctl(unsigned int cmd, unsigned int par, unsigned int *value)
 	fd = open(MTK_ESW_DEVPATH, O_RDONLY);
 	if (fd < 0)
 	{
+		retVal = errno;
 		perror(MTK_ESW_DEVPATH);
-		return errno;
+		return retVal;
 	}
 
 	cmd &= ((1u << MTK_ESW_IOCTL_CMD_LENGTH_BITS) - 1);
 	cmd |= (par << MTK_ESW_IOCTL_CMD_LENGTH_BITS);
 
 	if (ioctl(fd, cmd, value) < 0) {
-		perror("ioctl");
 		retVal = errno;
+		perror("ioctl");
 	}
 
 	close(fd);
@@ -155,8 +156,10 @@ int phy_status_port_bytes(int port_id_uapi, uint64_t *rx, uint64_t *tx)
 	int ioctl_result;
 
 	ioctl_result = mtk_esw_ioctl(MTK_ESW_IOCTL_STATUS_BYTES_PORT, port_id_uapi, (unsigned int *)&pb);
-	if (ioctl_result < 0)
-		return ioctl_result;
+	/* The ioctl wrapper uses positive errno; byte-sample consumers reject
+	 * negative errors. Never publish the untouched/partial local on failure. */
+	if (ioctl_result != 0)
+		return (ioctl_result > 0) ? -ioctl_result : ioctl_result;
 
 	*rx = pb.RX;
 	*tx = pb.TX;
