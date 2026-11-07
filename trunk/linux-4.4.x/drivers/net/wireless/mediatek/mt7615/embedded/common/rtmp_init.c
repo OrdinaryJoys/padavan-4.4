@@ -1028,6 +1028,10 @@ VOID UserCfgExit(RTMP_ADAPTER *pAd)
 */
 VOID UserCfgInit(RTMP_ADAPTER *pAd)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	UINT i;
 	UINT key_index, bss_index;
 #ifdef GREENAP_SUPPORT
@@ -1676,8 +1680,8 @@ VOID UserCfgInit(RTMP_ADAPTER *pAd)
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
 
 	if (IS_MT7615(pAd) || IS_MT7622(pAd) || IS_P18(pAd) || IS_MT7663(pAd))
-		if (wf_drv_tbl.wf_fwd_set_cb_num != NULL)
-			wf_drv_tbl.wf_fwd_set_cb_num(PACKET_BAND_CB, RECV_FROM_CB);
+		if (wf_fwd_snapshot->wf_fwd_set_cb_num != NULL)
+			wf_fwd_snapshot->wf_fwd_set_cb_num(PACKET_BAND_CB, RECV_FROM_CB);
 
 #endif /* CONFIG_WIFI_PKT_FWD */
 #ifdef RMTP_RBUS_SUPPORT

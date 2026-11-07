@@ -385,7 +385,7 @@ extern UCHAR   FILTER_OUI[];
 
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
 
-extern struct wifi_fwd_func_table wf_drv_tbl;
+/* Forwarding readers use an owned immutable snapshot (WIFI_FWD_GUARD). */
 
 extern UCHAR wf_apcli_active_links;
 #endif

@@ -555,6 +555,10 @@ UINT32 ReptTxPktCheckHandler(
 	IN PNDIS_PACKET pPacket,
 	OUT UCHAR *pWcid)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	PUCHAR pSrcBufVA = NULL;
 	PACKET_INFO PacketInfo;
 	UINT SrcBufLen;
@@ -590,7 +594,7 @@ UINT32 ReptTxPktCheckHandler(
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
 
 		if ((pReptEntry->MatchApCliIdx != pApCliEntry->ifIndex) &&
-			(wf_drv_tbl.wf_fwd_check_active_hook && wf_drv_tbl.wf_fwd_check_active_hook())) {
+			(wf_fwd_snapshot->wf_fwd_check_active_hook && wf_fwd_snapshot->wf_fwd_check_active_hook())) {
 			UCHAR apCliIdx, CliIdx;
 
 			apCliIdx = pReptEntry->MatchApCliIdx;
@@ -638,7 +642,7 @@ UINT32 ReptTxPktCheckHandler(
 
 				if (
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
-						(wf_drv_tbl.wf_fwd_check_active_hook && wf_drv_tbl.wf_fwd_check_active_hook()) ||
+						(wf_fwd_snapshot->wf_fwd_check_active_hook && wf_fwd_snapshot->wf_fwd_check_active_hook()) ||
 #endif /* CONFIG_WIFI_PKT_FWD */
 						(pMbssToCliLinkMap->cli_link_wdev == cli_link_wdev)) {
 #ifdef WSC_AP_SUPPORT

@@ -1,0 +1,8 @@
+{
+  "rt_pci_driver.c": {
+    "source_commit": "60ae6bf98bd46b68c648620c599f1aa78073131e",
+    "source_path": "trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/os/linux/pci_main_dev.c",
+    "source_region": "complete rt_pci_driver initializer",
+    "sha256": "c7ea843f0c96d7dc63b6e563b42cef96605c282852c22cd6be8bb5a77e09433c"
+  }
+}

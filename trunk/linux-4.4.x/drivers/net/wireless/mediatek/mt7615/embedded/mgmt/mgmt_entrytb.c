@@ -495,6 +495,10 @@ MAC_TABLE_ENTRY *MacTableInsertEntry(
 	IN UCHAR OpMode,
 	IN BOOLEAN CleanAll)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	UCHAR HashIdx;
 	int i;
 	MAC_TABLE_ENTRY *pEntry = NULL, *pCurrEntry;
@@ -841,8 +845,8 @@ MAC_TABLE_ENTRY *MacTableInsertEntry(
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
 
 			if (IS_ENTRY_CLIENT(pEntry) &&
-				wf_drv_tbl.wf_fwd_add_entry_inform_hook)
-				wf_drv_tbl.wf_fwd_add_entry_inform_hook(pEntry->Addr);
+				wf_fwd_snapshot->wf_fwd_add_entry_inform_hook)
+				wf_fwd_snapshot->wf_fwd_add_entry_inform_hook(pEntry->Addr);
 
 #endif /* CONFIG_WIFI_PKT_FWD */
 #ifdef MTFWD
@@ -944,6 +948,10 @@ static BOOLEAN mac_entry_disconn_act(struct _RTMP_ADAPTER *pAd, struct _MAC_TABL
 
 BOOLEAN MacTableDeleteEntry(RTMP_ADAPTER *pAd, USHORT wcid, UCHAR *pAddr)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	MAC_TABLE_ENTRY *pEntry;
 	STA_TR_ENTRY *tr_entry;
 	BOOLEAN Cancelled;
@@ -1017,8 +1025,8 @@ BOOLEAN MacTableDeleteEntry(RTMP_ADAPTER *pAd, USHORT wcid, UCHAR *pAddr)
 #endif /* CONFIG_AP_SUPPORT */
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
 
-		if (wf_drv_tbl.wf_fwd_delete_entry_inform_hook)
-			wf_drv_tbl.wf_fwd_delete_entry_inform_hook(pEntry->Addr);
+		if (wf_fwd_snapshot->wf_fwd_delete_entry_inform_hook)
+			wf_fwd_snapshot->wf_fwd_delete_entry_inform_hook(pEntry->Addr);
 
 #endif /* CONFIG_WIFI_PKT_FWD */
 #ifdef MTFWD

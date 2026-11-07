@@ -1161,25 +1161,36 @@ static int phy_polling_thread(void *data)
 	unsigned int link_status, link_speed, duplex;
 	unsigned int local_eee, lp_eee;
 	unsigned int fc_phy, fc_lp;
-	unsigned int val_tmp;
+	unsigned int val_tmp, pause;
 
 	pr_info("%s called\n", __func__);
-	val_tmp = 1;
 	for (;;) {
-		mii_mgr_read(0x0, 0x1, &link_status);
-		link_status = (link_status >> 2) & 0x1;
-		if (link_status) {
-			mii_mgr_read(0x0, 0x4, &fc_phy);
-			mii_mgr_read(0x0, 0x5, &fc_lp);
-			if ((fc_phy & 0xc00) == (fc_lp & 0xc00))
-				val_tmp = val_tmp | 0x30;
-			else
-				val_tmp = val_tmp & (~0x30);
-			mii_mgr_read_cl45(0, 0x1e, 0xa2, &link_speed);
+		if (kthread_should_stop())
+			break;
+		if (!mii_mgr_read(0x0, 0x1, &link_status))
+			goto poll_wait;
+		if (link_status & BIT(2)) {
+			/* Publish one complete sample. A failed/retired MDIO access
+			 * leaves its output unchanged and is not a new PHY state. */
+			if (!mii_mgr_read(0x0, 0x4, &fc_phy) ||
+			    !mii_mgr_read(0x0, 0x5, &fc_lp) ||
+			    !mii_mgr_read_cl45(0, 0x1e, 0xa2, &link_speed) ||
+			    !mii_mgr_read_cl45(0, 0x7, 0x3c, &local_eee) ||
+			    !mii_mgr_read_cl45(0, 0x7, 0x3d, &lp_eee))
+				goto poll_wait;
+			/* EEE bits must describe this sample, not a previous link. */
+			val_tmp = 1;
 			duplex = link_speed & 0x20;
-			if (duplex)
+			if (duplex) {
 				val_tmp = val_tmp | 0x2;
-			else
+				/* Equality also matches no PAUSE advertisement and misses
+				 * asymmetric RX/TX negotiation. Resolve full duplex only. */
+				pause = mii_resolve_flowctrl_fdx(fc_phy, fc_lp);
+				if (pause & FLOW_CTRL_RX)
+					val_tmp |= BIT(5);
+				if (pause & FLOW_CTRL_TX)
+					val_tmp |= BIT(4);
+			} else
 				val_tmp = val_tmp & (~0x2);
 			link_speed = link_speed & 0xe;
 			val_tmp = val_tmp & (~0xc);
@@ -1187,8 +1198,6 @@ static int phy_polling_thread(void *data)
 				val_tmp = val_tmp | (0x4);
 			else if (link_speed == 0x08)
 				val_tmp = val_tmp | (0x8);
-			mii_mgr_read_cl45(0, 0x7, 0x3c, &local_eee);
-			mii_mgr_read_cl45(0, 0x7, 0x3d, &lp_eee);
 			if ((local_eee & 0x4) == 4 && (lp_eee & 0x4) == 4)/*1g eee*/
 				val_tmp = val_tmp | 0x80;
 			if ((local_eee & 0x2) == 2 && ((lp_eee & 0x2) == 2))/*100m eee*/
@@ -1200,6 +1209,7 @@ static int phy_polling_thread(void *data)
 			set_ge2_force_link_down();
 		}
 
+poll_wait:
 		msleep_interruptible(PHY_POLLING_MS);
 		if (kthread_should_stop())
 			break;
@@ -3839,6 +3849,51 @@ static int raether_remove(struct platform_device *pdev)
 	return 0;
 }
 
+/* Shutdown is terminal, but it is not remove. In particular a failed idle
+ * observation must never make live DMA owners available for reuse. */
+static void raether_shutdown(struct platform_device *pdev)
+{
+	struct net_device *dev = platform_get_drvdata(pdev);
+	struct END_DEVICE *ei_local;
+	struct net_device *pseudo;
+	int err;
+
+	if (!dev)
+		return;
+	ei_local = netdev_priv(dev);
+	rtnl_lock();
+	WRITE_ONCE(ei_local->dma_quarantined, true);
+	pseudo = ei_local->pseudo_dev;
+	netif_device_detach(dev);
+	if (pseudo)
+		netif_device_detach(pseudo);
+	rtnl_unlock();
+	/* Readers can need RTNL: retire publication without holding it. */
+	mii_mgr_detach();
+	debug_proc_exit();
+	rtnl_lock();
+	netif_tx_disable(dev);
+	if (pseudo)
+		netif_tx_disable(pseudo);
+	if (ei_local->kreset_task) {
+		kthread_stop(ei_local->kreset_task);
+		ei_local->kreset_task = NULL;
+	}
+	if (ei_local->kphy_poll_task) {
+		kthread_stop(ei_local->kphy_poll_task);
+		ei_local->kphy_poll_task = NULL;
+	}
+	fe_int_disable(dev);
+	err = ei_stop_dma(dev);
+	if (err)
+		pr_err("%s: shutdown DMA stop failed (%d); keeping all owners\n",
+		       dev->name, err);
+	/* Keep rings, MMIO, clocks and existing module/parent references even
+ * after idle. Foreign consumers are not retired by device_shutdown().
+ * The void shutdown API cannot veto the subsequent machine reset. */
+	rtnl_unlock();
+}
+
 #if (0)
 static const struct dev_pm_ops raeth_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(raeth_suspend, raeth_resume)
@@ -3857,6 +3912,7 @@ static const struct of_device_id raether_of_ids[] = {
 static struct platform_driver raeth_driver = {
 	.probe = rather_probe,
 	.remove = raether_remove,
+	.shutdown = raether_shutdown,
 	.driver = {
 		   .name = raeth_string,
 		   .owner = THIS_MODULE,

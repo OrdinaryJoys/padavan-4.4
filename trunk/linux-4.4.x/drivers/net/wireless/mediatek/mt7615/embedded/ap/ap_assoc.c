@@ -663,6 +663,10 @@ USHORT APBuildAssociation(
 */
 BOOLEAN IAPP_L2_Update_Frame_Send(RTMP_ADAPTER *pAd, UINT8 *mac, INT wdev_idx)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	NDIS_PACKET	 *pNetBuf;
 	struct wifi_dev *wdev;
 
@@ -675,7 +679,7 @@ BOOLEAN IAPP_L2_Update_Frame_Send(RTMP_ADAPTER *pAd, UINT8 *mac, INT wdev_idx)
 	/*Which band is this packet transfer*/
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
 
-	if (wf_drv_tbl.wf_fwd_needed_hook != NULL && wf_drv_tbl.wf_fwd_needed_hook() == TRUE)
+	if (wf_fwd_snapshot->wf_fwd_needed_hook != NULL && wf_fwd_snapshot->wf_fwd_needed_hook() == TRUE)
 		set_wf_fwd_cb(pAd, pNetBuf, wdev);
 
 #endif /* CONFIG_WIFI_PKT_FWD */

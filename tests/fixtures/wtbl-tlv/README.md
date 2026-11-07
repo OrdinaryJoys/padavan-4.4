@@ -1,0 +1,1 @@
+Fixed complete old WTBL request, response and send bodies from 60ae6bf98bd4. No runtime Git history is required. Native negative controls retain these bytes; they are not firmware or physical ABI verification.

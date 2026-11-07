@@ -97,7 +97,7 @@ INT MCSMappingRateTable[] = {
 
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
 
-extern struct wifi_fwd_func_table wf_drv_tbl;
+/* Forwarding readers use an owned immutable snapshot (WIFI_FWD_GUARD). */
 
 #endif
 
@@ -11166,16 +11166,20 @@ INT Set_WifiFwd_Proc(
 	IN PRTMP_ADAPTER pAd,
 	IN RTMP_STRING *arg)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	int active = os_str_tol(arg, 0, 10);
 
 	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s::active=%d\n", __func__, active));
 
 	if (active == 0) {
-		if (wf_drv_tbl.wf_fwd_pro_halt_hook)
-			wf_drv_tbl.wf_fwd_pro_halt_hook();
+		if (wf_fwd_snapshot->wf_fwd_pro_halt_hook)
+			wf_fwd_snapshot->wf_fwd_pro_halt_hook();
 	} else  {
-		if (wf_drv_tbl.wf_fwd_pro_active_hook)
-			wf_drv_tbl.wf_fwd_pro_active_hook();
+		if (wf_fwd_snapshot->wf_fwd_pro_active_hook)
+			wf_fwd_snapshot->wf_fwd_pro_active_hook();
 	}
 
 	return TRUE;
@@ -11184,9 +11188,13 @@ INT Set_WifiFwd_Proc(
 INT WifiFwdSet(
 	IN int disabled)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	if (disabled != 0) {
-		if (wf_drv_tbl.wf_fwd_pro_disabled_hook)
-			wf_drv_tbl.wf_fwd_pro_disabled_hook();
+		if (wf_fwd_snapshot->wf_fwd_pro_disabled_hook)
+			wf_fwd_snapshot->wf_fwd_pro_disabled_hook();
 	}
 
 	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s::disabled=%d\n", __func__, disabled));
@@ -11207,16 +11215,20 @@ INT Set_WifiFwdAccessSchedule_Proc(
 	IN PRTMP_ADAPTER pAd,
 	IN RTMP_STRING *arg)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	int active = os_str_tol(arg, 0, 10);
 
 	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s::active=%d\n", __func__, active));
 
 	if (active == 0) {
-		if (wf_drv_tbl.wf_fwd_access_schedule_halt_hook)
-			wf_drv_tbl.wf_fwd_access_schedule_halt_hook();
+		if (wf_fwd_snapshot->wf_fwd_access_schedule_halt_hook)
+			wf_fwd_snapshot->wf_fwd_access_schedule_halt_hook();
 	} else  {
-		if (wf_drv_tbl.wf_fwd_access_schedule_active_hook)
-			wf_drv_tbl.wf_fwd_access_schedule_active_hook();
+		if (wf_fwd_snapshot->wf_fwd_access_schedule_active_hook)
+			wf_fwd_snapshot->wf_fwd_access_schedule_active_hook();
 	}
 
 	return TRUE;
@@ -11226,16 +11238,20 @@ INT Set_WifiFwdHijack_Proc(
 	IN PRTMP_ADAPTER pAd,
 	IN RTMP_STRING *arg)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	int active = os_str_tol(arg, 0, 10);
 
 	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s::active=%d\n", __func__, active));
 
 	if (active == 0) {
-		if (wf_drv_tbl.wf_fwd_hijack_halt_hook)
-			wf_drv_tbl.wf_fwd_hijack_halt_hook();
+		if (wf_fwd_snapshot->wf_fwd_hijack_halt_hook)
+			wf_fwd_snapshot->wf_fwd_hijack_halt_hook();
 	} else  {
-		if (wf_drv_tbl.wf_fwd_hijack_active_hook)
-			wf_drv_tbl.wf_fwd_hijack_active_hook();
+		if (wf_fwd_snapshot->wf_fwd_hijack_active_hook)
+			wf_fwd_snapshot->wf_fwd_hijack_active_hook();
 	}
 
 	return TRUE;
@@ -11245,16 +11261,20 @@ INT Set_WifiFwdBpdu_Proc(
 	IN PRTMP_ADAPTER pAd,
 	IN RTMP_STRING * arg)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	int active = os_str_tol(arg, 0, 10);
 
 	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s::active=%d\n", __func__, active));
 
 	if (active == 0) {
-		if (wf_drv_tbl.wf_fwd_bpdu_halt_hook)
-			wf_drv_tbl.wf_fwd_bpdu_halt_hook();
+		if (wf_fwd_snapshot->wf_fwd_bpdu_halt_hook)
+			wf_fwd_snapshot->wf_fwd_bpdu_halt_hook();
 	} else {
-		if (wf_drv_tbl.wf_fwd_bpdu_active_hook)
-			wf_drv_tbl.wf_fwd_bpdu_active_hook();
+		if (wf_fwd_snapshot->wf_fwd_bpdu_active_hook)
+			wf_fwd_snapshot->wf_fwd_bpdu_active_hook();
 	}
 
 	return TRUE;
@@ -11264,12 +11284,16 @@ INT Set_WifiFwdRepDevice(
 	IN PRTMP_ADAPTER pAd,
 	IN RTMP_STRING *arg)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	int rep = os_str_tol(arg, 0, 10);
 
 	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s::rep=%d\n", __func__, rep));
 
-	if (wf_drv_tbl.wf_fwd_get_rep_hook)
-		wf_drv_tbl.wf_fwd_get_rep_hook(rep);
+	if (wf_fwd_snapshot->wf_fwd_get_rep_hook)
+		wf_fwd_snapshot->wf_fwd_get_rep_hook(rep);
 
 	return TRUE;
 }
@@ -11278,8 +11302,12 @@ INT Set_WifiFwdShowEntry(
 	IN PRTMP_ADAPTER pAd,
 	IN RTMP_STRING *arg)
 {
-	if (wf_drv_tbl.wf_fwd_show_entry_hook)
-		wf_drv_tbl.wf_fwd_show_entry_hook();
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
+	if (wf_fwd_snapshot->wf_fwd_show_entry_hook)
+		wf_fwd_snapshot->wf_fwd_show_entry_hook();
 
 	return TRUE;
 }
@@ -11288,12 +11316,16 @@ INT Set_WifiFwdDeleteEntry(
 	IN PRTMP_ADAPTER pAd,
 	IN RTMP_STRING *arg)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	int idx = os_str_tol(arg, 0, 10);
 
 	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s::idx=%d\n", __func__, idx));
 
-	if (wf_drv_tbl.wf_fwd_delete_entry_hook)
-		wf_drv_tbl.wf_fwd_delete_entry_hook(idx);
+	if (wf_fwd_snapshot->wf_fwd_delete_entry_hook)
+		wf_fwd_snapshot->wf_fwd_delete_entry_hook(idx);
 
 	return TRUE;
 }
@@ -11302,8 +11334,12 @@ INT Set_PacketSourceShowEntry(
 	IN PRTMP_ADAPTER pAd,
 	IN RTMP_STRING *arg)
 {
-	if (wf_drv_tbl.packet_source_show_entry_hook)
-		wf_drv_tbl.packet_source_show_entry_hook();
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
+	if (wf_fwd_snapshot->packet_source_show_entry_hook)
+		wf_fwd_snapshot->packet_source_show_entry_hook();
 
 	return TRUE;
 }
@@ -11312,12 +11348,16 @@ INT Set_PacketSourceDeleteEntry(
 	IN PRTMP_ADAPTER pAd,
 	IN RTMP_STRING *arg)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	int idx = os_str_tol(arg, 0, 10);
 
 	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_OFF, ("%s::idx=%d\n", __func__, idx));
 
-	if (wf_drv_tbl.packet_source_delete_entry_hook)
-		wf_drv_tbl.packet_source_delete_entry_hook(idx);
+	if (wf_fwd_snapshot->packet_source_delete_entry_hook)
+		wf_fwd_snapshot->packet_source_delete_entry_hook(idx);
 
 	return TRUE;
 }
@@ -11328,6 +11368,10 @@ INT Set_WifiFwdBridge_Proc(
 	IN PRTMP_ADAPTER pAd,
 	IN RTMP_STRING * arg)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 
 	UINT8 Length = 0;
 
@@ -11341,8 +11385,8 @@ INT Set_WifiFwdBridge_Proc(
 
 	MTWF_LOG(DBG_CAT_CFG, DBG_SUBCAT_ALL, DBG_LVL_ERROR, ("%s:Bridge Intf Name =%s,size:%d\n", __func__, arg, Length));
 
-	if (wf_drv_tbl.wf_fwd_set_bridge_hook)
-		wf_drv_tbl.wf_fwd_set_bridge_hook(arg, Length);
+	if (wf_fwd_snapshot->wf_fwd_set_bridge_hook)
+		wf_fwd_snapshot->wf_fwd_set_bridge_hook(arg, Length);
 
 	return TRUE;
 }

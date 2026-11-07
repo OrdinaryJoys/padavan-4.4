@@ -4289,6 +4289,10 @@ VOID announce_or_forward_802_3_pkt(
 	struct wifi_dev *wdev,
 	UCHAR op_mode)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	BOOLEAN to_os = FALSE;
 	struct wifi_dev_ops *ops = wdev->wdev_ops;
 #ifdef VLAN_SUPPORT
@@ -4317,7 +4321,7 @@ VOID announce_or_forward_802_3_pkt(
 	if (to_os == TRUE) {
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
 
-		if (wf_drv_tbl.wf_fwd_needed_hook != NULL && wf_drv_tbl.wf_fwd_needed_hook() == TRUE)
+		if (wf_fwd_snapshot->wf_fwd_needed_hook != NULL && wf_fwd_snapshot->wf_fwd_needed_hook() == TRUE)
 			set_wf_fwd_cb(pAd, pPacket, wdev);
 
 #endif /* CONFIG_WIFI_PKT_FWD */
@@ -4409,6 +4413,10 @@ VOID indicate_802_3_pkt(RTMP_ADAPTER *pAd, RX_BLK *pRxBlk, UCHAR wdev_idx)
 
 VOID indicate_802_11_pkt(RTMP_ADAPTER *pAd, RX_BLK *pRxBlk, UCHAR wdev_idx)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	PNDIS_PACKET pRxPacket = pRxBlk->pRxPacket;
 	UCHAR Header802_3[LENGTH_802_3];
 	USHORT VLAN_VID = 0, VLAN_Priority = 0;
@@ -4534,8 +4542,8 @@ VOID indicate_802_11_pkt(RTMP_ADAPTER *pAd, RX_BLK *pRxBlk, UCHAR wdev_idx)
 						VOID *band_tbl = NULL;
 						VOID *other_band_tbl = NULL;
 
-						if (wf_drv_tbl.wf_fwd_feedback_map_table)
-							wf_drv_tbl.wf_fwd_feedback_map_table(pAd,
+						if (wf_fwd_snapshot->wf_fwd_feedback_map_table)
+							wf_fwd_snapshot->wf_fwd_feedback_map_table(pAd,
 												&band_tbl,
 												&opp_band_tbl,
 												&other_band_tbl);

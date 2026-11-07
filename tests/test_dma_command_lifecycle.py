@@ -50,6 +50,7 @@ class DmaCommandLifecycleTests(unittest.TestCase):
     def test_controller_cleanup_distinguishes_waiter_and_transferred_metadata(self):self.cases('cleanup')
     def test_publication_and_stop_have_one_serialized_order(self):self.cases('interleaved')
     def test_wsys_firmware_status_or_missing_callback_reaches_waiting_sender(self):self.cases('wsys-fwack')
+    def test_wtbl_firmware_rejection_success_and_missing_response_reach_sender(self):self.cases('wtbl-fwack')
     def test_message_and_packet_barriers_reject_private_source_mutants(self):
         edits=(
             ('AndesTakeQueuedCmdMsg','if (entry == pending)','if (entry != NULL)','cross-sync-normal-fail'),
@@ -61,6 +62,9 @@ class DmaCommandLifecycleTests(unittest.TestCase):
             ('AndesForceFreeCmdMsg','if (ad && msg->retry_pkt && msg->retry_pkt != msg->net_pkt)',
              'if (FALSE)','async-retry-kick-fail'),
             ('AndesSendCmdMsg',' msg->attr.ext_type == EXT_CMD_ID_DEVINFO_UPDATE ||',' FALSE ||','wsys-dev-sync-error'),
+            ('AndesSendCmdMsg',' msg->attr.ext_type == EXT_CMD_ID_WTBL_UPDATE))',' FALSE))','wsys-wtbl-sync-error'),
+            ('AndesSendCmdMsg','msg->attr.ext_type == EXT_CMD_ID_WTBL_UPDATE)\n\t\tmsg->cmd_return_status',
+             'FALSE)\n\t\tmsg->cmd_return_status','wsys-wtbl-sync-noresponse'),
             ('AndesSendCmdMsg','msg->cmd_return_status = NDIS_STATUS_FAILURE;','msg->cmd_return_status = NDIS_STATUS_SUCCESS;','wsys-dev-sync-noresponse'))
         for index,(name,old,new,case)in enumerate(edits):
             with self.subTest(function=name,case=case):

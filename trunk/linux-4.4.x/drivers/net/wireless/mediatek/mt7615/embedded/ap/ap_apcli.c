@@ -551,6 +551,10 @@ void V10ConverterModeStartStop(RTMP_ADAPTER *pAd, BOOLEAN BeaconStart)
 */
 BOOLEAN ApCliLinkUp(RTMP_ADAPTER *pAd, UCHAR ifIndex)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	BOOLEAN result = FALSE;
 	PAPCLI_STRUCT pApCliEntry = NULL;
 	PMAC_TABLE_ENTRY pMacEntry = NULL;
@@ -686,22 +690,22 @@ BOOLEAN ApCliLinkUp(RTMP_ADAPTER *pAd, UCHAR ifIndex)
 		if (CliIdx == 0xFF)
 #endif /* MAC_REPEATER_SUPPORT */
 		{
-			if (wf_drv_tbl.wf_fwd_get_rep_hook)
-				wf_drv_tbl.wf_fwd_get_rep_hook(pAd->CommonCfg.EtherTrafficBand);
+			if (wf_fwd_snapshot->wf_fwd_get_rep_hook)
+				wf_fwd_snapshot->wf_fwd_get_rep_hook(pAd->CommonCfg.EtherTrafficBand);
 
-			if (wf_drv_tbl.wf_fwd_check_device_hook)
-				wf_drv_tbl.wf_fwd_check_device_hook(wdev->if_dev, INT_APCLI, CliIdx, wdev->channel, 1);
+			if (wf_fwd_snapshot->wf_fwd_check_device_hook)
+				wf_fwd_snapshot->wf_fwd_check_device_hook(wdev->if_dev, INT_APCLI, CliIdx, wdev->channel, 1);
 
-			if (wf_drv_tbl.wf_fwd_entry_insert_hook)
-				wf_drv_tbl.wf_fwd_entry_insert_hook(wdev->if_dev, pAd->net_dev, pAd);
+			if (wf_fwd_snapshot->wf_fwd_entry_insert_hook)
+				wf_fwd_snapshot->wf_fwd_entry_insert_hook(wdev->if_dev, pAd->net_dev, pAd);
 
-			if (wf_drv_tbl.wf_fwd_insert_repeater_mapping_hook)
+			if (wf_fwd_snapshot->wf_fwd_insert_repeater_mapping_hook)
 #ifdef MAC_REPEATER_SUPPORT
-				wf_drv_tbl.wf_fwd_insert_repeater_mapping_hook(pAd, &pAd->ApCfg.ReptCliEntryLock,
+				wf_fwd_snapshot->wf_fwd_insert_repeater_mapping_hook(pAd, &pAd->ApCfg.ReptCliEntryLock,
 				&pAd->ApCfg.ReptCliHash[0], &pAd->ApCfg.ReptMapHash[0],
 				&pAd->ApCfg.ApCliTab[ifIndex].wdev.if_addr);
 #else
-				wf_drv_tbl.wf_fwd_insert_repeater_mapping_hook(pAd,
+				wf_fwd_snapshot->wf_fwd_insert_repeater_mapping_hook(pAd,
 				NULL, NULL, NULL, &pAd->ApCfg.ApCliTab[ifIndex].wdev.if_addr);
 #endif /* MAC_REPEATER_SUPPORT */
 		}
@@ -1358,6 +1362,10 @@ static CHAR SubLinkDownReason[APCLI_DISCONNECT_SUB_REASON_APCLI_TRIGGER_TOO_LONG
 */
 VOID ApCliLinkDown(RTMP_ADAPTER *pAd, UCHAR ifIndex)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	APCLI_STRUCT *pApCliEntry = NULL;
 	struct wifi_dev *wdev = NULL;
 	UCHAR CliIdx = 0xFF;
@@ -1433,18 +1441,18 @@ VOID ApCliLinkDown(RTMP_ADAPTER *pAd, UCHAR ifIndex)
 	if (CliIdx == 0xFF)
 #endif /* MAC_REPEATER_SUPPORT */
 	{
-		if (wf_drv_tbl.wf_fwd_entry_delete_hook)
-			wf_drv_tbl.wf_fwd_entry_delete_hook(pApCliEntry->wdev.if_dev, pAd->net_dev, 1);
+		if (wf_fwd_snapshot->wf_fwd_entry_delete_hook)
+			wf_fwd_snapshot->wf_fwd_entry_delete_hook(pApCliEntry->wdev.if_dev, pAd->net_dev, 1);
 
-		if (wf_drv_tbl.wf_fwd_check_device_hook)
-			wf_drv_tbl.wf_fwd_check_device_hook(pApCliEntry->wdev.if_dev,
+		if (wf_fwd_snapshot->wf_fwd_check_device_hook)
+			wf_fwd_snapshot->wf_fwd_check_device_hook(pApCliEntry->wdev.if_dev,
 							INT_APCLI, CliIdx, pApCliEntry->wdev.channel, 0);
 	}
 
 #ifdef MAC_REPEATER_SUPPORT
 	else {
-		if (wf_drv_tbl.packet_source_delete_entry_hook)
-			wf_drv_tbl.packet_source_delete_entry_hook(100);
+		if (wf_fwd_snapshot->packet_source_delete_entry_hook)
+			wf_fwd_snapshot->packet_source_delete_entry_hook(100);
 	}
 
 #endif /* MAC_REPEATER_SUPPORT */
@@ -1643,6 +1651,10 @@ VOID ApCliIfUp(RTMP_ADAPTER *pAd)
  */
 VOID ApCliIfDown(RTMP_ADAPTER *pAd)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	UCHAR ifIndex;
 	PAPCLI_STRUCT pApCliEntry;
 #ifdef MAC_REPEATER_SUPPORT
@@ -1661,8 +1673,8 @@ VOID ApCliIfDown(RTMP_ADAPTER *pAd)
 
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
 
-		if (wf_drv_tbl.wf_fwd_entry_delete_hook)
-			wf_drv_tbl.wf_fwd_entry_delete_hook(pApCliEntry->wdev.if_dev, pAd->net_dev, 1);
+		if (wf_fwd_snapshot->wf_fwd_entry_delete_hook)
+			wf_fwd_snapshot->wf_fwd_entry_delete_hook(pApCliEntry->wdev.if_dev, pAd->net_dev, 1);
 
 #endif /* CONFIG_WIFI_PKT_FWD */
 #ifdef MAC_REPEATER_SUPPORT
@@ -4155,14 +4167,18 @@ VOID ApCli_Remove(RTMP_ADAPTER *pAd)
 */
 INT apcli_inf_open(struct wifi_dev *wdev)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	struct _RTMP_ADAPTER *pAd = (struct _RTMP_ADAPTER *)wdev->sys_handle;
 	APCLI_STRUCT *pApCliEntry;
 
 
 #if defined(CONFIG_FAST_NAT_SUPPORT) && (defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE))
 
-	if (wf_drv_tbl.wf_fwd_probe_adapter)
-		wf_drv_tbl.wf_fwd_probe_adapter(pAd);
+	if (wf_fwd_snapshot->wf_fwd_probe_adapter)
+		wf_fwd_snapshot->wf_fwd_probe_adapter(pAd);
 
 	if (wf_ra_sw_nat_hook_rx_bkup != NULL)
 		MTWF_LOG(DBG_CAT_AP, DBG_SUBCAT_ALL, DBG_LVL_OFF,
@@ -5623,9 +5639,13 @@ INT apcli_link_up(struct wifi_dev *wdev, struct _MAC_TABLE_ENTRY *entry)
 
 BOOLEAN IsApCliLinkUp(IN PRTMP_ADAPTER pAd)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	if ((pAd->ApCfg.ApCliInfRunned > 0)
 #ifdef CONFIG_WIFI_PKT_FWD
-		|| ((wf_drv_tbl.wf_fwd_needed_hook != NULL) && (wf_drv_tbl.wf_fwd_needed_hook() == TRUE))
+		|| ((wf_fwd_snapshot->wf_fwd_needed_hook != NULL) && (wf_fwd_snapshot->wf_fwd_needed_hook() == TRUE))
 #endif /* CONFIG_WIFI_PKT_FWD */
 	)
 		return TRUE;

@@ -958,27 +958,103 @@ error:
 }
 
 
+static UINT16 wtbl_tlv_size(UINT16 tag)
+{
+	switch (tag) {
+	case WTBL_GENERIC: return sizeof(CMD_WTBL_GENERIC_T);
+	case WTBL_RX: return sizeof(CMD_WTBL_RX_T);
+	case WTBL_HT: return sizeof(CMD_WTBL_HT_T);
+	case WTBL_VHT: return sizeof(CMD_WTBL_VHT_T);
+	case WTBL_PEER_PS: return sizeof(CMD_WTBL_PEER_PS_T);
+	case WTBL_TX_PS: return sizeof(CMD_WTBL_TX_PS_T);
+	case WTBL_HDR_TRANS: return sizeof(CMD_WTBL_HDR_TRANS_T);
+	case WTBL_SECURITY_KEY: return sizeof(CMD_WTBL_SECURITY_KEY_T);
+	case WTBL_BA: return sizeof(CMD_WTBL_BA_T);
+	case WTBL_RDG: return sizeof(CMD_WTBL_RDG_T);
+	case WTBL_PROTECTION: return sizeof(CMD_WTBL_PROTECTION_T);
+	case WTBL_CLEAR: return sizeof(CMD_WTBL_CLEAR_T);
+	case WTBL_BF: return sizeof(CMD_WTBL_BF_T);
+	case WTBL_SMPS: return sizeof(CMD_WTBL_SMPS_T);
+	case WTBL_RAW_DATA_RW: return sizeof(CMD_WTBL_RAW_DATA_RW_T);
+	case WTBL_DUMP: return sizeof(CMD_WTBL_DUMP_T);
+	case WTBL_SPE: return sizeof(CMD_WTBL_SPE_T);
+	default: return 0;
+	}
+}
+
+static INT32 wtbl_tlv_validate(const UCHAR *buffer, UINT32 length,
+	BOOLEAN wire, const UCHAR *expected, UINT16 *count, UINT32 *features)
+{
+	CMD_WTBL_GENERIC_TLV_T tlv, requested;
+	UINT16 number = 0;
+	UINT32 mask = 0;
+
+	if ((length && !buffer) || !count || !features)
+		return NDIS_STATUS_INVALID_DATA;
+	while (length) {
+		if (length < sizeof(tlv))
+			return NDIS_STATUS_INVALID_DATA;
+		os_move_mem(&tlv, buffer, sizeof(tlv));
+		if (wire) {
+			tlv.u2Tag = le2cpu16(tlv.u2Tag);
+			tlv.u2Length = le2cpu16(tlv.u2Length);
+		}
+		if (tlv.u2Tag >= WTBL_MAX_NUM ||
+			tlv.u2Length != wtbl_tlv_size(tlv.u2Tag) ||
+			!tlv.u2Length || tlv.u2Length > length || number == 0xffffU)
+			return NDIS_STATUS_INVALID_DATA;
+		if (expected) {
+			os_move_mem(&requested, expected, sizeof(requested));
+			if (requested.u2Tag != tlv.u2Tag ||
+				requested.u2Length != tlv.u2Length)
+				return NDIS_STATUS_INVALID_DATA;
+			expected += tlv.u2Length;
+		}
+		mask |= 1U << tlv.u2Tag;
+		buffer += tlv.u2Length;
+		length -= tlv.u2Length;
+		number++;
+	}
+	*count = number;
+	*features = mask;
+	return NDIS_STATUS_SUCCESS;
+}
+
 static VOID CmdExtWtblUpdateCb(struct cmd_msg *msg, char *data, UINT16 len)
 {
-	struct _EVENT_EXT_CMD_RESULT_T *EventExtCmdResult =
-		(struct _EVENT_EXT_CMD_RESULT_T *)data;
-	UINT32	u4Len = len - 20 - sizeof(CMD_WTBL_UPDATE_T);
-	PUCHAR	pData = (PCHAR)(data + 20 + sizeof(CMD_WTBL_UPDATE_T));
-	PUCHAR	pRspPayload = (PUCHAR)msg->attr.rsp.wb_buf_in_calbk;
+	EVENT_EXT_CMD_RESULT_T result;
+	PUCHAR pRspPayload;
+	UINT32 capacity, features;
+	UINT16 count;
+	UINT32 offset = 20 + sizeof(CMD_WTBL_UPDATE_T);
 
-	if (pRspPayload == NULL) {
-		MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_INFO,
-				 ("%s: EventExtCmdResult.ucExTenCID = 0x%x\n",
-				  __func__, EventExtCmdResult->ucExTenCID));
-		EventExtCmdResult->u4Status = le2cpu32(EventExtCmdResult->u4Status);
-		MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_INFO,
-				 ("%s: EventExtCmdResult.u4Status = 0x%x\n",
-				  __func__, EventExtCmdResult->u4Status));
-	} else {
-		MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_INFO,
-				 ("%s: Copy query result to buffer\n", __func__));
-		os_move_mem(pRspPayload, pData, u4Len);
+	if (!msg)
+		return;
+	msg->cmd_return_status = NDIS_STATUS_INVALID_DATA;
+	if (!data)
+		return;
+	pRspPayload = (PUCHAR)msg->attr.rsp.wb_buf_in_calbk;
+	capacity = msg->wtbl_rsp_capacity;
+	if (len == sizeof(result)) {
+		os_move_mem(&result, data, sizeof(result));
+		if (result.ucExTenCID != EXT_CMD_ID_WTBL_UPDATE)
+			return;
+		/* A query's short result can report failure, never query success. */
+		if ((!pRspPayload && !capacity) || le2cpu32(result.u4Status))
+			msg->cmd_return_status = le2cpu32(result.u4Status);
+		return;
 	}
+	/* Query replies have a 20-byte prefix plus the WTBL header.  The
+	 * transport may rewrite expect_size; it is not an output capacity. */
+	if (!pRspPayload || !capacity ||
+		capacity > MAX_BUF_SIZE_OF_WTBL_INFO + 100 - sizeof(CMD_WTBL_UPDATE_T) ||
+		capacity > 0xffffU - offset || len != offset + capacity)
+		return;
+	if (wtbl_tlv_validate((PUCHAR)data + offset, capacity, TRUE,
+		pRspPayload, &count, &features) != NDIS_STATUS_SUCCESS)
+		return;
+	os_move_mem(pRspPayload, data + offset, capacity);
+	msg->cmd_return_status = NDIS_STATUS_SUCCESS;
 }
 
 INT32 CmdExtWtblUpdate(RTMP_ADAPTER *pAd, UINT8 ucWlanIdx, UINT8 ucOperation,
@@ -992,85 +1068,53 @@ INT32 CmdExtWtblUpdate(RTMP_ADAPTER *pAd, UINT8 ucWlanIdx, UINT8 ucOperation,
 	UINT16					u2Len = 0;
 	UINT32					*pRspPayload = NULL;
 	P_CMD_WTBL_GENERIC_TLV_T	pWtblGenericTlv = NULL;
-	UINT8					ucRemainingTLVNumber = 0;
+	UINT16					ucRemainingTLVNumber = 0;
 	UINT32					u4RemainingTLVBufLen = 0;
 	PUCHAR					TempBuffer = (PUCHAR)pBuffer;
 	struct _CMD_ATTRIBUTE attr = {0};
+	UCHAR payload[MAX_BUF_SIZE_OF_WTBL_INFO + 100 - sizeof(CMD_WTBL_UPDATE_T)];
+	UINT16 tlv_length;
 
-	msg = AndesAllocCmdMsg(pAd, MAX_BUF_SIZE_OF_WTBL_INFO + 100);
+	/* Validate every byte before allocating, casting a payload or adding the
+	 * command/response headers.  Preserve the existing query/DUMP capacity. */
+	if (!pAd || ucOperation < RESET_WTBL_AND_SET || ucOperation > RESET_ALL_WTBL ||
+		u4BufferLen > MAX_BUF_SIZE_OF_WTBL_INFO + 100 - sizeof(CMD_WTBL_UPDATE_T) ||
+		u4BufferLen > 0xffffU - 20 - sizeof(CMD_WTBL_UPDATE_T))
+		return NDIS_STATUS_INVALID_DATA;
+	if (ucOperation == RESET_ALL_WTBL) {
+		if (pBuffer || u4BufferLen)
+			return NDIS_STATUS_INVALID_DATA;
+	} else if (!pBuffer) {
+		if (u4BufferLen || ucOperation != RESET_WTBL_AND_SET)
+			return NDIS_STATUS_INVALID_DATA;
+	} else if (!u4BufferLen)
+		return NDIS_STATUS_INVALID_DATA;
 
+	if (u4BufferLen)
+		os_move_mem(payload, pBuffer, u4BufferLen);
+	Ret = wtbl_tlv_validate(payload, u4BufferLen, FALSE, NULL,
+		&ucTLVNumber, &u4EnableFeature);
+	if (Ret != NDIS_STATUS_SUCCESS)
+		return Ret;
+
+	msg = AndesAllocCmdMsg(pAd, sizeof(CMD_WTBL_UPDATE_T) + u4BufferLen);
 	if (!msg) {
 		Ret = NDIS_STATUS_RESOURCES;
 		goto Error0;
 	}
 
-	/* Get TVL number from TLV buffer*/
-	u4RemainingTLVBufLen = u4BufferLen;
-
-	while (u4RemainingTLVBufLen > 0) {
-		pWtblGenericTlv = (P_CMD_WTBL_GENERIC_TLV_T)TempBuffer;
-
-		if (pWtblGenericTlv == NULL) {
-			MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-					 ("%s, pWtblGenericTlv is NULL\n", __func__));
-			Ret = NDIS_STATUS_INVALID_DATA;
-			break;
-		} else if (pWtblGenericTlv->u2Length == 0) {
-			MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-					 ("%s, fail to handle T(%d), L(%d)\n", __func__,
-					  pWtblGenericTlv->u2Tag, pWtblGenericTlv->u2Length));
-			Ret = NDIS_STATUS_INVALID_DATA;
-			break;
-		}
-
-		u4EnableFeature |= (1 << (pWtblGenericTlv->u2Tag));
-		TempBuffer += pWtblGenericTlv->u2Length;
-		u4RemainingTLVBufLen -= pWtblGenericTlv->u2Length;
-		ucTLVNumber++;
-	}
-
-	if (Ret != 0)
-		goto Error1;
-
 	MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_INFO,
 			 ("%s, ucTLVNumber = %d\n", __func__, ucTLVNumber));
 	/* Assign vlaue to related parameters */
-	TempBuffer = (PUCHAR)pBuffer;
+	TempBuffer = payload;
 	ucRemainingTLVNumber = ucTLVNumber;
 	u4RemainingTLVBufLen = u4BufferLen;
 
 	/* Set correct length and RspPayload buffer with different operation */
-	if (ucOperation == RESET_WTBL_AND_SET) {
-		if (pBuffer != NULL) {
-			/* Reset a specific WCID and set WTBL TLV */
-			u2Len = 8;
-			pRspPayload = NULL;
-		} else if (u4RemainingTLVBufLen == 0) { /* NULL */
-			/* Reset a specific WCID only */
-			u2Len = 8;
-			pRspPayload = NULL;
-		}
-	} else if (ucOperation == SET_WTBL) {
-		if (pBuffer != NULL) {
-			u2Len = 8;
-			pRspPayload = NULL;
-		} else
-			return NDIS_STATUS_FAILURE;
-	} else if (ucOperation == QUERY_WTBL) {
-		if (pBuffer != NULL) {
-			u2Len = u4BufferLen + 20 + sizeof(CMD_WTBL_UPDATE_T);
-			pRspPayload = (UINT32 *)pBuffer;
-		} else
-			return NDIS_STATUS_FAILURE;
-	} else if (ucOperation == RESET_ALL_WTBL) {
-		if (pBuffer == NULL && u4RemainingTLVBufLen == 0) {
-			u2Len = 8;
-			pRspPayload = NULL;
-		} else
-			return NDIS_STATUS_FAILURE;
-	} else {
-		/* Error */
-		return NDIS_STATUS_FAILURE;
+	u2Len = sizeof(EVENT_EXT_CMD_RESULT_T);
+	if (ucOperation == QUERY_WTBL) {
+		u2Len = u4BufferLen + 20 + sizeof(CMD_WTBL_UPDATE_T);
+		pRspPayload = (UINT32 *)pBuffer;
 	}
 
 	SET_CMD_ATTR_MCU_DEST(attr, HOST2N9);
@@ -1082,6 +1126,7 @@ INT32 CmdExtWtblUpdate(RTMP_ADAPTER *pAd, UINT8 ucWlanIdx, UINT8 ucOperation,
 	SET_CMD_ATTR_RSP_WB_BUF_IN_CALBK(attr, pRspPayload);
 	SET_CMD_ATTR_RSP_HANDLER(attr, CmdExtWtblUpdateCb);
 	AndesInitCmdMsg(msg, attr);
+	msg->wtbl_rsp_capacity = (ucOperation == QUERY_WTBL) ? u4BufferLen : 0;
 	CmdWtblUpdate.ucWlanIdx = ucWlanIdx;
 	CmdWtblUpdate.ucOperation = ucOperation;
 	CmdWtblUpdate.u2TotalElementNum = cpu2le16(ucTLVNumber);
@@ -1095,7 +1140,8 @@ INT32 CmdExtWtblUpdate(RTMP_ADAPTER *pAd, UINT8 ucWlanIdx, UINT8 ucOperation,
 
 	/* Handle TVL request here */
 	while ((ucRemainingTLVNumber > 0) && (u4RemainingTLVBufLen > 0)) {
-		/* Get current TLV */
+		/* The complete validated snapshot is private, including endian conversion. */
+		os_move_mem(&tlv_length, TempBuffer + sizeof(UINT16), sizeof(tlv_length));
 		pWtblGenericTlv = (P_CMD_WTBL_GENERIC_TLV_T)TempBuffer;
 		MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_INFO,
 				 ("%s, TLV(%d, %d)\n", __func__,
@@ -1437,8 +1483,8 @@ INT32 CmdExtWtblUpdate(RTMP_ADAPTER *pAd, UINT8 ucWlanIdx, UINT8 ucOperation,
 		}
 
 		/* Advance to next TLV */
-		TempBuffer += pWtblGenericTlv->u2Length;
-		u4RemainingTLVBufLen -= pWtblGenericTlv->u2Length;
+		TempBuffer += tlv_length;
+		u4RemainingTLVBufLen -= tlv_length;
 		ucRemainingTLVNumber--;
 #ifdef RT_BIG_ENDIAN
 		pWtblGenericTlv->u2Length = cpu2le16(pWtblGenericTlv->u2Length);
@@ -1450,18 +1496,10 @@ INT32 CmdExtWtblUpdate(RTMP_ADAPTER *pAd, UINT8 ucWlanIdx, UINT8 ucOperation,
 				  ucRemainingTLVNumber, u4RemainingTLVBufLen));
 	}
 
-	AndesAppendCmdMsg(msg, (PUCHAR)pBuffer, u4BufferLen);
+	AndesAppendCmdMsg(msg, (char *)payload, u4BufferLen);
 	/* Send out CMD */
 	Ret = AndesSendCmdMsg(pAd, msg);
 	goto Success;
-Error1:
-
-	if (msg)
-		AndesFreeCmdMsg(msg);
-
-	MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_ERROR,
-			 ("%s:(Ret = %d)\n", __func__, Ret));
-	return Ret;
 Success:
 Error0:
 	MTWF_LOG(DBG_CAT_FW, DBG_SUBCAT_ALL, DBG_LVL_INFO,

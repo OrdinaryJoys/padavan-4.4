@@ -153,6 +153,10 @@ static VOID ap_tx_ok_update(struct _RTMP_ADAPTER *ad, struct wifi_dev *wdev, TX_
 
 INT ap_fp_tx_pkt_allowed(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, PNDIS_PACKET pkt)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	PACKET_INFO pkt_info;
 	UCHAR *pkt_va;
 	UINT pkt_len;
@@ -167,7 +171,7 @@ INT ap_fp_tx_pkt_allowed(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, PNDIS_PACKET 
 
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
 
-	if ((wf_drv_tbl.wf_fwd_needed_hook != NULL) && (wf_drv_tbl.wf_fwd_needed_hook() == TRUE)) {
+	if ((wf_fwd_snapshot->wf_fwd_needed_hook != NULL) && (wf_fwd_snapshot->wf_fwd_needed_hook() == TRUE)) {
 		if (is_looping_packet(pAd, pkt))
 			return FALSE;
 	}
@@ -284,6 +288,10 @@ INT ap_tx_pkt_allowed(
 	struct wifi_dev *wdev,
 	PNDIS_PACKET pkt)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	PACKET_INFO pkt_info;
 	UCHAR *pkt_va;
 	UINT pkt_len;
@@ -299,7 +307,7 @@ INT ap_tx_pkt_allowed(
 
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
 
-	if ((wf_drv_tbl.wf_fwd_needed_hook != NULL) && (wf_drv_tbl.wf_fwd_needed_hook() == TRUE)) {
+	if ((wf_fwd_snapshot->wf_fwd_needed_hook != NULL) && (wf_fwd_snapshot->wf_fwd_needed_hook() == TRUE)) {
 		if (is_looping_packet(pAd, pkt))
 			return FALSE;
 	}
@@ -3403,6 +3411,10 @@ INT ap_rx_ps_handle(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, RX_BLK *pRxBlk)
 
 INT ap_rx_pkt_foward(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, PNDIS_PACKET pPacket)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	MAC_TABLE_ENTRY *pEntry = NULL;
 	BOOLEAN to_os, to_air;
 	UCHAR *pHeader802_3;
@@ -3679,7 +3691,7 @@ INT ap_rx_pkt_foward(RTMP_ADAPTER *pAd, struct wifi_dev *wdev, PNDIS_PACKET pPac
 #ifdef RTMP_UDMA_SUPPORT
 	if (to_os) {
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
-		if ((wf_drv_tbl.wf_fwd_needed_hook != NULL) && (wf_drv_tbl.wf_fwd_needed_hook() == TRUE))
+		if ((wf_fwd_snapshot->wf_fwd_needed_hook != NULL) && (wf_fwd_snapshot->wf_fwd_needed_hook() == TRUE))
 			set_wf_fwd_cb(pAd, pPacket, wdev);
 #endif /* CONFIG_WIFI_PKT_FWD */
 			announce_802_3_packet(pAd, pPacket, pAd->OpMode);

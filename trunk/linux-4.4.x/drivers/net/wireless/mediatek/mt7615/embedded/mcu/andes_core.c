@@ -864,7 +864,8 @@ INT32 AndesSendCmdMsg(PRTMP_ADAPTER ad, struct cmd_msg *msg)
 	/* These Wsys commands require an explicit valid firmware acknowledgement. */
 	if (msg->attr.ext_type == EXT_CMD_STAREC_UPDATE ||
 		msg->attr.ext_type == EXT_CMD_ID_DEVINFO_UPDATE ||
-		msg->attr.ext_type == EXT_CMD_ID_BSSINFO_UPDATE)
+		msg->attr.ext_type == EXT_CMD_ID_BSSINFO_UPDATE ||
+		msg->attr.ext_type == EXT_CMD_ID_WTBL_UPDATE)
 		msg->cmd_return_status = NDIS_STATUS_FAILURE;
 
 	/* The send API consumes an unqueued message on every admission failure. */
@@ -1040,7 +1041,8 @@ retransmit:
 			if (ret == NDIS_STATUS_SUCCESS &&
 				(msg->attr.ext_type == EXT_CMD_STAREC_UPDATE ||
 				 msg->attr.ext_type == EXT_CMD_ID_DEVINFO_UPDATE ||
-				 msg->attr.ext_type == EXT_CMD_ID_BSSINFO_UPDATE)) {
+				 msg->attr.ext_type == EXT_CMD_ID_BSSINFO_UPDATE ||
+				 msg->attr.ext_type == EXT_CMD_ID_WTBL_UPDATE)) {
 				/* Preserve firmware rejection and malformed/missing response errors. */
 				ret = msg->cmd_return_status;
 			}

@@ -783,6 +783,10 @@ static INT ap_hw_tb_init(RTMP_ADAPTER *pAd)
 
 BOOLEAN APStartUpForMbss(RTMP_ADAPTER *pAd, BSS_STRUCT *pMbss)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	struct wifi_dev *wdev = &pMbss->wdev;
 	BOOLEAN bWmmCapable = FALSE;
 	EDCA_PARM *pEdca = NULL, *pBssEdca = NULL;
@@ -987,8 +991,8 @@ BOOLEAN APStartUpForMbss(RTMP_ADAPTER *pAd, BSS_STRUCT *pMbss)
 	hc_set_rrm_init(wdev);
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
 
-	if (wf_drv_tbl.wf_fwd_check_device_hook)
-		wf_drv_tbl.wf_fwd_check_device_hook(wdev->if_dev, INT_MBSSID, pMbss->mbss_idx, wdev->channel, 1);
+	if (wf_fwd_snapshot->wf_fwd_check_device_hook)
+		wf_fwd_snapshot->wf_fwd_check_device_hook(wdev->if_dev, INT_MBSSID, pMbss->mbss_idx, wdev->channel, 1);
 
 #endif /* CONFIG_WIFI_PKT_FWD */
 
@@ -1463,6 +1467,10 @@ VOID APInitForMain(RTMP_ADAPTER *pAd)
 
 VOID APStopByBss(RTMP_ADAPTER *pAd, BSS_STRUCT *pMbss)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	BOOLEAN Cancelled;
 	struct wifi_dev *wdev_bss;
 #if defined(MESH_SUPPORT) || defined(APCLI_SUPPORT) || defined(BAND_STEERING)
@@ -1561,11 +1569,11 @@ VOID APStopByBss(RTMP_ADAPTER *pAd, BSS_STRUCT *pMbss)
 
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
 
-	if (wf_drv_tbl.wf_fwd_entry_delete_hook)
-		wf_drv_tbl.wf_fwd_entry_delete_hook(pAd->net_dev, wdev_bss->if_dev, 0);
+	if (wf_fwd_snapshot->wf_fwd_entry_delete_hook)
+		wf_fwd_snapshot->wf_fwd_entry_delete_hook(pAd->net_dev, wdev_bss->if_dev, 0);
 
-	if (wf_drv_tbl.wf_fwd_check_device_hook)
-		wf_drv_tbl.wf_fwd_check_device_hook(wdev_bss->if_dev,
+	if (wf_fwd_snapshot->wf_fwd_check_device_hook)
+		wf_fwd_snapshot->wf_fwd_check_device_hook(wdev_bss->if_dev,
 			INT_MBSSID, pMbss->mbss_idx, wdev_bss->channel, 0);
 
 #endif /* CONFIG_WIFI_PKT_FWD */

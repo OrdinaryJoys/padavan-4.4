@@ -193,7 +193,25 @@ static struct l1profile_info_t l1profile[MAX_NUM_OF_INF] = {
 
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
 
-struct wifi_fwd_func_table wf_drv_tbl;
+/* This optional provider interface needs both sleepable process readers and
+ * atomic packet readers.  Linux4.4 SRCU alone is process-context only.
+ */
+#if !defined(CONFIG_SRCU)
+#error "WiFi forwarding provider retirement requires CONFIG_SRCU"
+#endif
+#if defined(CONFIG_PROPRIETARY_DRIVER) && !defined(CONFIG_DBG_OOM)
+#error "WiFi forwarding provider retirement requires GPL-compatible SRCU exports"
+#endif
+#include <linux/srcu.h>
+#include <linux/rcupdate.h>
+#include <linux/mutex.h>
+#include <linux/preempt.h>
+
+static DEFINE_MUTEX(wifi_fwd_writer_lock);
+DEFINE_STATIC_SRCU(wifi_fwd_srcu);
+static const struct wifi_fwd_func_table wifi_fwd_empty;
+static struct wifi_fwd_func_table wifi_fwd_slot;
+static const struct wifi_fwd_func_table __rcu *wifi_fwd_published;
 
 #endif
 
@@ -912,6 +930,10 @@ VOID ApCliLinkCoverRxPolicy(
 	IN PNDIS_PACKET pPacket,
 	OUT BOOLEAN *DropPacket)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 #ifdef MAC_REPEATER_SUPPORT
 	void *opp_band_tbl = NULL;
 	void *band_tbl = NULL;
@@ -924,8 +946,8 @@ VOID ApCliLinkCoverRxPolicy(
 
 	pPktHdr = GET_OS_PKT_DATAPTR(pRxPkt);
 
-	if (wf_drv_tbl.wf_fwd_feedback_map_table)
-		wf_drv_tbl.wf_fwd_feedback_map_table(pAd, &band_tbl, &opp_band_tbl, &other_band_tbl);
+	if (wf_fwd_snapshot->wf_fwd_feedback_map_table)
+		wf_fwd_snapshot->wf_fwd_feedback_map_table(pAd, &band_tbl, &opp_band_tbl, &other_band_tbl);
 
 	if ((opp_band_tbl == NULL) && (other_band_tbl == NULL))
 		return;
@@ -953,6 +975,10 @@ void announce_802_3_packet(
 	IN PNDIS_PACKET pPacket,
 	IN UCHAR OpMode)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	RTMP_ADAPTER *pAd = NULL;
 	PNDIS_PACKET pRxPkt = pPacket;
 #if defined(WH_EZ_SETUP) && (defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE))
@@ -977,7 +1003,7 @@ void announce_802_3_packet(
 		if (RTMP_MATPktRxNeedConvert(pAd, RtmpOsPktNetDevGet(pRxPkt))) {
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
 
-			if ((wf_drv_tbl.wf_fwd_needed_hook != NULL) && (wf_drv_tbl.wf_fwd_needed_hook() == TRUE)) {
+			if ((wf_fwd_snapshot->wf_fwd_needed_hook != NULL) && (wf_fwd_snapshot->wf_fwd_needed_hook() == TRUE)) {
 				BOOLEAN	 need_drop = FALSE;
 
 				ApCliLinkCoverRxPolicy(pAd, pPacket, &need_drop);
@@ -1151,11 +1177,11 @@ void announce_802_3_packet(
 #endif
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
 
-	if ((wf_drv_tbl.wf_fwd_needed_hook != NULL) && (wf_drv_tbl.wf_fwd_needed_hook() == TRUE)) {
+	if ((wf_fwd_snapshot->wf_fwd_needed_hook != NULL) && (wf_fwd_snapshot->wf_fwd_needed_hook() == TRUE)) {
 		struct sk_buff *pOsRxPkt = RTPKT_TO_OSPKT(pRxPkt);
 
 		if (RTMP_IS_PACKET_AP_APCLI(pOsRxPkt)) {
-			if (wf_drv_tbl.wf_fwd_rx_hook != NULL) {
+			if (wf_fwd_snapshot->wf_fwd_rx_hook != NULL) {
 				struct ethhdr *mh = eth_hdr(pRxPkt);
 				int ret = 0;
 
@@ -1177,8 +1203,8 @@ void announce_802_3_packet(
 							VOID *band_tbl = NULL;
 							VOID *other_band_tbl = NULL;
 
-							if (wf_drv_tbl.wf_fwd_feedback_map_table)
-								wf_drv_tbl.wf_fwd_feedback_map_table(pAd, &band_tbl, &opp_band_tbl, &other_band_tbl);
+							if (wf_fwd_snapshot->wf_fwd_feedback_map_table)
+								wf_fwd_snapshot->wf_fwd_feedback_map_table(pAd, &band_tbl, &opp_band_tbl, &other_band_tbl);
 
 							if (band_tbl != NULL) {
 								if (MAC_ADDR_EQUAL(((UCHAR *)((REPEATER_ADAPTER_DATA_TABLE *)band_tbl)->Wdev_ifAddr), mh->h_source) ||
@@ -1219,7 +1245,7 @@ void announce_802_3_packet(
 					}
 				}
 
-				ret = wf_drv_tbl.wf_fwd_rx_hook(pRxPkt);
+				ret = wf_fwd_snapshot->wf_fwd_rx_hook(pRxPkt);
 
 				if (ret == 0) {
 					/*MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_WARN,
@@ -1623,6 +1649,10 @@ int RTMPSendPackets(
 	IN UINT32 pkt_total_len,
 	IN RTMP_NET_ETH_CONVERT_DEV_SEARCH Func)
 {
+#if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
+	WIFI_FWD_GUARD(wf_fwd_snapshot);
+#endif
+
 	struct wifi_dev *wdev = (struct wifi_dev *)dev_hnd;
 	RTMP_ADAPTER *pAd;
 	PNDIS_PACKET pPacket = pkt_list[0];
@@ -1664,9 +1694,9 @@ int RTMPSendPackets(
 
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)
 
-	if ((wf_drv_tbl.wf_fwd_needed_hook != NULL) && (wf_drv_tbl.wf_fwd_needed_hook() == TRUE)) {
-		if (wf_drv_tbl.wf_fwd_tx_hook != NULL) {
-			if (wf_drv_tbl.wf_fwd_tx_hook(pPacket) == 1) {
+	if ((wf_fwd_snapshot->wf_fwd_needed_hook != NULL) && (wf_fwd_snapshot->wf_fwd_needed_hook() == TRUE)) {
+		if (wf_fwd_snapshot->wf_fwd_tx_hook != NULL) {
+			if (wf_fwd_snapshot->wf_fwd_tx_hook(pPacket) == 1) {
 				//MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_WARN,
 				//    ("RTMPSendPackets: wdev_idx=0x%x, wdev_type=0x%x, func_idx=0x%x : wf_fwd_tx_hook indicated Packet DROP\n",
 				//	   wdev->wdev_idx,wdev->wdev_type,wdev->func_idx));
@@ -1833,87 +1863,82 @@ VOID AP_WDS_KeyNameMakeUp(
 /*
  *Invoked from WIFI forward module to register function pointers.
  */
+/* Provider contract: registration/retirement is sleepable.  A provider must
+ * unregister before freeing its code or callback-owned data, and must not
+ * register/unregister synchronously from a guarded callback or while holding
+ * a lock needed by such a reader.  Asynchronous provider work is its owner's
+ * responsibility.  No allocation or foreign module-owner ABI is introduced.
+ */
+struct wifi_fwd_read_guard wifi_fwd_read_begin(void)
+{
+	struct wifi_fwd_read_guard guard = { &wifi_fwd_empty, 0, 0 };
+	const struct wifi_fwd_func_table *table;
+
+	/* Compare only: do not dereference an unprotected published pointer. */
+	if (!READ_ONCE(wifi_fwd_published))
+		return guard;
+	if (in_atomic() || in_interrupt() || irqs_disabled()) {
+		rcu_read_lock();
+		guard.domain = 1;
+		table = rcu_dereference(wifi_fwd_published);
+	} else {
+		guard.srcu_index = srcu_read_lock(&wifi_fwd_srcu);
+		guard.domain = 2;
+		table = srcu_dereference(wifi_fwd_published, &wifi_fwd_srcu);
+	}
+	if (table)
+		guard.table = table;
+	return guard;
+}
+
+void wifi_fwd_read_end(struct wifi_fwd_read_guard *guard)
+{
+	if (guard->domain == 1)
+		rcu_read_unlock();
+	else if (guard->domain == 2)
+		srcu_read_unlock(&wifi_fwd_srcu, guard->srcu_index);
+	guard->domain = 0;
+	guard->table = &wifi_fwd_empty;
+}
+
+/* Caller holds the writer mutex.  No new reader can queue SRCU callbacks;
+ * after NULL publication all existing readers and both grace periods finish.
+ * synchronize_srcu may wake before process_srcu's final access to this static
+ * object, so flush its final work too.  This leaves running=false, with no
+ * pending work, before a provider can release its dependency on this module.
+ * DEFINE_STATIC_SRCU must not be passed to init/cleanup_srcu_struct.
+ */
+static void wifi_fwd_drain(void)
+{
+	rcu_assign_pointer(wifi_fwd_published, NULL);
+	synchronize_rcu();
+	synchronize_srcu(&wifi_fwd_srcu);
+	flush_delayed_work(&wifi_fwd_srcu.work);
+}
+
 VOID wifi_fwd_register(struct wifi_fwd_func_table *table)
 {
-
-wf_drv_tbl.wf_fwd_tx_hook = table->wf_fwd_tx_hook;
-wf_drv_tbl.wf_fwd_rx_hook = table->wf_fwd_rx_hook;
-wf_drv_tbl.wf_fwd_entry_insert_hook = table->wf_fwd_entry_insert_hook;
-wf_drv_tbl.wf_fwd_entry_delete_hook = table->wf_fwd_entry_delete_hook;
-wf_drv_tbl.wf_fwd_set_cb_num  =  table->wf_fwd_set_cb_num;
-wf_drv_tbl.wf_fwd_set_debug_level_hook = table->wf_fwd_set_debug_level_hook;
-wf_drv_tbl.wf_fwd_check_active_hook = table->wf_fwd_check_active_hook;
-wf_drv_tbl.wf_fwd_get_rep_hook = table->wf_fwd_get_rep_hook;
-wf_drv_tbl.wf_fwd_pro_active_hook = table->wf_fwd_pro_active_hook;
-wf_drv_tbl.wf_fwd_pro_halt_hook 	= table->wf_fwd_pro_halt_hook;
-wf_drv_tbl.wf_fwd_pro_enabled_hook = table->wf_fwd_pro_enabled_hook;
-wf_drv_tbl.wf_fwd_pro_disabled_hook 	= table->wf_fwd_pro_disabled_hook;
-wf_drv_tbl.wf_fwd_access_schedule_active_hook = table->wf_fwd_access_schedule_active_hook;
-wf_drv_tbl.wf_fwd_access_schedule_halt_hook =	table->wf_fwd_access_schedule_halt_hook;
-wf_drv_tbl.wf_fwd_hijack_active_hook = table->wf_fwd_hijack_active_hook;
-wf_drv_tbl.wf_fwd_hijack_halt_hook = table->wf_fwd_hijack_halt_hook;
-wf_drv_tbl.wf_fwd_bpdu_active_hook = table->wf_fwd_bpdu_active_hook;
-wf_drv_tbl.wf_fwd_bpdu_halt_hook 	= table->wf_fwd_bpdu_halt_hook;
-wf_drv_tbl.wf_fwd_show_entry_hook = table->wf_fwd_show_entry_hook;
-wf_drv_tbl.wf_fwd_needed_hook = table->wf_fwd_needed_hook;
-wf_drv_tbl.wf_fwd_delete_entry_hook =	table->wf_fwd_delete_entry_hook;
-wf_drv_tbl.packet_source_show_entry_hook = table->packet_source_show_entry_hook;
-wf_drv_tbl.packet_source_delete_entry_hook = table->packet_source_delete_entry_hook;
-wf_drv_tbl.wf_fwd_feedback_map_table 	= table->wf_fwd_feedback_map_table;
-wf_drv_tbl.wf_fwd_probe_adapter =	table->wf_fwd_probe_adapter;
-wf_drv_tbl.wf_fwd_insert_bridge_mapping_hook = table->wf_fwd_insert_bridge_mapping_hook;
-wf_drv_tbl.wf_fwd_insert_repeater_mapping_hook = table->wf_fwd_insert_repeater_mapping_hook;
-wf_drv_tbl.wf_fwd_search_mapping_table_hook =	table->wf_fwd_search_mapping_table_hook;
-wf_drv_tbl.wf_fwd_delete_entry_inform_hook =	table->wf_fwd_delete_entry_inform_hook;
-wf_drv_tbl.wf_fwd_check_device_hook =	table->wf_fwd_check_device_hook;
-wf_drv_tbl.wf_fwd_add_entry_inform_hook =	table->wf_fwd_add_entry_inform_hook;
-wf_drv_tbl.wf_fwd_set_easy_setup_mode = table->wf_fwd_set_easy_setup_mode;
-wf_drv_tbl.wf_fwd_set_bridge_hook = table->wf_fwd_set_bridge_hook;
-
-
-
+	if (WARN_ON_ONCE(in_atomic() || in_interrupt() || irqs_disabled()))
+		return;
+	mutex_lock(&wifi_fwd_writer_lock);
+	wifi_fwd_drain();
+	if (table) {
+		/* Publish every ABI member as one immutable snapshot. */
+		wifi_fwd_slot = *table;
+		rcu_assign_pointer(wifi_fwd_published, &wifi_fwd_slot);
+	}
+	mutex_unlock(&wifi_fwd_writer_lock);
 }
 /*
  *Invoked from WIFI forward module to unregister function pointers.
  */
 VOID wifi_fwd_unregister(VOID)
 {
-
-wf_drv_tbl.wf_fwd_tx_hook = NULL;
-wf_drv_tbl.wf_fwd_rx_hook = NULL;
-wf_drv_tbl.wf_fwd_entry_insert_hook = NULL;
-wf_drv_tbl.wf_fwd_entry_delete_hook = NULL;
-wf_drv_tbl.wf_fwd_set_cb_num = NULL;
-wf_drv_tbl.wf_fwd_set_debug_level_hook = NULL;
-wf_drv_tbl.wf_fwd_check_active_hook = NULL;
-wf_drv_tbl.wf_fwd_get_rep_hook = NULL;
-wf_drv_tbl.wf_fwd_pro_active_hook = NULL;
-wf_drv_tbl.wf_fwd_pro_halt_hook = NULL;
-wf_drv_tbl.wf_fwd_pro_enabled_hook = NULL;
-wf_drv_tbl.wf_fwd_pro_disabled_hook = NULL;
-wf_drv_tbl.wf_fwd_access_schedule_active_hook = NULL;
-wf_drv_tbl.wf_fwd_access_schedule_halt_hook = NULL;
-wf_drv_tbl.wf_fwd_hijack_active_hook = NULL;
-wf_drv_tbl.wf_fwd_hijack_halt_hook = NULL;
-wf_drv_tbl.wf_fwd_bpdu_active_hook = NULL;
-wf_drv_tbl.wf_fwd_bpdu_halt_hook = NULL;
-wf_drv_tbl.wf_fwd_show_entry_hook = NULL;
-wf_drv_tbl.wf_fwd_needed_hook = NULL;
-wf_drv_tbl.wf_fwd_delete_entry_hook = NULL;
-wf_drv_tbl.packet_source_show_entry_hook = NULL;
-wf_drv_tbl.packet_source_delete_entry_hook = NULL;
-wf_drv_tbl.wf_fwd_feedback_map_table = NULL;
-wf_drv_tbl.wf_fwd_probe_adapter = NULL;
-wf_drv_tbl.wf_fwd_insert_bridge_mapping_hook = NULL;
-wf_drv_tbl.wf_fwd_insert_repeater_mapping_hook = NULL;
-wf_drv_tbl.wf_fwd_search_mapping_table_hook = NULL;
-wf_drv_tbl.wf_fwd_delete_entry_inform_hook = NULL;
-wf_drv_tbl.wf_fwd_check_device_hook = NULL;
-wf_drv_tbl.wf_fwd_add_entry_inform_hook = NULL;
-wf_drv_tbl.wf_fwd_set_easy_setup_mode = NULL;
-wf_drv_tbl.wf_fwd_set_bridge_hook = NULL;
-
-
+	if (WARN_ON_ONCE(in_atomic() || in_interrupt() || irqs_disabled()))
+		return;
+	mutex_lock(&wifi_fwd_writer_lock);
+	wifi_fwd_drain();
+	mutex_unlock(&wifi_fwd_writer_lock);
 }
 
 #if defined(CONFIG_WIFI_PKT_FWD) || defined(CONFIG_WIFI_PKT_FWD_MODULE)

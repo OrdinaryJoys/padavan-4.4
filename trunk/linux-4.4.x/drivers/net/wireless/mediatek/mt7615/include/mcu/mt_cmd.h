@@ -405,6 +405,8 @@ struct cmd_msg {
 #endif
 
 	UINT32		cmd_return_status;
+	/* WTBL query output bound; transport expect_size may be rewritten on error. */
+	UINT32		wtbl_rsp_capacity;
 #ifdef DBG_STARVATION
 	struct starv_dbg starv;
 #endif /*DBG_STARVATION*/

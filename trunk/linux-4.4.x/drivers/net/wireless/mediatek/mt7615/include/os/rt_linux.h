@@ -1429,6 +1429,22 @@ struct wifi_fwd_func_table{
 	void (*wf_fwd_set_bridge_hook) (unsigned char* bridge_intf_name,unsigned int len);
 };
 
+/* Internal reader ownership; the exported provider table/VOID ABI is unchanged.
+ * A guard covers the entire caller, including use of pointers returned by a
+ * provider.  GNU cleanup runs on every ordinary return and scope exit.
+ */
+struct wifi_fwd_read_guard {
+	const struct wifi_fwd_func_table *table;
+	int domain;
+	int srcu_index;
+};
+struct wifi_fwd_read_guard wifi_fwd_read_begin(void);
+void wifi_fwd_read_end(struct wifi_fwd_read_guard *guard);
+#define WIFI_FWD_GUARD(name) \
+	struct wifi_fwd_read_guard name##_guard \
+		__attribute__((cleanup(wifi_fwd_read_end))) = wifi_fwd_read_begin(); \
+	const struct wifi_fwd_func_table *name __attribute__((unused)) = name##_guard.table
+
 #endif
 
 

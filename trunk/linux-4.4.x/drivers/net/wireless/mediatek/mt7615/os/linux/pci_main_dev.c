@@ -581,6 +581,13 @@ static VOID rt_pci_shutdown(struct pci_dev *pci_dev)
  *	Our PCI driver structure
  */
 static struct pci_driver rt_pci_driver = {
+    /* A failed DMA stop retains owners, but the driver core still unbinds.
+     * Keep manual bind/unbind unavailable until that transition is supported.
+     * Normal module exit and PCI shutdown callbacks remain registered.
+     */
+    .driver = {
+        .suppress_bind_attrs = true,
+    },
 name:
 	RTMP_DRV_NAME,
 id_table :

@@ -1,0 +1,17 @@
+{
+  "CmdExtWtblUpdate.c": {
+    "source_commit": "60ae6bf98bd46b68c648620c599f1aa78073131e",
+    "source_path": "trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/mcu/fw_cmd.c",
+    "sha256": "e29df798da9f811e1ffc98f7e047f9d5abf7673ec000de542db593cba24ea716"
+  },
+  "CmdExtWtblUpdateCb.c": {
+    "source_commit": "60ae6bf98bd46b68c648620c599f1aa78073131e",
+    "source_path": "trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/mcu/fw_cmd.c",
+    "sha256": "a451301bea9c87799d2945f5044d49902f9f19ffdd64f58d1d9d75de783c651a"
+  },
+  "AndesSendCmdMsg.c": {
+    "source_commit": "60ae6bf98bd46b68c648620c599f1aa78073131e",
+    "source_path": "trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/embedded/mcu/andes_core.c",
+    "sha256": "62c880a6a0f2dabc4cea9fb4d801f229a0b6b4b060ba8e4798bfe1e8a7f65173"
+  }
+}
