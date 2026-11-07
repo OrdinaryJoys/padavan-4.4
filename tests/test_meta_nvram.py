@@ -15,6 +15,15 @@ FLAGS=('-std=gnu89','-Os','-Wall','-Wextra','-Werror','-Wno-unused-function',
        '-Wno-unused-parameter','-Wno-unused-variable','-Wno-unused-but-set-variable',
        '-Wno-sign-compare','-fno-builtin-memcpy')
 
+def known_historical_width_error(stderr):
+    errors=[line for line in stderr.splitlines()if re.search(r'\b(?:fatal )?error:',line)]
+    # GCC16/glibc can print the parameterized spelling array-bounds=.
+    # Accept only this same warning family on the historical UINT16 value;
+    # unrelated compile failures must still fail the regression.
+    return bool(errors) and 'oid_nvram_rw' in stderr and all(
+        re.search(r'\[-Werror=(?:array-bounds=?|stringop-overflow|stringop-overread)\]',line)
+        and re.search(r"object [‘']value[’']",line) for line in errors)
+
 class MetaNvramTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -140,6 +149,17 @@ class MetaNvramTests(unittest.TestCase):
             for name in names:self.assertEqual(self.run_case(name,profile,binary=binary),self.run_case(name,profile))
 
     def test_gnu_historical_profile_runs_safe_cases_or_rejects_known_width_error(self):
+        # Exercise both real GCC diagnostic spellings even on hosts whose
+        # libc does not enable fortify for the intentionally unsafe body.
+        old="gcc-baseline.c: In function 'oid_nvram_rw':\nerror: memcpy writes past object 'value' [-Werror=array-bounds]\n"
+        gcc16="In function ‘memcpy’, inlined from ‘oid_nvram_rw’:\nerror: ‘__builtin___memcpy_chk’ forming offset [2, 3] is out of the bounds [0, 2] of object ‘value’ with type ‘UINT16’ [-Werror=array-bounds=]\n"
+        for diagnostic in (old,gcc16,old+gcc16):
+            self.assertTrue(known_historical_width_error(diagnostic))
+        for diagnostic in ('',gcc16.replace('value','other'),gcc16.replace('array-bounds=','format'),
+                           gcc16.replace('array-bounds=','array-bounds=='),
+                           gcc16.replace('oid_nvram_rw','other_function'),
+                           gcc16+'fatal error: missing.h: No such file or directory\n'):
+            self.assertFalse(known_historical_width_error(diagnostic),diagnostic)
         compiler=shutil.which('gcc-16')or shutil.which('gcc')
         if not compiler:raise AssertionError('GNU-compatible compiler required')
         # The complete historical body intentionally retains its bad memcpy
@@ -150,11 +170,7 @@ class MetaNvramTests(unittest.TestCase):
             for name in h.BASELINE_CASES:
                 self.assertEqual(self.run_case(name,'baseline',binary=binary),self.run_case(name,'baseline'))
             return
-        errors=[line for line in run.stderr.splitlines()if re.search(r'\b(?:fatal )?error:',line)]
-        self.assertTrue(errors,run.stderr)
-        self.assertTrue(all(re.search(r'\[-Werror=(?:array-bounds|stringop-overflow|stringop-overread)\]',line)
-                            and re.search(r"object [‘']value[’']",line)
-                            for line in errors),run.stderr)
+        self.assertTrue(known_historical_width_error(run.stderr),run.stderr)
         self.assertIn('oid_nvram_rw',run.stderr)
         self.assertRegex(run.stderr,r"object [‘']value[’']|[‘']value[’'] declared here")
 
