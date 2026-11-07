@@ -119,6 +119,9 @@ static int RtmpDmaStopping(RTMP_ADAPTER *p){return p->dma_stopping||RTMP_TEST_FL
 static int tm_exits,qm_exits,hif_inits,qm_inits,tm_inits,dma_enables,init_done,wakeups,joins;
 static int hif_status,exit_code,owner_released,invalid;
 static int stop_ok=TRUE,arm_ok=TRUE,qm_status,tm_status;
+/* Restart reporting/containment recorder; legacy SER rows remain unchanged. */
+static int restart_quarantine_reports;
+static void RtmpDmaQuarantine(RTMP_ADAPTER *ad){assert(ad);restart_quarantine_reports++;}
 static pthread_mutex_t barrier=PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t barrier_cond=PTHREAD_COND_INITIALIZER;
 static int hold_join,join_entered,allow_join;

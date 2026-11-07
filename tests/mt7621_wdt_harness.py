@@ -1013,6 +1013,7 @@ int main(int argc, char **argv)
  name = argv[1];
  CASE_ADMISSION
  memset(&info, 0, sizeof(info));
+ memset(&platform, 0, sizeof(platform));
  memset(&ops, 0, sizeof(ops));
  memset(&device, 0, sizeof(device));
  ops.start = mt762x_wdt_start;

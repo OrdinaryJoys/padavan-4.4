@@ -25,19 +25,32 @@ SOURCE_PATHS = {'reboot': 'trunk/linux-4.4.x/kernel/reboot.c',
  'qdma': 'trunk/linux-4.4.x/drivers/net/ethernet/raeth/raether_qdma.c',
  'wifi': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/os/linux/rt_main_dev.c',
  'pci': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/os/linux/pci_main_dev.c',
- 'dma': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/embedded/common/cmm_mac_pci.c'}
-FUNCTION_SOURCES = {
-    'reboot_dma_failure_report': 'reboot', 'reboot_dma_failures': 'reboot',
-    'reboot_dma_failure_check': 'reboot', 'emergency_restart': 'reboot',
-    'kernel_restart_prepare': 'reboot', 'kernel_restart': 'reboot',
-    'ralink_restart': 'arch', 'machine_restart': 'mips', 'device_shutdown': 'core',
-    'pci_device_shutdown': 'pci_core', 'ra2880stop': 'ra_mac',
-    'fe_pdma_wait_dma_idle': 'pdma', 'fe_qdma_wait_dma_idle': 'qdma',
-    'ei_stop_dma': 'raeth', 'raether_shutdown': 'raeth',
-    'RtmpDmaLifecycleLock': 'wifi', 'RtmpDmaLifecycleUnlock': 'wifi',
-    'RtmpDmaQuarantine': 'wifi', 'RtmpDmaTeardownCheck': 'wifi',
-    'RT28XXDMAStop': 'dma', 'RT28XXDMAReset': 'dma', 'rt_pci_shutdown': 'pci',
-}
+ 'dma': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/embedded/common/cmm_mac_pci.c',
+ 'recovery': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/embedded/hw_ctrl/hw_ctrl.c',
+ 'ser_header': 'trunk/linux-4.4.x/drivers/net/wireless/mediatek/mt7615/embedded/include/hw_ctrl.h'}
+FUNCTION_SOURCES = {'reboot_dma_failure_report': 'reboot',
+ 'reboot_dma_failures': 'reboot',
+ 'reboot_dma_failure_check': 'reboot',
+ 'emergency_restart': 'reboot',
+ 'kernel_restart_prepare': 'reboot',
+ 'kernel_restart': 'reboot',
+ 'ralink_restart': 'arch',
+ 'machine_restart': 'mips',
+ 'device_shutdown': 'core',
+ 'pci_device_shutdown': 'pci_core',
+ 'ra2880stop': 'ra_mac',
+ 'fe_pdma_wait_dma_idle': 'pdma',
+ 'fe_qdma_wait_dma_idle': 'qdma',
+ 'ei_stop_dma': 'raeth',
+ 'raether_shutdown': 'raeth',
+ 'RtmpDmaLifecycleLock': 'wifi',
+ 'RtmpDmaLifecycleUnlock': 'wifi',
+ 'RtmpDmaQuarantine': 'wifi',
+ 'RtmpDmaTeardownCheck': 'wifi',
+ 'RT28XXDMAStop': 'dma',
+ 'RT28XXDMAReset': 'dma',
+ 'rt_pci_shutdown': 'pci',
+ 'HwRecoveryFromErrorOwned': 'recovery'}
 SOURCE_ONLY_FUNCTION_SOURCES = {}
 MODEL_VARIANT = {
     'whole_restart_shutdown_control_flow': True,
@@ -48,27 +61,70 @@ MODEL_VARIANT = {
     'power_loss_or_independent_watchdog_prevented': False,
     'unreported_DMA_or_all_concurrent_report_windows_prevented': False,
 }
-SOURCE_DECLARATIONS = {
-    r'enum reboot_dma_failure\s*\{[^}]+\};': 'header',
-    r'^#define SYSC_REG_RESET_CTRL\s+[^\n]+': 'arch',
-    r'^#define RSTCTL_RESET_PCI\s+[^\n]+': 'arch',
-    r'^#define RSTCTL_RESET_SYSTEM\s+[^\n]+': 'arch',
-}
+SOURCE_DECLARATIONS = {'enum reboot_dma_failure\\s*\\{[^}]+\\};': 'header',
+ '^#define SYSC_REG_RESET_CTRL\\s+[^\\n]+': 'arch',
+ '^#define RSTCTL_RESET_PCI\\s+[^\\n]+': 'arch',
+ '^#define RSTCTL_RESET_SYSTEM\\s+[^\\n]+': 'arch',
+ 'typedef enum _ERR_RECOVERY_STATE\\s*\\{[\\s\\S]*?\\}\\s*ERR_RECOVERY_STATE,\\s*\\*P_ERR_RECOVERY_STATE;': 'ser_header',
+ 'typedef struct _ERR_RECOVERY_CTRL_T\\s*\\{[\\s\\S]*?\\}\\s*ERR_RECOVERY_CTRL_T;': 'ser_header'}
 
 NEW_FUNCTIONS = ('reboot_dma_failure_report', 'reboot_dma_failures', 'reboot_dma_failure_check')
 BASELINE_COMMIT = 'f9c361f682eb742423dd9ebd422a1952af2ec6e0'
-CASE_NAMES = (
-    'success', 'success-never-enabled', 'raeth-pdma-busy', 'raeth-qdma-busy',
-    'wifi-busy', 'wifi-disable-failed', 'wifi-reset-failed', 'wifi-worker-failed',
-    'quarantine-active', 'quarantine-then-idle', 'quarantine-pure-oom',
-    'quarantine-quiesced', 'repeat-success-after-failure', 'normal-prelatched',
-    'prepare-only', 'park-spurious-wake', 'emergency-latched', 'emergency-irq-off',
-    'direct-latched', 'direct-irq-off', 'late-migrate', 'late-syscore',
-    'concurrent-report', 'zero-report', 'success-emergency', 'success-direct',
-)
+CASE_NAMES = ('success',
+ 'success-never-enabled',
+ 'raeth-pdma-busy',
+ 'raeth-qdma-busy',
+ 'wifi-busy',
+ 'wifi-disable-failed',
+ 'wifi-reset-failed',
+ 'wifi-worker-failed',
+ 'quarantine-active',
+ 'quarantine-then-idle',
+ 'quarantine-pure-oom',
+ 'quarantine-quiesced',
+ 'repeat-success-after-failure',
+ 'normal-prelatched',
+ 'prepare-only',
+ 'park-spurious-wake',
+ 'emergency-latched',
+ 'emergency-irq-off',
+ 'direct-latched',
+ 'direct-irq-off',
+ 'late-migrate',
+ 'late-syscore',
+ 'concurrent-report',
+ 'zero-report',
+ 'success-emergency',
+ 'success-direct',
+ 'ser-stop-failure',
+ 'ser-idle-failure',
+ 'ser-failure-then-idle',
+ 'ser-success')
 
 
-BODY_ORDER = ('reboot_dma_failure_report', 'reboot_dma_failures', 'reboot_dma_failure_check', 'emergency_restart', 'kernel_restart_prepare', 'kernel_restart', 'ralink_restart', 'machine_restart', 'device_shutdown', 'pci_device_shutdown', 'ra2880stop', 'fe_pdma_wait_dma_idle', 'fe_qdma_wait_dma_idle', 'ei_stop_dma', 'raether_shutdown', 'RtmpDmaLifecycleLock', 'RtmpDmaLifecycleUnlock', 'RtmpDmaQuarantine', 'RtmpDmaTeardownCheck', 'RT28XXDMAStop', 'RT28XXDMAReset', 'rt_pci_shutdown')
+BODY_ORDER = ('reboot_dma_failure_report',
+ 'reboot_dma_failures',
+ 'reboot_dma_failure_check',
+ 'emergency_restart',
+ 'kernel_restart_prepare',
+ 'kernel_restart',
+ 'ralink_restart',
+ 'machine_restart',
+ 'device_shutdown',
+ 'pci_device_shutdown',
+ 'ra2880stop',
+ 'fe_pdma_wait_dma_idle',
+ 'fe_qdma_wait_dma_idle',
+ 'ei_stop_dma',
+ 'raether_shutdown',
+ 'RtmpDmaLifecycleLock',
+ 'RtmpDmaLifecycleUnlock',
+ 'RtmpDmaQuarantine',
+ 'RtmpDmaTeardownCheck',
+ 'RT28XXDMAStop',
+ 'RT28XXDMAReset',
+ 'rt_pci_shutdown',
+ 'HwRecoveryFromErrorOwned')
 FIELDS = ('reasons', 'terminal', 'sleeps', 'spins', 'irq_off', 'callbacks', 'migrate', 'syscore', 'pci_reset', 'system_reset', 'stop', 'idle', 'reset', 'p_reads', 'q_reads', 'clear_master', 'wifi_quarantine', 'wifi_quiesced', 'raeth_quarantine', 'owners', 'workers', 'commands', 'irq_sync', 'events')
 EXPECTED_ROWS = {'success': {'reasons': 0,
              'terminal': 3,
@@ -693,7 +749,103 @@ EXPECTED_ROWS = {'success': {'reasons': 0,
                     'workers': 0,
                     'commands': 0,
                     'irq_sync': 0,
-                    'events': 'pci-reset,system-reset,'}}
+                    'events': 'pci-reset,system-reset,'},
+ 'ser-stop-failure': {'reasons': 2,
+                      'terminal': 1,
+                      'sleeps': 1,
+                      'spins': 0,
+                      'irq_off': 0,
+                      'callbacks': 2,
+                      'migrate': 0,
+                      'syscore': 0,
+                      'pci_reset': 0,
+                      'system_reset': 0,
+                      'stop': 1,
+                      'idle': 0,
+                      'reset': 0,
+                      'p_reads': 2,
+                      'q_reads': 2,
+                      'clear_master': 3,
+                      'wifi_quarantine': 1,
+                      'wifi_quiesced': 0,
+                      'raeth_quarantine': 1,
+                      'owners': 8,
+                      'workers': 0,
+                      'commands': 0,
+                      'irq_sync': 0,
+                      'events': 'wifi-stop,notifier,helpers,cpufreq,raeth,pci,'},
+ 'ser-idle-failure': {'reasons': 2,
+                      'terminal': 1,
+                      'sleeps': 1,
+                      'spins': 0,
+                      'irq_off': 0,
+                      'callbacks': 2,
+                      'migrate': 0,
+                      'syscore': 0,
+                      'pci_reset': 0,
+                      'system_reset': 0,
+                      'stop': 1,
+                      'idle': 1,
+                      'reset': 0,
+                      'p_reads': 2,
+                      'q_reads': 2,
+                      'clear_master': 3,
+                      'wifi_quarantine': 1,
+                      'wifi_quiesced': 0,
+                      'raeth_quarantine': 1,
+                      'owners': 8,
+                      'workers': 0,
+                      'commands': 0,
+                      'irq_sync': 0,
+                      'events': 'wifi-stop,wifi-idle,notifier,helpers,cpufreq,raeth,pci,'},
+ 'ser-failure-then-idle': {'reasons': 2,
+                           'terminal': 1,
+                           'sleeps': 1,
+                           'spins': 0,
+                           'irq_off': 0,
+                           'callbacks': 2,
+                           'migrate': 0,
+                           'syscore': 0,
+                           'pci_reset': 0,
+                           'system_reset': 0,
+                           'stop': 1,
+                           'idle': 0,
+                           'reset': 0,
+                           'p_reads': 2,
+                           'q_reads': 2,
+                           'clear_master': 3,
+                           'wifi_quarantine': 1,
+                           'wifi_quiesced': 1,
+                           'raeth_quarantine': 1,
+                           'owners': 8,
+                           'workers': 0,
+                           'commands': 0,
+                           'irq_sync': 0,
+                           'events': 'wifi-stop,notifier,helpers,cpufreq,raeth,pci,'},
+ 'ser-success': {'reasons': 0,
+                 'terminal': 3,
+                 'sleeps': 0,
+                 'spins': 0,
+                 'irq_off': 1,
+                 'callbacks': 2,
+                 'migrate': 1,
+                 'syscore': 1,
+                 'pci_reset': 1,
+                 'system_reset': 1,
+                 'stop': 2,
+                 'idle': 2,
+                 'reset': 1,
+                 'p_reads': 2,
+                 'q_reads': 2,
+                 'clear_master': 1,
+                 'wifi_quarantine': 0,
+                 'wifi_quiesced': 1,
+                 'raeth_quarantine': 1,
+                 'owners': 8,
+                 'workers': 1,
+                 'commands': 1,
+                 'irq_sync': 1,
+                 'events': 'wifi-stop,wifi-idle,notifier,helpers,cpufreq,raeth,pci,wifi-stop,wifi-idle,migrate,syscore,dump,pci-reset,system-reset,'}}
 BASELINE_ROWS = {'success': {'reasons': 0,
              'terminal': 3,
              'sleeps': 0,
@@ -861,12 +1013,60 @@ BASELINE_ROWS = {'success': {'reasons': 0,
                   'workers': 0,
                   'commands': 0,
                   'irq_sync': 0,
-                  'events': 'notifier,helpers,cpufreq,raeth,pci,migrate,syscore,dump,pci-reset,system-reset,'}}
+                  'events': 'notifier,helpers,cpufreq,raeth,pci,migrate,syscore,dump,pci-reset,system-reset,'},
+ 'ser-stop-failure': {'reasons': 0,
+                      'terminal': 3,
+                      'sleeps': 0,
+                      'spins': 0,
+                      'irq_off': 1,
+                      'callbacks': 2,
+                      'migrate': 1,
+                      'syscore': 1,
+                      'pci_reset': 1,
+                      'system_reset': 1,
+                      'stop': 1,
+                      'idle': 0,
+                      'reset': 0,
+                      'p_reads': 2,
+                      'q_reads': 2,
+                      'clear_master': 1,
+                      'wifi_quarantine': 0,
+                      'wifi_quiesced': 0,
+                      'raeth_quarantine': 1,
+                      'owners': 8,
+                      'workers': 0,
+                      'commands': 0,
+                      'irq_sync': 0,
+                      'events': 'wifi-stop,notifier,helpers,cpufreq,raeth,pci,migrate,syscore,dump,pci-reset,system-reset,'},
+ 'ser-failure-then-idle': {'reasons': 0,
+                           'terminal': 3,
+                           'sleeps': 0,
+                           'spins': 0,
+                           'irq_off': 1,
+                           'callbacks': 2,
+                           'migrate': 1,
+                           'syscore': 1,
+                           'pci_reset': 1,
+                           'system_reset': 1,
+                           'stop': 1,
+                           'idle': 0,
+                           'reset': 0,
+                           'p_reads': 2,
+                           'q_reads': 2,
+                           'clear_master': 1,
+                           'wifi_quarantine': 0,
+                           'wifi_quiesced': 1,
+                           'raeth_quarantine': 1,
+                           'owners': 8,
+                           'workers': 0,
+                           'commands': 0,
+                           'irq_sync': 0,
+                           'events': 'wifi-stop,notifier,helpers,cpufreq,raeth,pci,migrate,syscore,dump,pci-reset,system-reset,'}}
 
 def function(text, name):
     token = r'/\*[\s\S]*?\*/|//[^\n]*|"(?:\\[\s\S]|[^"\\])*"|\'(?:\\[\s\S]|[^\'\\])*\''
     masked = re.sub(token, lambda m: ' ' * len(m.group()), text)
-    pattern = (r'^(?:static\s+)?(?:inline\s+)?(?:unsigned\s+int|VOID|BOOLEAN|int|void)\s+'
+    pattern = (r'^(?:static\s+)?(?:inline\s+)?(?:unsigned\s+int|VOID|BOOLEAN|NTSTATUS|int|void)\s+'
                + re.escape(name) + r'\s*\([^;{}]*\)\s*\{')
     found = list(re.finditer(pattern, masked, re.M))
     if len(found) != 1:
@@ -902,15 +1102,16 @@ PREFIX = r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-typedef void VOID;
-typedef int BOOLEAN;
+typedef void VOID,PKT_TOKEN_CB;
+typedef int BOOLEAN,NTSTATUS;
 typedef unsigned long ULONG;
-typedef unsigned int u32;
+typedef unsigned int u32,UINT32;
 #define TRUE 1
 #define FALSE 0
 #define BIT(n) (1U << (n))
 #define IS_ENABLED(x) (x)
 #define CONFIG_PCI 1
+#define RESOURCE_PRE_ALLOC
 #define CONFIG_RA_NAT_NONE 1
 #define MAX_SCHEDULE_TIMEOUT LONG_MAX
 #define SYSTEM_RESTART 1
@@ -998,7 +1199,7 @@ static struct net_device *platform_get_drvdata(struct platform_device *d) {retur
 static inline struct net_device *pci_get_drvdata(struct pci_dev *d) {return d->data;}
 #define GET_PAD_FROM_NET_DEV(a,d) ((a)=(d)->adapter)
 typedef struct {struct pci_dev *pci_dev;pthread_mutex_t dma_lifecycle_lock,dma_state_lock;} COOKIE,*POS_COOKIE;
-typedef struct _RTMP_ADAPTER {void *OS_Cookie;struct net_device *net_dev;bool pci;unsigned int flags;int dma_running,dma_lifecycle_pinned,dma_quiesced,dma_quarantined,dma_stopping,dma_removing,dma_irq_registered;void *tm_qm_ops,*tm_hif_ops;int qm_wq_state,hif_wq_state;} RTMP_ADAPTER;
+typedef struct _RTMP_ADAPTER {void *OS_Cookie;struct net_device *net_dev;bool pci;unsigned int flags;int dma_running,dma_lifecycle_pinned,dma_quiesced,dma_quarantined,dma_stopping,dma_removing,dma_irq_registered;void *tm_qm_ops,*tm_hif_ops;int qm_wq_state,hif_wq_state;struct {UINT32 ser_status,ser_times[8];} HwCtrl;ERR_RECOVERY_CTRL_T ErrRecoveryCtl;int bPCIclkOff;void *PktTokenCb;} RTMP_ADAPTER;
 #define IS_PCI_INF(a) ((a)->pci)
 #define IS_PCIE_INF(a) ((a)->pci)
 static pthread_mutex_t rtnl = PTHREAD_MUTEX_INITIALIZER;
@@ -1035,6 +1236,54 @@ static void rt_sysc_w32(unsigned int value,unsigned int reg) {assert(value==BIT(
 static void mdelay(unsigned int n) {assert(n==50 || n==1000);}
 static void blocking_notifier_call_chain(int *list,int state,char *cmd) {assert(list==&reboot_notifier_list && state==SYS_RESTART);(void)cmd;event("notifier");}
 static void usermodehelper_disable(void) {event("helpers");}
+
+/* SER state/firmware/execution seams; the complete SER owner function is real. */
+#define NDIS_STATUS_FAILURE 1
+#define NDIS_STATUS_INVALID_DATA 2
+#define os_zero_mem(p,n) memset((p),0,(n))
+#define ERROR_DETECT_STOP_PDMA 1
+#define ERROR_DETECT_RESET_DONE 2
+#define ERROR_DETECT_RECOVERY_DONE 4
+#define ERROR_DETECT_N9_NORMAL_STATE 8
+#define MCU_INT_PDMA0_STOP_DONE 1
+#define MCU_INT_PDMA0_INIT_DONE 2
+#define MCU_INT_PDMA0_RECOVERY_DONE 4
+#define HW_BSSID_0 0
+#define SER_TIME_ID_T0 0
+#define SER_TIME_ID_T1 1
+#define SER_TIME_ID_T2 2
+#define SER_TIME_ID_T3 3
+#define SER_TIME_ID_T4 4
+#define SER_TIME_ID_T5 5
+#define SER_TIME_ID_T6 6
+#define SER_TIME_ID_T7 7
+#define SER_TIME_ID_END 8
+#define BCN_UPDATE_AP_RENEW 0
+#define MT_WPDMA_MEM_RNG_ERR 0
+#define HIF_IO_WRITE32(a,b,c) ((void)(a),(void)(b),(void)(c))
+#define WLAN_HOOK_CALL(a,b,c) ((void)(b),(void)(c))
+static void tm_exit(RTMP_ADAPTER *a){assert(a);}
+static void qm_exit(RTMP_ADAPTER *a){assert(a);}
+static void RTMPResetTxRxRingMemory(RTMP_ADAPTER *a){assert(a && idle_ok);}
+static void cut_through_deinit(void *a){assert(a && idle_ok);}
+static int WfHifInit(RTMP_ADAPTER *a){assert(a);return 0;}
+static int qm_init(RTMP_ADAPTER *a){assert(a);return 0;}
+static int tm_init(RTMP_ADAPTER *a){assert(a);return 0;}
+static int RT28XXDMAEnable(RTMP_ADAPTER *a){assert(a);return 1;}
+static void MtAsicGetTsfTimeByDriver(RTMP_ADAPTER *a,UINT32 *h,UINT32 *l,int b){assert(a);(void)b;*h=*l=0;}
+static int ErrRecoveryCurStat(ERR_RECOVERY_CTRL_T *p){return p->errRecovState;}
+static void ErrRecoveryStopPdmaAccessDone(ERR_RECOVERY_CTRL_T *p){p->errRecovState=ERR_RECOV_STOP_IDLE_DONE;}
+static void ErrRecoveryStopPdmaAccess(ERR_RECOVERY_CTRL_T *p){p->errRecovState=ERR_RECOV_STOP_PDMA0;}
+static void ErrRecoveryReinitPdma(ERR_RECOVERY_CTRL_T *p){p->errRecovState=ERR_RECOV_RESET_PDMA0;}
+static void ErrRecoveryWaitN9Normal(ERR_RECOVERY_CTRL_T *p){p->errRecovState=ERR_RECOV_WAIT_N9_NORMAL;}
+static void ErrRecoveryDone(ERR_RECOVERY_CTRL_T *p){p->errRecovState=ERR_RECOV_STOP_IDLE;}
+static void ErrRecoveryEventReentry(ERR_RECOVERY_CTRL_T *p){p->errRecovState=ERR_RECOV_EVENT_REENTRY;}
+static void ErrRecoveryMcuIntEvent(RTMP_ADAPTER *a,int n){assert(a);(void)n;}
+static void RtmpusecDelay(int n){assert(n==100*1000);}
+static void UpdateBeaconHandler(RTMP_ADAPTER *a,void *p,int n){assert(a);(void)p;(void)n;}
+static void SerTimeLogDump(RTMP_ADAPTER *a){assert(a);}
+static void ErrRecoveryEndDriverRestore(RTMP_ADAPTER *a){assert(a);}
+
 FUNCTION_PROTOTYPES
 static void migrate_to_reboot_cpu(void) {event("migrate");migrate_calls++;if(late_phase==1)reboot_dma_failure_report(REBOOT_DMA_MT7615);}
 static void syscore_shutdown(void) {event("syscore");syscore_calls++;if(late_phase==2)reboot_dma_failure_report(REBOOT_DMA_MT7615);}
@@ -1079,6 +1328,17 @@ int main(int argc,char **argv)
  if(!strcmp(name,"late-syscore"))late_phase=2;
  if(!strcmp(name,"concurrent-report")){pthread_t threads[8];unsigned int bits[8];for(int n=0;n<8;n++){bits[n]=BIT(n);assert(!pthread_create(&threads[n],NULL,reporter,&bits[n]));}for(int n=0;n<8;n++)assert(!pthread_join(threads[n],NULL));}
  if(!strcmp(name,"zero-report"))reboot_dma_failure_report(0);
+ if(!strncmp(name,"ser-",4)) {
+  ad.ErrRecoveryCtl.errRecovState=ERR_RECOV_STOP_PDMA0;ad.HwCtrl.ser_status=ERROR_DETECT_RESET_DONE;
+  if(!strcmp(name,"ser-stop-failure") || !strcmp(name,"ser-failure-then-idle"))disable_ok=0;
+  if(!strcmp(name,"ser-idle-failure"))idle_ok=0;
+  rtnl_lock();RtmpDmaLifecycleLock(&ad);
+  int ser_result=HwRecoveryFromErrorOwned(&ad);
+  RtmpDmaLifecycleUnlock(&ad);rtnl_unlock();
+  assert(ser_result==(!strcmp(name,"ser-success")?NDIS_STATUS_SUCCESS:NDIS_STATUS_FAILURE));
+  if(!strcmp(name,"ser-failure-then-idle")){disable_ok=idle_ok=1;ad.dma_running=0;ad.dma_quiesced=1;}
+ }
+
  if(!setjmp(terminal)) {
   if(!strcmp(name,"prepare-only"))kernel_restart_prepare(NULL);
   else if(!strncmp(name,"emergency-",10) || !strcmp(name,"success-emergency"))emergency_restart();

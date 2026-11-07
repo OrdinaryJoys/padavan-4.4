@@ -73,6 +73,26 @@ class SerLifecycleTests(unittest.TestCase):
     def test_recovery_worker_never_waits_on_closing_owner_or_reenters_stopping_state(self):
         self.cases(('recovery-owner-busy','recovery-stopping','recovery-unpinned'))
 
+    def test_actual_whole_ser_stop_failures_report_containment_once(self):
+        marker=' printf("[%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d]'
+        self.assertEqual(self.generated.count(marker),1)
+        guard=(' if(!strcmp(name,"ser-stop-failure")||!strcmp(name,"ser-stop-failure-repeat")||'
+               '!strcmp(name,"ser-idle-failure"))assert(restart_quarantine_reports==1);'
+               'else assert(restart_quarantine_reports==0);\n')
+        source=self.directory/'ser-restart-report.c'
+        source.write_text(self.generated.replace(marker,guard+marker,1))
+        for label,compiler in(('gcc16',shutil.which('gcc-16')),('clang',shutil.which('clang'))):
+            binary=self.directory/('ser-restart-report-'+label)
+            result=subprocess.run([compiler,'-std=gnu99','-O2','-pthread','-Wall','-Wextra','-Werror',
+                '-Wno-unused-variable','-Wno-unused-parameter','-Wno-unused-but-set-variable',
+                *(['-fsanitize=address,undefined','-fno-sanitize-recover=all']if label=='clang'else[]),
+                str(source),'-o',str(binary)],capture_output=True,text=True,timeout=30)
+            self.assertEqual(result.returncode,0,result.stderr)
+            for name in h.CASE_NAMES:
+                result=subprocess.run([str(binary),name],capture_output=True,text=True,timeout=10)
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertEqual(json.loads(result.stdout),h.EXPECTED_ROWS[name])
+
     def test_whole_functions_and_actual_close_order_are_bound(self):
         self.assertEqual(len(h.CASE_NAMES),25)
         self.assertEqual(set(h.CASE_NAMES),set(h.EXPECTED_ROWS))

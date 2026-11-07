@@ -11,7 +11,7 @@ import unittest
 import restart_veto_harness as h
 
 ROOT = Path(__file__).resolve().parents[1]
-FIXTURE_SHA256 = '29034ee94d511b747ac1fb881b42cc10f6ab623665b8370ff61d19931b2b4f0d'
+FIXTURE_SHA256 = 'faf88e5de6e70c549dfe277a661c9b6be04fac81bf27d0f9b00700773596c4b4'
 
 
 class RestartVetoTests(unittest.TestCase):
@@ -29,6 +29,7 @@ class RestartVetoTests(unittest.TestCase):
         cls.baseline = {key: '' for key in cls.texts}
         # Numeric new reasons are a harness seam for absent f9 report APIs.
         cls.baseline['header'] = cls.texts['header']
+        cls.baseline['ser_header'] = cls.texts['ser_header']
         cls.baseline['arch'] = ('#define SYSC_REG_RESET_CTRL 0x034\n'
                                 '#define RSTCTL_RESET_PCI BIT(26)\n'
                                 '#define RSTCTL_RESET_SYSTEM BIT(0)\n')
@@ -81,7 +82,7 @@ class RestartVetoTests(unittest.TestCase):
         self.assertEqual(result.stderr, '')
         return json.loads(result.stdout)
 
-    def test_26_source_bound_schedules_and_624_observation_fields(self):
+    def test_30_source_bound_schedules_and_720_observation_fields(self):
         for key, binary in self.binaries.items():
             if key.startswith('f9-'):
                 continue
@@ -102,13 +103,13 @@ class RestartVetoTests(unittest.TestCase):
                         self.assertNotEqual(row, h.EXPECTED_ROWS[name])
 
     def test_exact_whole_function_and_integer_ledger_contract(self):
-        self.assertEqual((len(h.FUNCTION_SOURCES), len(h.CASE_NAMES), len(h.FIELDS)), (22, 26, 24))
+        self.assertEqual((len(h.FUNCTION_SOURCES), len(h.CASE_NAMES), len(h.FIELDS)), (23, 30, 24))
         self.assertEqual(set(h.CASE_NAMES), set(h.EXPECTED_ROWS))
         self.assertEqual(tuple(h.FUNCTION_SOURCES), h.BODY_ORDER)
         generated = h.generate_source(self.texts)
         for name, key in h.FUNCTION_SOURCES.items():
             self.assertEqual(generated.count(h.function(self.texts[key], name)), 1)
-        self.assertEqual(len(h.function_manifest(self.texts)), 22)
+        self.assertEqual(len(h.function_manifest(self.texts)), 23)
         self.assertEqual(set(self.fixture['functions']), set(h.FUNCTION_SOURCES) - set(h.NEW_FUNCTIONS))
         report = h.function(self.texts['reboot'], 'reboot_dma_failure_report')
         self.assertIn('atomic_or(reasons ? reasons : REBOOT_DMA_UNKNOWN,', report)

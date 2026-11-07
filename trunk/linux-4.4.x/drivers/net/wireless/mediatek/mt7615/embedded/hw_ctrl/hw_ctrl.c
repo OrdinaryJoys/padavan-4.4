@@ -921,6 +921,7 @@ static NTSTATUS HwRecoveryFromErrorOwned(RTMP_ADAPTER *pAd)
 			pSerTimes[SER_TIME_ID_T2] = Lowpart;
 			/* A firmware RESET_DONE event is not our local idle check. */
 			if (!RT28XXDMAStop(pAd)) {
+				RtmpDmaQuarantine(pAd);
 				pErrRecoveryCtrl->recovery_failed = TRUE;
 				return NDIS_STATUS_FAILURE;
 			}
