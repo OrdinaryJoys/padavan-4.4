@@ -49,6 +49,7 @@
 #endif
 #define SCP_MAX_BYTES (2U * 1024U * 1024U)
 #define SCP_RESERVE_BYTES (16U * 1024U)
+#define SCP_MAX_LEAF_BYTES 220U
 #define SCP_PROTOCOL "K2P startup config publisher v1\n"
 
 static int scp_error(const char *message)
@@ -99,7 +100,7 @@ static int scp_split(const char *path, char *parent, char *leaf)
 	size_t n;
 	if (!path || path[0] != '/' || strlen(path) >= PATH_MAX) return -1;
 	slash = strrchr(path, '/');
-	if (!slash || !slash[1] || strlen(slash + 1) > 220 ||
+	if (!slash || !slash[1] || strlen(slash + 1) > SCP_MAX_LEAF_BYTES ||
 	    !strcmp(slash + 1, ".") || !strcmp(slash + 1, "..")) return -1;
 	n = slash - path;
 	if (!n) n = 1;
@@ -215,10 +216,24 @@ static int scp_open_destination(int parent, const char *leaf, struct stat *st)
 	return fd;
 }
 
-static void scp_backup_name(char *out, size_t capacity, const char *leaf, unsigned int slot)
+static int scp_backup_name(char *out, size_t capacity, const char *leaf, unsigned int slot)
 {
-	if (slot) snprintf(out, capacity, "%s.before-migration.%u", leaf, slot);
-	else snprintf(out, capacity, "%s.before-migration", leaf);
+	static const char suffix[] = ".before-migration";
+	size_t length, needed;
+	if (!out || !leaf || slot >= 10) return -1;
+	length = strlen(leaf);
+	if (!length || length > SCP_MAX_LEAF_BYTES || strchr(leaf, '/') ||
+	    !strcmp(leaf, ".") || !strcmp(leaf, "..")) return -1;
+	/* Check before writing; the leaf bound also makes the sum overflow-safe.
+	 * The ten slots have a single digit and preserve the existing names. */
+	needed = length + sizeof(suffix) + (slot ? 2U : 0U);
+	if (capacity < needed) return -1;
+	memcpy(out, leaf, length);
+	memcpy(out + length, suffix, sizeof(suffix) - 1);
+	length += sizeof(suffix) - 1;
+	if (slot) { out[length++] = '.'; out[length++] = (char)('0' + slot); }
+	out[length] = 0;
+	return 0;
 }
 
 /* A failed/interrupted prior attempt may have linked the old inode already.
@@ -229,17 +244,22 @@ static int scp_account_links(int backup, const char *leaf, const struct stat *ol
 	unsigned int slot, links = 0;
 	struct stat st;
 	char name[256];
+	if (!reuse || !capacity) return -1;
 	reuse[0] = 0;
 	if (backup >= 0) {
 		for (slot = 0; slot < 10; slot++) {
-			scp_backup_name(name, sizeof(name), leaf, slot);
+			if (scp_backup_name(name, sizeof(name), leaf, slot)) return -1;
 			if (fstatat(backup, name, &st, AT_SYMLINK_NOFOLLOW)) {
 				if (errno != ENOENT) return -1;
 				continue;
 			}
 			if (st.st_dev == old->st_dev && st.st_ino == old->st_ino) {
 				if (!S_ISREG(st.st_mode) || st.st_uid != SCP_OWNER) return -1;
-				if (!links) snprintf(reuse, capacity, "%s", name);
+				if (!links) {
+					size_t length = strlen(name);
+					if (length >= capacity) return -1;
+					memcpy(reuse, name, length + 1);
+				}
 				links++;
 			}
 		}
@@ -428,9 +448,15 @@ static int startup_config_publish(const char *candidate, const char *original,
 		}
 		if (backup < 0) backup = openat(parent, ".config-backups", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
 		if (backup < 0 || scp_safe_directory(backup, 0700)) { reason = "unsafe private backup directory"; goto done; }
-		if (reuse_name[0]) snprintf(backup_name, sizeof(backup_name), "%s", reuse_name);
+		if (reuse_name[0]) {
+			size_t length = strlen(reuse_name);
+			if (length >= sizeof(backup_name)) { reason = "reused backup name is too long"; goto done; }
+			memcpy(backup_name, reuse_name, length + 1);
+		}
 		for (attempt = 0; !reuse_name[0] && attempt < 10; attempt++) {
-			scp_backup_name(backup_name, sizeof(backup_name), leaf, attempt);
+			if (scp_backup_name(backup_name, sizeof(backup_name), leaf, attempt)) {
+				reason = "invalid migration backup name"; goto done;
+			}
 			/* Legacy flat backups and new private backups share ten slots. */
 			if (!fstatat(parent, backup_name, &now, AT_SYMLINK_NOFOLLOW)) continue;
 			if (errno != ENOENT) { reason = "cannot inspect legacy backup slot"; goto done; }

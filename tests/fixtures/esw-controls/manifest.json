@@ -1,0 +1,32 @@
+{
+  "change_led_mode": {
+    "sha256": "7809834d5dcf027b67cfa0b65e058763a31d0c02bb055f730ee64890f0cc57f2",
+    "source_commit": "97b961d3735c2452f64b34d916b3d6dfaf7dae96",
+    "source": "trunk/linux-4.4.x/drivers/net/ethernet/raeth/mtk_esw/ioctl_mt762x.c"
+  },
+  "change_storm_control_broadcast": {
+    "sha256": "7535ecbcef2b059d1bd887b3f493d869e40a7c9a028c389bc93742393455e103",
+    "source_commit": "97b961d3735c2452f64b34d916b3d6dfaf7dae96",
+    "source": "trunk/linux-4.4.x/drivers/net/ethernet/raeth/mtk_esw/ioctl_mt762x.c"
+  },
+  "change_jumbo_frames_accept": {
+    "sha256": "b532cd2c573d9d1058156c9482207978280981433693fc7ff6a2479f6bf4ab9e",
+    "source_commit": "97b961d3735c2452f64b34d916b3d6dfaf7dae96",
+    "source": "trunk/linux-4.4.x/drivers/net/ethernet/raeth/mtk_esw/ioctl_mt762x.c"
+  },
+  "change_port_link_mode_uapi": {
+    "sha256": "53eda78d508ebb615cbb29f83a4b4299fb831831af5cb0cf31f5dbc245ee3323",
+    "source_commit": "97b961d3735c2452f64b34d916b3d6dfaf7dae96",
+    "source": "trunk/linux-4.4.x/drivers/net/ethernet/raeth/mtk_esw/ioctl_mt762x.c"
+  },
+  "esw_status_link_port": {
+    "sha256": "586e9dcbaf1541d6b04aa6a8d9e83bbad16a3572af295b62a067c715885b5716",
+    "source_commit": "97b961d3735c2452f64b34d916b3d6dfaf7dae96",
+    "source": "trunk/linux-4.4.x/drivers/net/ethernet/raeth/mtk_esw/ioctl_mt762x.c"
+  },
+  "esw_status_speed_port_uapi": {
+    "sha256": "29ce9e0fdc4b0c6175fc5d58d02ad72f4e97fe2a957fd1c116a875b18e4ad0fb",
+    "source_commit": "97b961d3735c2452f64b34d916b3d6dfaf7dae96",
+    "source": "trunk/linux-4.4.x/drivers/net/ethernet/raeth/mtk_esw/ioctl_mt762x.c"
+  }
+}

@@ -44,9 +44,52 @@ class EswVlanTests(unittest.TestCase):
  def test_every_scalar_setter_rejects_fault_before_hardware_and_denied_admin_has_no_effects(self):self.cases(h.CASE_NAMES[10:17])
  def test_vtcr_write_read_and_bounded_busy_error_have_distinct_results(self):self.cases(h.CASE_NAMES[17:21])
  def test_vlan_set_does_not_publish_failed_entry_and_delete_retains_failed_tail(self):self.cases(h.CASE_NAMES[21:28])
- def test_real_vlan_apply_bridge_init_igmp_and_phy_failures_do_not_publish_success(self):self.cases(h.CASE_NAMES[28:])
+ def test_real_vlan_apply_bridge_init_igmp_and_phy_failures_do_not_publish_success(self):self.cases(h.CASE_NAMES[28:42])
+ def test_led_failures_retries_and_success(self):self.cases(h.CASE_NAMES[42:46])
+ def test_storm_all_ports_retry_and_rate_encodings(self):self.cases(h.CASE_NAMES[46:50])
+ def test_jumbo_checked_rmw_and_retry(self):self.cases(h.CASE_NAMES[50:54])
+ def test_link_mode_all_mdio_stages_and_validation(self):self.cases(h.CASE_NAMES[54:60])
+ def test_ioctl_ambiguous_writes_getters_and_control_cache_epochs(self):self.cases(h.CASE_NAMES[60:])
+ def test_pinned_old_controls_reproduce_ignored_error_early_cache_and_false_down(self):
+  fixture=ROOT/'tests/fixtures/esw-controls';manifest=json.loads((fixture/'manifest.json').read_text())
+  for n,case in (('change_led_mode','led-every-mdio-failure'),('change_storm_control_broadcast','storm-every-port-failure'),('change_jumbo_frames_accept','jumbo-every-mdio-failure'),('change_port_link_mode_uapi','link-force-every-mdio-failure'),('esw_status_link_port','status-direct-read-failure-preserves-output'),('esw_status_speed_port_uapi','status-direct-read-failure-preserves-output')):
+   with self.subTest(function=n,case=case):
+    raw=(fixture/(n+'.c')).read_bytes();self.assertEqual(hashlib.sha256(raw).hexdigest(),manifest[n]['sha256']);body=h.function(self.texts['esw'],n)
+    if n=='change_port_link_mode_uapi':replacement=raw.decode()
+    else:
+     alias='#define '+n+' old_'+n+'\n'+raw.decode()+'#undef '+n+'\n'
+     if n.startswith('esw_status'):
+      alias=h.function(self.texts['esw'],'esw_reg_get')+'\n'+alias
+      param='port_id' if n=='esw_status_link_port'else'port_id_uapi'
+      wrapper='static int '+n+'(u32 '+param+', u32 *result){*result=old_'+n+'('+param+');return 0;}'
+     else:wrapper='static int '+n+'(u32 value){old_'+n+'(value);return 0;}'
+     replacement=alias+wrapper
+    binary=self.build(self.generated.replace(body,replacement),'old-control-'+n);r=self.run_case(binary,case);self.assertEqual(r.returncode,0,r.stderr);self.assertNotEqual(json.loads(r.stdout),h.EXPECTED_ROWS[case])
+ def test_control_and_getter_mutants_compile_and_expose_lost_error_or_retry(self):
+  mutants=(
+   ('change_led_mode','if (ret)\n\t\treturn ret;','if (ret && 0)\n\t\treturn ret;','led-every-mdio-failure'),
+   ('change_led_mode',' && !g_led_apply_pending','','led-old-request-recovery'),
+   ('change_storm_control_broadcast','if (ret)\n\t\t\treturn ret;','if (ret && 0)\n\t\t\treturn ret;','storm-every-port-failure'),
+   ('change_storm_control_broadcast',' && !g_storm_apply_pending','','storm-old-request-recovery'),
+   ('change_jumbo_frames_accept','if (ret)\n\t\treturn ret;','if (ret && 0)\n\t\treturn ret;','jumbo-every-mdio-failure'),
+   ('change_jumbo_frames_accept',' && !g_jumbo_apply_pending','','jumbo-old-request-recovery'),
+   ('esw_jumbo_control','if (ret)\n\t\treturn ret;','if (ret && 0)\n\t\treturn ret;','jumbo-every-mdio-failure'),
+   ('change_port_link_mode_uapi','if (!mii_mgr_read(phy_mdio_addr, 9, &esw_phy_gcr))','if (!mii_mgr_read(phy_mdio_addr, 9, &esw_phy_gcr) && 0)','link-force-every-mdio-failure'),
+   ('change_port_link_mode_uapi','if (!mii_mgr_write(phy_mdio_addr, 9, esw_phy_gcr))','if (!mii_mgr_write(phy_mdio_addr, 9, esw_phy_gcr) && 0)','link-force-every-mdio-failure'),
+   ('change_port_link_mode_uapi','if (!mii_mgr_write(phy_mdio_addr, 4, esw_phy_ana))','if (!mii_mgr_write(phy_mdio_addr, 4, esw_phy_ana) && 0)','link-force-every-mdio-failure'),
+   ('change_port_link_mode_uapi','\n\t\t\tif (!mii_mgr_write(phy_mdio_addr, 0, esw_phy_mcr))','\n\t\t\tif (!mii_mgr_write(phy_mdio_addr, 0, esw_phy_mcr) && 0)','link-force-every-mdio-failure'),
+   ('change_port_link_mode_uapi','\n\tif (!mii_mgr_write(phy_mdio_addr, 0, esw_phy_mcr))','\n\tif (!mii_mgr_write(phy_mdio_addr, 0, esw_phy_mcr) && 0)','link-force-every-mdio-failure'),
+   ('change_port_link_mode_uapi',' && !g_link_apply_pending[port_id]','','link-old-request-recovery'),
+   ('mtk_esw_ioctl','ioctl_result = change_led_mode(uint_value);','(void)change_led_mode(uint_value);','controls-ioctl-propagates-errors'),
+   ('esw_status_link_port','if (ret)\n\t\t\treturn ret;','if (ret)\n\t\t\treturn 0;','status-direct-read-failure-preserves-output'),
+   ('esw_status_speed_port_uapi','if (ret)\n\t\t\treturn ret;','if (ret)\n\t\t\treturn 0;','status-direct-read-failure-preserves-output'),
+   ('esw_ioctl_init_post','g_storm_apply_pending = true;','g_storm_apply_pending = false;','init-success-invalidates-control-cache'),
+   ('esw_ioctl_init_post','memset(g_link_apply_pending, 1, sizeof(g_link_apply_pending));','memset(g_link_apply_pending, 0, sizeof(g_link_apply_pending));','init-failure-invalidates-control-cache'))
+  for i,(n,old,new,case)in enumerate(mutants):
+   with self.subTest(function=n,case=case):
+    body=h.function(self.texts[h.FUNCTION_SOURCES[n]],n);self.assertEqual(body.count(old),1);binary=self.build(self.generated.replace(body,body.replace(old,new)),'controls-mutant-'+str(i));r=self.run_case(binary,case);self.assertTrue(r.returncode!=0 or json.loads(r.stdout)!=h.EXPECTED_ROWS[case])
  def test_exact_source_binding_and_enabled_variant_contract(self):
-  self.assertEqual(len(h.CASE_NAMES),42);self.assertEqual(set(h.CASE_NAMES),set(h.EXPECTED_ROWS));self.assertEqual(len(h.BODY_ORDER),57)
+  self.assertEqual(len(h.CASE_NAMES),68);self.assertEqual(set(h.CASE_NAMES),set(h.EXPECTED_ROWS));self.assertEqual(len(h.BODY_ORDER),62)
   self.assertEqual(len(h.FIELDS),3);self.assertTrue(all(len(row)==3 for row in h.EXPECTED_ROWS.values()))
   for n,k in h.FUNCTION_SOURCES.items():self.assertEqual(self.generated.count(h.function(self.texts[k],n)),1)
   self.assertIn('#define CONFIG_RAETH_ESW_IGMP_SNOOP_HW',self.texts['common']);self.assertIn('#define CONFIG_GE2_INTERNAL_GMAC_P5',self.texts['common'])
@@ -55,7 +98,17 @@ class EswVlanTests(unittest.TestCase):
   self.assertTrue(h.MODEL_VARIANT['partial_hardware_writes_are_not_rolled_back']);self.assertTrue(h.MODEL_VARIANT['mutex_atomic_shims_are_not_kernel_concurrency'])
  def test_pinned_old_ioctl_reproduces_invalid_mib_copy_and_unprivileged_change(self):
   fixture=ROOT/'tests/fixtures/esw-error';manifest=json.loads((fixture/'manifest.json').read_text());raw=(fixture/'mtk_esw_ioctl.c').read_bytes();self.assertEqual(hashlib.sha256(raw).hexdigest(),manifest['mtk_esw_ioctl']['sha256'])
-  body=h.function(self.texts['ioctl'],'mtk_esw_ioctl');binary=self.build(self.generated.replace(body,raw.decode()),'old-ioctl')
+  body=h.function(self.texts['ioctl'],'mtk_esw_ioctl')
+  # The pinned ioctl predates the checked query API. Compatibility adapters
+  # leave its full original bytes intact; these negative cases exercise MIB
+  # publication and permission checks, not query return-value semantics.
+  adapters=''
+  for n,t in (('esw_status_link_port_uapi','u32'),('esw_status_link_ports','int'),('esw_status_speed_port_uapi','u32')):
+   adapters+='static u32 old_ioctl_'+n+'('+t+' p){u32 value=0;(void)'+n+'(p,&value);return value;}\n'
+  for n in ('esw_status_link_port_uapi','esw_status_link_ports','esw_status_speed_port_uapi'):adapters+='#define '+n+'(p) old_ioctl_'+n+'(p)\n'
+  replacement=adapters+raw.decode()
+  for n in ('esw_status_link_port_uapi','esw_status_link_ports','esw_status_speed_port_uapi'):replacement+='\n#undef '+n+'\n'
+  binary=self.build(self.generated.replace(body,replacement),'old-ioctl')
   for case in ('mib-ioctl-invalid-no-copy','all-admin-commands-denied-no-effects'):
    r=self.run_case(binary,case);self.assertEqual(r.returncode,0,r.stderr);self.assertNotEqual(json.loads(r.stdout),h.EXPECTED_ROWS[case])
  def test_effective_canary_authorization_vtcr_bitmap_and_publish_mutants_fail(self):

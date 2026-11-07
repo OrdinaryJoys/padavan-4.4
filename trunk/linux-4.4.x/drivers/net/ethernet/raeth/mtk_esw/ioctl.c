@@ -100,18 +100,18 @@ static long mtk_esw_ioctl(struct file *file, unsigned int req, unsigned long arg
 	switch(req)
 	{
 	case MTK_ESW_IOCTL_STATUS_LINK_PORT: /* used by rc */
-		uint_result = esw_status_link_port_uapi(uint_param);
-		if (put_user(uint_result, (unsigned int __user *)arg))
+		ioctl_result = esw_status_link_port_uapi(uint_param, &uint_result);
+		if (!ioctl_result && put_user(uint_result, (unsigned int __user *)arg))
 			ioctl_result = -EFAULT;
 		break;
 	case MTK_ESW_IOCTL_STATUS_LINK_PORTS_WAN: /* used by rc */
-		uint_result = esw_status_link_ports(1);
-		if (put_user(uint_result, (unsigned int __user *)arg))
+		ioctl_result = esw_status_link_ports(1, &uint_result);
+		if (!ioctl_result && put_user(uint_result, (unsigned int __user *)arg))
 			ioctl_result = -EFAULT;
 		break;
 	case MTK_ESW_IOCTL_STATUS_LINK_PORTS_LAN: /* used by rc */
-		uint_result = esw_status_link_ports(0);
-		if (put_user(uint_result, (unsigned int __user *)arg))
+		ioctl_result = esw_status_link_ports(0, &uint_result);
+		if (!ioctl_result && put_user(uint_result, (unsigned int __user *)arg))
 			ioctl_result = -EFAULT;
 		break;
 	case MTK_ESW_IOCTL_STATUS_LINK_CHANGED: /* used by rc */
@@ -124,8 +124,8 @@ static long mtk_esw_ioctl(struct file *file, unsigned int req, unsigned long arg
 		break;
 
 	case MTK_ESW_IOCTL_STATUS_SPEED_PORT: /* used by rc */
-		uint_result = esw_status_speed_port_uapi(uint_param);
-		if (put_user(uint_result, (unsigned int __user *)arg))
+		ioctl_result = esw_status_speed_port_uapi(uint_param, &uint_result);
+		if (!ioctl_result && put_user(uint_result, (unsigned int __user *)arg))
 			ioctl_result = -EFAULT;
 		break;
 
@@ -180,11 +180,11 @@ static long mtk_esw_ioctl(struct file *file, unsigned int req, unsigned long arg
 		break;
 
 	case MTK_ESW_IOCTL_STORM_BROADCAST:  /* used by rc */
-		change_storm_control_broadcast(uint_value);
+		ioctl_result = change_storm_control_broadcast(uint_value);
 		break;
 
 	case MTK_ESW_IOCTL_JUMBO_FRAMES: /* used by rc */
-		change_jumbo_frames_accept(uint_value);
+		ioctl_result = change_jumbo_frames_accept(uint_value);
 		break;
 
 	case MTK_ESW_IOCTL_IGMP_SNOOPING: /* used by rc */
@@ -196,7 +196,7 @@ static long mtk_esw_ioctl(struct file *file, unsigned int req, unsigned long arg
 		break;
 
 	case MTK_ESW_IOCTL_LED_MODE: /* used by rc */
-		change_led_mode(uint_value);
+		ioctl_result = change_led_mode(uint_value);
 		break;
 
 	case MTK_ESW_IOCTL_SPEED_PORT: /* used by rc */

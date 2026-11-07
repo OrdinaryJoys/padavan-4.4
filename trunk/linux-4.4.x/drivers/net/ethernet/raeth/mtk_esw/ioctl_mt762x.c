@@ -46,6 +46,11 @@ static u32 g_wan_bwan_isolation                  = SWAPI_WAN_BWAN_ISOLATION_NONE
 /* A failed flush leaves hardware uncertain even if software was restored. */
 static bool g_bridge_apply_pending;
 
+static bool g_led_apply_pending;
+static bool g_storm_apply_pending;
+static bool g_jumbo_apply_pending;
+static bool g_link_apply_pending[ESW_EPHY_ID_MAX+1];
+
 static u32 g_led_phy_mode                        = SWAPI_LED_LINK_ACT;
 
 static u32 g_jumbo_frames_enabled                = ESW_DEFAULT_JUMBO_FRAMES;
@@ -1335,7 +1340,7 @@ static int esw_port_phy_power(u32 phy_port_id, u32 power_on, int is_force)
 	return (is_power_on ^ power_on) ? 1 : 0;
 }
 
-static void esw_storm_control(u32 port_id, int set_bcast, int set_mcast, int set_ucast, u32 rate_mbps)
+static int esw_storm_control(u32 port_id, int set_bcast, int set_mcast, int set_ucast, u32 rate_mbps)
 {
 	u32 reg_bsr = 0;
 	u32 rate_unit_1000;
@@ -1372,14 +1377,17 @@ static void esw_storm_control(u32 port_id, int set_bcast, int set_mcast, int set
 		reg_bsr |= (rate_unit_10);		// STORM_10M
 	}
 
-	esw_reg_set(REG_ESW_PORT_BSR_P0 + 0x100*port_id, reg_bsr);
+	return esw_reg_write(REG_ESW_PORT_BSR_P0 + 0x100*port_id, reg_bsr);
 }
 
-static void esw_jumbo_control(u32 jumbo_frames_enabled)
+static int esw_jumbo_control(u32 jumbo_frames_enabled)
 {
 	u32 reg_gmaccr;
+	int ret;
 
-	reg_gmaccr = esw_reg_get(REG_ESW_MAC_GMACCR);
+	ret = esw_reg_read(REG_ESW_MAC_GMACCR, &reg_gmaccr);
+	if (ret)
+		return ret;
 	reg_gmaccr &= ~(0x3f);
 	reg_gmaccr |= (9u << 2);		// MAX_RX_JUMBO = 9 KB
 
@@ -1389,7 +1397,7 @@ static void esw_jumbo_control(u32 jumbo_frames_enabled)
 		reg_gmaccr |= 0x1;		// 1536 bytes
 	}
 
-	esw_reg_set(REG_ESW_MAC_GMACCR, reg_gmaccr);
+	return esw_reg_write(REG_ESW_MAC_GMACCR, reg_gmaccr);
 }
 
 static int esw_led_mode(u32 led_mode)
@@ -1411,9 +1419,10 @@ static int esw_led_mode(u32 led_mode)
 	return 0;
 }
 
-static u32 esw_status_link_port(u32 port_id)
+static int esw_status_link_port(u32 port_id, u32 *result)
 {
 	u32 reg_pmsr;
+	int ret;
 
 #if defined (RAETH_GE2_MAC_TO_GPHY)
 	if (port_id == WAN_PORT_X)
@@ -1424,20 +1433,26 @@ static u32 esw_status_link_port(u32 port_id)
 		reg_pmsr = sysRegRead(RALINK_ETH_SW_BASE+REG_ESW_MAC_PMSR_P0 + 0x100*4);	// read state from P4
 	else
 #endif
-		reg_pmsr = esw_reg_get(REG_ESW_MAC_PMSR_P0 + 0x100*port_id);
+	{
+		ret = esw_reg_read(REG_ESW_MAC_PMSR_P0 + 0x100*port_id, &reg_pmsr);
+		if (ret)
+			return ret;
+	}
 
-	return (reg_pmsr & 0x1);
+	*result = reg_pmsr & 0x1;
+	return 0;
 }
 
-static u32 esw_status_speed_port_uapi(u32 port_id_uapi)
+static int esw_status_speed_port_uapi(u32 port_id_uapi, u32 *result)
 {
 	u32 port_link, port_duplex, port_speed;
 	u32 port_eee, port_fc_rx, port_fc_tx;
 	u32 reg_pmsr;
+	int ret;
 	u32 port_id = get_port_from_uapi(port_id_uapi);
 
 	if (port_id > ESW_EPHY_ID_MAX)
-		return 0;
+		return -EINVAL;
 
 #if defined (RAETH_GE2_MAC_TO_GPHY)
 	if (port_id == WAN_PORT_X) {
@@ -1451,12 +1466,18 @@ static u32 esw_status_speed_port_uapi(u32 port_id_uapi)
 		reg_pmsr = sysRegRead(RALINK_ETH_SW_BASE+REG_ESW_MAC_PMSR_P0 + 0x100*4);	// read state from P4
 	else
 #endif
-		reg_pmsr = esw_reg_get(REG_ESW_MAC_PMSR_P0 + 0x100*port_id);
+	{
+		ret = esw_reg_read(REG_ESW_MAC_PMSR_P0 + 0x100*port_id, &reg_pmsr);
+		if (ret)
+			return ret;
+	}
 
 	port_link = (reg_pmsr & 0x1);
 
-	if (!port_link)
+	if (!port_link) {
+		*result = 0;
 		return 0;
+	}
 
 	port_duplex = (reg_pmsr >> 1) & 0x1;
 	port_speed  = (reg_pmsr >> 2) & 0x3;
@@ -1464,22 +1485,23 @@ static u32 esw_status_speed_port_uapi(u32 port_id_uapi)
 	port_fc_rx  = (reg_pmsr >> 5) & 0x1;
 	port_eee    = (reg_pmsr >> 6) & 0x3;
 
-	return ((port_link << 16) | (port_eee << 11) | (port_fc_rx << 10) | (port_fc_tx << 9) | (port_duplex << 8) | port_speed);
+	*result = ((port_link << 16) | (port_eee << 11) | (port_fc_rx << 10) | (port_fc_tx << 9) | (port_duplex << 8) | port_speed);
+	return 0;
 }
 
-static u32 esw_status_link_port_uapi(u32 port_id_uapi)
+static int esw_status_link_port_uapi(u32 port_id_uapi, u32 *result)
 {
 	u32 port_id = get_port_from_uapi(port_id_uapi);
 
 	if (port_id > ESW_EPHY_ID_MAX)
-		return 0;
+		return -EINVAL;
 
-	return esw_status_link_port(port_id);
+	return esw_status_link_port(port_id, result);
 }
 
-static u32 esw_status_link_ports(int is_wan_ports)
+static int esw_status_link_ports(int is_wan_ports, u32 *result)
 {
-	int i;
+	int i, ret;
 	u32 port_link = 0;
 	u32 portmask;
 
@@ -1490,13 +1512,16 @@ static u32 esw_status_link_ports(int is_wan_ports)
 
 	for (i = 0; i <= ESW_EPHY_ID_MAX; i++) {
 		if ((portmask >> i) & 0x1) {
-			port_link = esw_status_link_port(i);
+			ret = esw_status_link_port(i, &port_link);
+			if (ret)
+				return ret;
 			if (port_link)
 				break;
 		}
 	}
 
-	return port_link;
+	*result = port_link;
+	return 0;
 }
 
 static u32 esw_status_link_changed(void)
@@ -1834,9 +1859,17 @@ static int change_port_link_mode_uapi(u32 port_id_uapi, u32 port_link_mode)
 	if (port_id > ESW_EPHY_ID_MAX)
 		return -EINVAL;
 
-	if (g_port_link_mode[port_id] == port_link_mode)
+	/* The public layout currently defines speed 0..9/15 and flow 0..2. */
+	if ((port_link_mode & ~0x30fu) ||
+	    ((port_link_mode & 0x0f) > SWAPI_LINK_SPEED_MODE_FORCE_10_HD &&
+	     (port_link_mode & 0x0f) != SWAPI_LINK_SPEED_MODE_FORCE_POWER_OFF) ||
+	    ((port_link_mode >> 8) & 3) > SWAPI_LINK_FLOW_CONTROL_DISABLE)
+		return -EINVAL;
+
+	if (g_port_link_mode[port_id] == port_link_mode && !g_link_apply_pending[port_id])
 		return 0;
 
+	g_link_apply_pending[port_id] = true;
 	phy_mdio_addr = port_id;
 
 	i_port_speed =  (port_link_mode & 0x0F);
@@ -1955,7 +1988,8 @@ static int change_port_link_mode_uapi(u32 port_id_uapi, u32 port_link_mode)
 		}
 		
 		/* set 1000Base-T control register [8,9] */
-		mii_mgr_read(phy_mdio_addr, 9, &esw_phy_gcr);
+		if (!mii_mgr_read(phy_mdio_addr, 9, &esw_phy_gcr))
+			return -EIO;
 		if (i_port_speed <= SWAPI_LINK_SPEED_MODE_AUTO_1000_FD) {
 			/* enable 1000Base-T Advertisement */
 			esw_phy_gcr |=  ((1<<9)|(1<<8));
@@ -1963,12 +1997,14 @@ static int change_port_link_mode_uapi(u32 port_id_uapi, u32 port_link_mode)
 			/* disable 1000Base-T Advertisement */
 			esw_phy_gcr &= ~((1<<9)|(1<<8));
 		}
-		mii_mgr_write(phy_mdio_addr, 9, esw_phy_gcr);
+		if (!mii_mgr_write(phy_mdio_addr, 9, esw_phy_gcr))
+			return -EIO;
 	}
 #endif
 
 	/* set PHY ability */
-	mii_mgr_write(phy_mdio_addr, 4, esw_phy_ana);
+	if (!mii_mgr_write(phy_mdio_addr, 4, esw_phy_ana))
+		return -EIO;
 
 	if (i_port_power) {
 		if (!(esw_phy_mcr & (1<<12))) {
@@ -1976,7 +2012,8 @@ static int change_port_link_mode_uapi(u32 port_id_uapi, u32 port_link_mode)
 			esw_phy_mcr |= (1<<11);
 			
 			/* set PHY mode */
-			mii_mgr_write(phy_mdio_addr, 0, esw_phy_mcr);
+			if (!mii_mgr_write(phy_mdio_addr, 0, esw_phy_mcr))
+				return -EIO;
 			
 			/* wait for PHY down */
 			msleep(500);
@@ -1993,9 +2030,12 @@ static int change_port_link_mode_uapi(u32 port_id_uapi, u32 port_link_mode)
 	}
 
 	/* set PHY mode */
-	mii_mgr_write(phy_mdio_addr, 0, esw_phy_mcr);
+	if (!mii_mgr_write(phy_mdio_addr, 0, esw_phy_mcr))
+		return -EIO;
 
 	g_port_link_mode[port_id] = port_link_mode;
+	g_port_phy_power[port_id] = i_port_power;
+	g_link_apply_pending[port_id] = false;
 
 	if (!i_port_power) {
 		link_desc = "Power OFF";
@@ -2008,43 +2048,47 @@ static int change_port_link_mode_uapi(u32 port_id_uapi, u32 port_link_mode)
 	return 0;
 }
 
-static void change_storm_control_broadcast(u32 control_rate_mbps)
+static int change_storm_control_broadcast(u32 control_rate_mbps)
 {
 	u32 i;
+	int ret;
 	char rate_desc[16];
-
 	if (control_rate_mbps >= 1024)
 		control_rate_mbps = 0;
-
-	if (g_storm_rate_limit != control_rate_mbps) {
-		g_storm_rate_limit = control_rate_mbps;
-		
-		if (control_rate_mbps > 0)
-			snprintf(rate_desc, sizeof(rate_desc), "%d mbps", control_rate_mbps);
-		else
-			strcpy(rate_desc, "off");
-		
-		printk("%s - set broadcast storm control rate as: %s\n", MTK_ESW_DEVNAME, rate_desc);
-		
-		for (i = 0; i <= ESW_EPHY_ID_MAX; i++) {
-			if ((1u << i) & ESW_MASK_EXCLUDE)
-				continue;
-			esw_storm_control(i, 1, 0, 0, control_rate_mbps);
-		}
+	if (g_storm_rate_limit == control_rate_mbps && !g_storm_apply_pending)
+		return 0;
+	g_storm_apply_pending = true;
+	for (i = 0; i <= ESW_EPHY_ID_MAX; i++) {
+		if ((1u << i) & ESW_MASK_EXCLUDE)
+			continue;
+		ret = esw_storm_control(i, 1, 0, 0, control_rate_mbps);
+		if (ret)
+			return ret;
 	}
+	g_storm_rate_limit = control_rate_mbps;
+	g_storm_apply_pending = false;
+	if (control_rate_mbps > 0)
+		snprintf(rate_desc, sizeof(rate_desc), "%d mbps", control_rate_mbps);
+	else
+		strcpy(rate_desc, "off");
+	printk("%s - set broadcast storm control rate as: %s\n", MTK_ESW_DEVNAME, rate_desc);
+	return 0;
 }
 
-static void change_jumbo_frames_accept(u32 jumbo_frames_enabled)
+static int change_jumbo_frames_accept(u32 jumbo_frames_enabled)
 {
-	if (jumbo_frames_enabled)
-		jumbo_frames_enabled = 1;
-
-	if (g_jumbo_frames_enabled != jumbo_frames_enabled) {
-		g_jumbo_frames_enabled = jumbo_frames_enabled;
-		printk("%s - jumbo frames accept: %d bytes\n", MTK_ESW_DEVNAME, (jumbo_frames_enabled) ? 9000 : 1536);
-		
-		esw_jumbo_control(jumbo_frames_enabled);
-	}
+	int ret;
+	jumbo_frames_enabled = !!jumbo_frames_enabled;
+	if (g_jumbo_frames_enabled == jumbo_frames_enabled && !g_jumbo_apply_pending)
+		return 0;
+	g_jumbo_apply_pending = true;
+	ret = esw_jumbo_control(jumbo_frames_enabled);
+	if (ret)
+		return ret;
+	g_jumbo_frames_enabled = jumbo_frames_enabled;
+	g_jumbo_apply_pending = false;
+	printk("%s - jumbo frames accept: %d bytes\n", MTK_ESW_DEVNAME, jumbo_frames_enabled ? 9000 : 1536);
+	return 0;
 }
 
 static int change_igmp_static_ports(u32 ports_mask)
@@ -2078,15 +2122,21 @@ static int change_igmp_snooping_control(u32 igmp_snooping_enabled)
 	return 0;
 }
 
-static void change_led_mode(u32 led_mode)
+static int change_led_mode(u32 led_mode)
 {
+	int ret;
 	if (led_mode != SWAPI_LED_OFF)
 		led_mode = SWAPI_LED_LINK_ACT;
-
-	if (g_led_phy_mode != led_mode) {
-		g_led_phy_mode = led_mode;
-		esw_led_mode(led_mode);
-	}
+	if (g_led_phy_mode == led_mode && !g_led_apply_pending)
+		return 0;
+	/* A failed write may have reached hardware; even the old request must retry. */
+	g_led_apply_pending = true;
+	ret = esw_led_mode(led_mode);
+	if (ret)
+		return ret;
+	g_led_phy_mode = led_mode;
+	g_led_apply_pending = false;
+	return 0;
 }
 
 static int change_vlan_rule(u32 vlan_rule_id, u32 vlan_rule)
@@ -2136,6 +2186,12 @@ int esw_ioctl_init_post(void)
 	old_pvid = g_vlan_pvid_wan_untagged;
 	atomic_set(&g_switch_inited, 0);
 	atomic_set(&g_switch_allow_irq, 0);
+	/* Hardware reinitialization invalidates the prior control-cache epoch.
+	 * Subsequent requests must replay even when their cached value matches. */
+	g_led_apply_pending = true;
+	g_storm_apply_pending = true;
+	g_jumbo_apply_pending = true;
+	memset(g_link_apply_pending, 1, sizeof(g_link_apply_pending));
 	/* configure bridge isolation mode via forwards mask */
 	ret = esw_mask_bridge_isolate(g_wan_bridge_mode, g_wan_bwan_isolation);
 	if (ret)
@@ -2161,6 +2217,7 @@ int esw_ioctl_init_post(void)
 	ret = esw_led_mode(g_led_phy_mode);
 	if (ret)
 		goto out;
+	g_led_apply_pending = false;
 
 	atomic_set(&g_switch_inited, 1);
 	atomic_set(&g_switch_allow_irq, 1);
