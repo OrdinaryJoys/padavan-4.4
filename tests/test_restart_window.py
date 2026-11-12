@@ -104,6 +104,14 @@ class RestartWindowTests(unittest.TestCase):
                 row = self.run_case(binary,case)
                 self.assertEqual((row['reasons'],row['injected'],row['system_reset']), (2,1,1))
 
+    def test_final_read_race_is_reproduced_as_an_unresolved_boundary(self):
+        # This is a counterexample, not a claimed safety gate: it prevents a
+        # software review from treating the two observations as atomic reset.
+        for pci, binary in self.current:
+            row = self.run_case(binary, 'after-final-read')
+            self.assertEqual((row['reasons'], row['gate_reads'], row['system_reset']), (2, 2, 1))
+            self.assertEqual((row['injected'], row['terminal'], row['pci_reset']), (1, 2, pci))
+
     def test_whole_bodies_and_board_registration_remain_bound(self):
         code = h.generate(self.texts)
         for name, key in h.FUNCTION_SOURCES.items():

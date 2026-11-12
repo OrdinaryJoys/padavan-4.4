@@ -179,6 +179,9 @@ struct spi_nor {
 	enum read_mode		flash_read;
 	bool			sst_write_second;
 	u32			flags;
+	/* Protected by lock; a retired addressing mode cannot admit MTD I/O. */
+	bool			restore_started;
+	int			restore_error;
 	u8			cmd_buf[SPI_NOR_MAX_CMD_SIZE];
 
 	int (*prepare)(struct spi_nor *nor, enum spi_nor_ops ops);
@@ -227,9 +230,12 @@ static inline struct device_node *spi_nor_get_flash_node(struct spi_nor *nor)
 int spi_nor_scan(struct spi_nor *nor, const char *name, enum read_mode mode);
 
 /**
- * spi_nor_restore_addr_mode() - restore the status of SPI NOR
+ * spi_nor_restore() - restore the boot addressing mode of SPI NOR
  * @nor:	the spi_nor structure
+ *
+ * Returns zero on success or an error. Instances requiring mode restoration
+ * retire MTD I/O before changing mode; repeated calls return the saved result.
  */
-void spi_nor_restore(struct spi_nor *nor);
+int spi_nor_restore(struct spi_nor *nor);
 
 #endif

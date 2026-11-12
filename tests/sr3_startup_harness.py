@@ -511,6 +511,7 @@ def production_fragments(texts):
 
 PREFIX = r'''
 #include <stdint.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -558,7 +559,7 @@ struct mtd_info {
 struct spi_nor {
  struct mtd_info mtd;void*priv;struct device*dev;struct device_node*flash_node;
  const struct flash_info*info;unsigned int addr_width,program_opcode,read_opcode,erase_opcode,read_dummy,page_size,flash_read,flags;
- int lock;u8 cmd_buf[8];
+ int lock,restore_started,restore_error;u8 cmd_buf[8];
  int (*read_reg)(struct spi_nor*,u8,u8*,int);
  int (*write_reg)(struct spi_nor*,u8,u8*,int);
  int (*read)(struct spi_nor*,loff_t,size_t,size_t*,u_char*);
@@ -585,6 +586,8 @@ static void trace(char c){size_t n=strlen(sequence);if(n+1>=sizeof(sequence))abo
 #define pr_err(...) ((void)++errors)
 #define pr_debug(...) ((void)0)
 #define mutex_init(p) ((void)(p))
+#define REBOOT_DMA_UNKNOWN (1U << 2)
+static void reboot_dma_failure_report(unsigned int reason){(void)reason;abort();}
 static void cond_resched(void){jiffies+=10UL*HZ;}
 static int spi_write_then_read(struct spi_device*spi,const void*tx,unsigned int tlen,void*rx,unsigned int rlen){
  u8 code;int pending,forever;(void)spi;

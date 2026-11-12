@@ -55,6 +55,7 @@ static unsigned int atomic_read(atomic_t *p) {
     unsigned int value = __atomic_load_n(&p->value, __ATOMIC_SEQ_CST);
     gate_reads++;
     if (gate_reads == 1) inject("after-first-read");
+    if (gate_reads == 2) inject("after-final-read");
     return value;
 }
 static void local_irq_disable(void) {

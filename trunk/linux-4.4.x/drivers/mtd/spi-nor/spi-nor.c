@@ -15,6 +15,7 @@
 #include <linux/module.h>
 #include <linux/device.h>
 #include <linux/mutex.h>
+#include <linux/reboot.h>
 #include <linux/math64.h>
 #include <linux/sizes.h>
 
@@ -254,6 +255,24 @@ static void spi_nor_set_4byte_opcodes(struct spi_nor *nor,
 	nor->erase_opcode = spi_nor_convert_3to4_erase(nor->erase_opcode);
 }
 
+static int spi_nor_wait_till_ready(struct spi_nor *nor);
+
+/* Settle even a failed command: a transport error need not mean rejection.
+ * Do not issue WRDI or another command while the result remains busy/unknown. */
+static int spi_nor_finish_mode_write(struct spi_nor *nor, int status, bool wrdi)
+{
+	int ret = spi_nor_wait_till_ready(nor);
+
+	if (ret)
+		return ret;
+	if (wrdi) {
+		ret = write_disable(nor);
+		if (!status)
+			status = ret;
+	}
+	return status;
+}
+
 /* Enable/disable 4-byte addressing mode. */
 static inline int set_4byte(struct spi_nor *nor, const struct flash_info *info,
 			    int enable)
@@ -261,14 +280,28 @@ static inline int set_4byte(struct spi_nor *nor, const struct flash_info *info,
 	int status;
 	u8 cmd;
 
+	status = spi_nor_wait_till_ready(nor);
+	if (status)
+		return status;
+	if (JEDEC_MFR(info) == SNOR_MFR_WINBOND) {
+		status = read_cr(nor);
+		if (status < 0)
+			return status;
+		/* W25Q256 SUS: a suspended program/erase must not be reset. */
+		if (status & BIT(7))
+			return -EBUSY;
+	}
+
 	switch (JEDEC_MFR(info)) {
 	case SNOR_MFR_MICRON:
 	case SNOR_MFR_MACRONIX:
 	case SNOR_MFR_WINBOND:
-		write_enable(nor);
+		status = write_enable(nor);
+		if (status)
+			return status;
 		cmd = enable ? SPINOR_OP_EN4B : SPINOR_OP_EX4B;
 		status = nor->write_reg(nor, cmd, NULL, 0);
-		write_disable(nor);
+		status = spi_nor_finish_mode_write(nor, status, true);
 
 		if (!status && !enable &&
 		    JEDEC_MFR(info) == SNOR_MFR_WINBOND) {
@@ -278,17 +311,21 @@ static inline int set_4byte(struct spi_nor *nor, const struct flash_info *info,
 			* 3-byte-address reads come from the second 16M.
 			* We must clear the register to enable normal behavior.
 			*/
-			write_enable(nor);
+			status = write_enable(nor);
+			if (status)
+				return status;
 			nor->cmd_buf[0] = 0;
-			nor->write_reg(nor, SPINOR_OP_WREAR, nor->cmd_buf, 1);
-			write_disable(nor);
+			status = nor->write_reg(nor, SPINOR_OP_WREAR,
+					       nor->cmd_buf, 1);
+			status = spi_nor_finish_mode_write(nor, status, true);
 		}
 
 		return status;
 	default:
 		/* Spansion style */
 		nor->cmd_buf[0] = enable << 7;
-		return nor->write_reg(nor, SPINOR_OP_BRWR, nor->cmd_buf, 1);
+		status = nor->write_reg(nor, SPINOR_OP_BRWR, nor->cmd_buf, 1);
+		return spi_nor_finish_mode_write(nor, status, false);
 	}
 }
 static inline int spi_nor_sr_ready(struct spi_nor *nor)
@@ -374,6 +411,14 @@ static int spi_nor_lock_and_prep(struct spi_nor *nor, enum spi_nor_ops ops)
 	int ret = 0;
 
 	mutex_lock(&nor->lock);
+
+	/* Address-mode restoration retires this instance, including failures.
+	 * A queued MTD operation must not use four-byte commands on a chip whose
+	 * address state is now three-byte or indeterminate. */
+	if (nor->restore_started) {
+		mutex_unlock(&nor->lock);
+		return -ESHUTDOWN;
+	}
 
 	if (nor->prepare) {
 		ret = nor->prepare(nor, ops);
@@ -1271,22 +1316,63 @@ static int spi_nor_check(struct spi_nor *nor)
 	return 0;
 }
 
-void spi_nor_restore(struct spi_nor *nor)
+int spi_nor_restore(struct spi_nor *nor)
 {
+	int ret;
+	u8 reg;
+
 	/* restore the addressing mode */
 	if ((nor->addr_width == 4) &&
 		(JEDEC_MFR(nor->info) != SNOR_MFR_SPANSION) &&
 		!(nor->info->flags & SPI_NOR_4B_OPCODES)) {
-		set_4byte(nor, nor->info, 0);
-		pr_info("%s: restore spi nor to 3B mode.\n", __func__);
+		mutex_lock(&nor->lock);
+		if (nor->restore_started) {
+			ret = nor->restore_error;
+			goto unlock;
+		}
+		nor->restore_started = true;
+		if (nor->prepare) {
+			ret = nor->prepare(nor, SPI_NOR_OPS_WRITE);
+			if (ret)
+				goto record;
+		}
+		ret = set_4byte(nor, nor->info, 0);
+		if (ret)
+			goto unprepare;
 
 		if (JEDEC_MFR(nor->info) == SNOR_MFR_WINBOND) {
-			nor->write_reg(nor, 0x66, NULL, 0);
-			nor->write_reg(nor, 0x99, NULL, 0);
-			pr_info("%s: reset spi-nor.\n", __func__);
+			ret = nor->write_reg(nor, 0x66, NULL, 0);
+			if (ret)
+				goto unprepare;
+			ret = nor->write_reg(nor, 0x99, NULL, 0);
+			/* Preserve the reset settling interval even on transport error. */
 			udelay(100);
+			ret = spi_nor_finish_mode_write(nor, ret, false);
+			if (ret)
+				goto unprepare;
+			/* Reset reloads ADP: a successful command alone does not prove
+			 * the boot ROM can use three-byte addresses in the first bank. */
+			ret = nor->read_reg(nor, 0x15, &reg, 1);
+			if (ret)
+				goto unprepare;
+			if (reg & BIT(0)) {
+				ret = -EIO;
+				goto unprepare;
+			}
+			ret = nor->read_reg(nor, 0xc8, &reg, 1);
+			if (!ret && reg)
+				ret = -EIO;
 		}
+	unprepare:
+		if (nor->unprepare)
+			nor->unprepare(nor, SPI_NOR_OPS_WRITE);
+	record:
+		nor->restore_error = ret;
+	unlock:
+		mutex_unlock(&nor->lock);
+		return ret;
 	}
+	return 0;
 }
 EXPORT_SYMBOL_GPL(spi_nor_restore);
 
@@ -1383,6 +1469,8 @@ int spi_nor_scan(struct spi_nor *nor, const char *name, enum read_mode mode)
 	}
 
 	mutex_init(&nor->lock);
+	nor->restore_started = false;
+	nor->restore_error = 0;
 
 	/*
 	 * Atmel, SST, Intel/Numonyx, and others serial NOR tend to power up
@@ -1512,8 +1600,15 @@ int spi_nor_scan(struct spi_nor *nor, const char *name, enum read_mode mode)
 		if (JEDEC_MFR(info) == SNOR_MFR_SPANSION ||
 		    info->flags & SPI_NOR_4B_OPCODES)
 			spi_nor_set_4byte_opcodes(nor, info);
-		else
-			set_4byte(nor, info, 1);
+		else {
+			ret = set_4byte(nor, info, 1);
+			if (ret) {
+				/* The command may have reached flash despite an error;
+				 * do not reboot through an unknown boot-ROM address mode. */
+				reboot_dma_failure_report(REBOOT_DMA_UNKNOWN);
+				return ret;
+			}
+		}
 	} else {
 		nor->addr_width = 3;
 	}

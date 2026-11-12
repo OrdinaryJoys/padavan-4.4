@@ -19,6 +19,7 @@
 #include <linux/errno.h>
 #include <linux/module.h>
 #include <linux/device.h>
+#include <linux/reboot.h>
 
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
@@ -247,18 +248,28 @@ static int m25p_probe(struct spi_device *spi)
 static int m25p_remove(struct spi_device *spi)
 {
 	struct m25p	*flash = spi_get_drvdata(spi);
+	int ret;
 
-	spi_nor_restore(&flash->spi_nor);
-
-	/* Clean up MTD stuff. */
-	return mtd_device_unregister(&flash->spi_nor.mtd);
+	/* Do not change addressing while registered MTD users still own it. */
+	ret = mtd_device_unregister(&flash->spi_nor.mtd);
+	if (ret)
+		return ret;
+	ret = spi_nor_restore(&flash->spi_nor);
+	if (ret)
+		reboot_dma_failure_report(REBOOT_DMA_UNKNOWN);
+	return ret;
 }
 
 static void m25p_shutdown(struct spi_device *spi)
 {
 	struct m25p	*flash = spi_get_drvdata(spi);
+	int ret = spi_nor_restore(&flash->spi_nor);
 
-	spi_nor_restore(&flash->spi_nor);
+	if (ret) {
+		/* device_shutdown has no return status: latch the terminal gate. */
+		reboot_dma_failure_report(REBOOT_DMA_UNKNOWN);
+		dev_err(&spi->dev, "flash address restore failed (%d); restart blocked\n", ret);
+	}
 }
 
 /*
@@ -319,6 +330,8 @@ MODULE_DEVICE_TABLE(of, m25p_of_table);
 static struct spi_driver m25p80_driver = {
 	.driver = {
 		.name	= "m25p80",
+		/* A firmware-backed device cannot safely be detached by sysfs. */
+		.suppress_bind_attrs = true,
 		.of_match_table = m25p_of_table,
 	},
 	.id_table	= m25p_ids,
