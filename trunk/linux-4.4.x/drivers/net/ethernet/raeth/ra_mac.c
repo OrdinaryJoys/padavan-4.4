@@ -66,7 +66,7 @@ void set_mac_address(unsigned char p[6])
 	reg_value = (p[0] << 8) | (p[1]);
 	sys_reg_write(GDMA1_MAC_ADRH, reg_value);
 
-	reg_value = (unsigned long)((p[2] << 24) | (p[3] << 16) | (p[4] << 8) | p[5]);
+	reg_value = ((u32)p[2] << 24) | ((u32)p[3] << 16) | ((u32)p[4] << 8) | p[5];
 	sys_reg_write(GDMA1_MAC_ADRL, reg_value);
 }
 
@@ -77,7 +77,7 @@ void set_mac2_address(unsigned char p[6])
 	reg_value = (p[0] << 8) | (p[1]);
 	sys_reg_write(GDMA2_MAC_ADRH, reg_value);
 
-	reg_value = (unsigned long)((p[2] << 24) | (p[3] << 16) | (p[4] << 8) | p[5]);
+	reg_value = ((u32)p[2] << 24) | ((u32)p[3] << 16) | ((u32)p[4] << 8) | p[5];
 	sys_reg_write(GDMA2_MAC_ADRL, reg_value);
 }
 

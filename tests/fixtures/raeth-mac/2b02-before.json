@@ -1,0 +1,25 @@
+{
+  "commit": "2b02d767a1f1f53f6a8e318417439382cdaf722b",
+  "functions": {
+    "ei_set_mac_addr": {
+      "path": "trunk/linux-4.4.x/drivers/net/ethernet/raeth/raether.c",
+      "body": "static int ei_set_mac_addr(struct net_device *dev, void *p)\n{\n\tstruct sockaddr *addr = p;\n\n\tif (!is_valid_ether_addr(addr->sa_data))\n\t\treturn -EADDRNOTAVAIL;\n\n\tmemcpy(dev->dev_addr, addr->sa_data, dev->addr_len);\n\tif (netif_running(dev))\n\t\treturn -EBUSY;\n\n\tset_mac_address(dev->dev_addr);\n\n\treturn 0;\n}"
+    },
+    "ei_set_mac2_addr": {
+      "path": "trunk/linux-4.4.x/drivers/net/ethernet/raeth/raether.c",
+      "body": "static int ei_set_mac2_addr(struct net_device *dev, void *p)\n{\n\tstruct sockaddr *addr = p;\n\n\tif (!is_valid_ether_addr(addr->sa_data))\n\t\treturn -EADDRNOTAVAIL;\n\n\tmemcpy(dev->dev_addr, addr->sa_data, dev->addr_len);\n\tif (netif_running(dev))\n\t\treturn -EBUSY;\n\n\tset_mac2_address(dev->dev_addr);\n\n\treturn 0;\n}"
+    },
+    "ei_mac_addr_setting": {
+      "path": "trunk/linux-4.4.x/drivers/net/ethernet/raeth/raether.c",
+      "body": "static void ei_mac_addr_setting(struct net_device *dev)\n{\n\t/* If the mac address is invalid, use random mac address  */\n\tif (!is_valid_ether_addr(dev->dev_addr)) {\n\t\trandom_ether_addr(dev->dev_addr);\n\t\tdev->addr_assign_type = NET_ADDR_RANDOM;\n\t}\n\n\tei_set_mac_addr(dev, dev->dev_addr);\n}"
+    },
+    "set_mac_address": {
+      "path": "trunk/linux-4.4.x/drivers/net/ethernet/raeth/ra_mac.c",
+      "body": "void set_mac_address(unsigned char p[6])\n{\n\tunsigned long reg_value;\n\n\treg_value = (p[0] << 8) | (p[1]);\n\tsys_reg_write(GDMA1_MAC_ADRH, reg_value);\n\n\treg_value = (unsigned long)((p[2] << 24) | (p[3] << 16) | (p[4] << 8) | p[5]);\n\tsys_reg_write(GDMA1_MAC_ADRL, reg_value);\n}"
+    },
+    "set_mac2_address": {
+      "path": "trunk/linux-4.4.x/drivers/net/ethernet/raeth/ra_mac.c",
+      "body": "void set_mac2_address(unsigned char p[6])\n{\n\tunsigned long reg_value;\n\n\treg_value = (p[0] << 8) | (p[1]);\n\tsys_reg_write(GDMA2_MAC_ADRH, reg_value);\n\n\treg_value = (unsigned long)((p[2] << 24) | (p[3] << 16) | (p[4] << 8) | p[5]);\n\tsys_reg_write(GDMA2_MAC_ADRL, reg_value);\n}"
+    }
+  }
+}

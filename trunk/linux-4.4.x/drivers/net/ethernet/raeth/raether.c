@@ -109,10 +109,10 @@ static int ei_set_mac_addr(struct net_device *dev, void *p)
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EADDRNOTAVAIL;
 
-	memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
 	if (netif_running(dev))
 		return -EBUSY;
 
+	memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
 	set_mac_address(dev->dev_addr);
 
 	return 0;
@@ -125,10 +125,10 @@ static int ei_set_mac2_addr(struct net_device *dev, void *p)
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EADDRNOTAVAIL;
 
-	memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
 	if (netif_running(dev))
 		return -EBUSY;
 
+	memcpy(dev->dev_addr, addr->sa_data, dev->addr_len);
 	set_mac2_address(dev->dev_addr);
 
 	return 0;
@@ -820,7 +820,8 @@ static void ei_mac_addr_setting(struct net_device *dev)
 		dev->addr_assign_type = NET_ADDR_RANDOM;
 	}
 
-	ei_set_mac_addr(dev, dev->dev_addr);
+	/* ndo_set_mac_address takes a sockaddr, not a raw six-byte address. */
+	set_mac_address(dev->dev_addr);
 }
 
 static void ei_mac2_addr_setting(struct net_device *dev)
