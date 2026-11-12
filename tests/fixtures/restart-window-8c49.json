@@ -1,0 +1,21 @@
+{
+  "commit": "8c49bb0192b6cbbefe1f1dd6be383443ce705495",
+  "functions": {
+    "reboot_dma_failure_report": {
+      "path": "trunk/linux-4.4.x/kernel/reboot.c",
+      "body": "void reboot_dma_failure_report(unsigned int reasons)\n{\n\tatomic_or(reasons ? reasons : REBOOT_DMA_UNKNOWN,\n\t\t  &reboot_dma_failure_reasons);\n}"
+    },
+    "reboot_dma_failures": {
+      "path": "trunk/linux-4.4.x/kernel/reboot.c",
+      "body": "int reboot_dma_failures(void)\n{\n\treturn (unsigned int)atomic_read(&reboot_dma_failure_reasons);\n}"
+    },
+    "reboot_dma_failure_check": {
+      "path": "trunk/linux-4.4.x/kernel/reboot.c",
+      "body": "void reboot_dma_failure_check(bool may_sleep)\n{\n\tunsigned int reasons = reboot_dma_failures();\n\n\tif (!reasons)\n\t\treturn;\n\tpr_emerg(\"DMA ownership unsafe (reasons %#x); software restart blocked\\n\",\n\t\t reasons);\n\t/* device_shutdown() has already run on the normal path. Never return\n\t * to that partially shut-down system, even after a spurious wakeup.\n\t * Emergency/direct reset can arrive with IRQs off and must not sleep.\n\t */\n\tif (!may_sleep)\n\t\tlocal_irq_disable();\n\tfor (;;) {\n\t\tif (may_sleep)\n\t\t\tschedule_timeout_uninterruptible(MAX_SCHEDULE_TIMEOUT);\n\t\telse\n\t\t\tcpu_relax();\n\t}\n}"
+    },
+    "ralink_restart": {
+      "path": "trunk/linux-4.4.x/arch/mips/ralink/reset.c",
+      "body": "static void ralink_restart(char *command)\n{\n\t/* Cover direct/emergency callers and failures reported after prepare. */\n\treboot_dma_failure_check(false);\n\tif (IS_ENABLED(CONFIG_PCI)) {\n\t\trt_sysc_m32(0, RSTCTL_RESET_PCI, SYSC_REG_RESET_CTRL);\n\t\tmdelay(50);\n\t}\n\n\tlocal_irq_disable();\n\trt_sysc_w32(RSTCTL_RESET_SYSTEM, SYSC_REG_RESET_CTRL);\n\tunreachable();\n}"
+    }
+  }
+}

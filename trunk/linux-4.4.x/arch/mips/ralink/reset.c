@@ -87,6 +87,8 @@ void ralink_rst_init(void)
 
 static void ralink_restart(char *command)
 {
+	/* Stop local IRQ reporters before inspecting the sticky failure state. */
+	local_irq_disable();
 	/* Cover direct/emergency callers and failures reported after prepare. */
 	reboot_dma_failure_check(false);
 	if (IS_ENABLED(CONFIG_PCI)) {
@@ -94,7 +96,10 @@ static void ralink_restart(char *command)
 		mdelay(50);
 	}
 
-	local_irq_disable();
+	/* Another CPU can report while PCI reset settles. Never proceed to the
+	 * system reset with a failure visible after that wait. This is a final
+	 * observation, not proof that all other CPUs or DMA have stopped. */
+	reboot_dma_failure_check(false);
 	rt_sysc_w32(RSTCTL_RESET_SYSTEM, SYSC_REG_RESET_CTRL);
 	unreachable();
 }
