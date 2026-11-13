@@ -389,7 +389,6 @@ static int mt7621_spi_remove(struct platform_device *pdev)
 	master = dev_get_drvdata(&pdev->dev);
 	ms = spi_master_get_devdata(master);
 
-	hclk = ms->hclk;
 #ifdef CONFIG_K2P_RESET_GUARD
 	reset_device = ms->reset_device;
 	/* The queue is closed and joined by unregister; validate the
@@ -399,6 +398,7 @@ static int mt7621_spi_remove(struct platform_device *pdev)
 	if (!idle)
 		reboot_guard_fail(&reset_device, REBOOT_DMA_UNKNOWN);
 #endif
+	hclk = ms->hclk;
 	spi_unregister_master(master);
 	dev_set_drvdata(&pdev->dev, NULL);
 	clk_disable_unprepare(hclk);
