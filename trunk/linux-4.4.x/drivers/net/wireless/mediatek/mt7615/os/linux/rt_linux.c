@@ -3215,6 +3215,10 @@ NDIS_STATUS RtmpOSTaskKill(RTMP_OS_TASK *pTaskOrg)
 
 	if (pTask != NULL) {
 		Status = __RtmpOSTaskKill(pTask);
+#ifdef CONFIG_K2P_RESET_GUARD
+		if (Status != NDIS_STATUS_SUCCESS)
+			return Status;
+#endif
 		RtmpOSTaskFree(pTaskOrg);
 		return Status;
 	}

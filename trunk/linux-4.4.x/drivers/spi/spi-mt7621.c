@@ -394,7 +394,7 @@ static int mt7621_spi_remove(struct platform_device *pdev)
 	/* The queue is closed and joined by unregister; validate the
 	 * controller separately before returning its terminal ownership.
 	 */
-	idle = !mt7621_spi_busy_wait(ms);
+	idle = !reset_device.generation || !mt7621_spi_busy_wait(ms);
 	if (!idle)
 		reboot_guard_fail(&reset_device, REBOOT_DMA_UNKNOWN);
 #endif

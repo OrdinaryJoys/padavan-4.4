@@ -569,6 +569,7 @@ VOID RtmpDmaShutdown(RTMP_ADAPTER *pAd)
 	RtmpDmaLifecycleLock(pAd);
 	if (RtmpDmaQuarantined(pAd) || pAd->dma_lifecycle_pinned ||
 	    VIRTUAL_IF_NUM(pAd) || pAd->dma_running || pAd->dma_irq_registered ||
+	    RTMP_OS_TASK_LEGALITY(&pAd->cmdQTask) ||
 	    !RtmpPciDrain(obj->pci_dev))
 		RtmpDmaQuarantine(pAd);
 	else

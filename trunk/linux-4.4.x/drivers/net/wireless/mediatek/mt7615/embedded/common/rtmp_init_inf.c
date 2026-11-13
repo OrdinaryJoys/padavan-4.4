@@ -167,6 +167,10 @@ INT rtmp_sys_task_exit(RTMP_ADAPTER *pAd)
 	if (RtmpDmaQuarantined(pAd))
 		return NDIS_STATUS_FAILURE;
 	RtmpMgmtTaskExit(pAd);
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (RtmpDmaQuarantined(pAd))
+		return NDIS_STATUS_FAILURE;
+#endif
 #ifdef ERR_RECOVERY
 	if (!pAd->ErrRecoveryCtl.queues_retired) {
 #endif
@@ -194,6 +198,10 @@ static INT rtmp_sys_exit(RTMP_ADAPTER *pAd)
 		return FALSE;
 	HwCtrlExit(pAd);
 	RtmpMgmtTaskExit(pAd);
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (RtmpDmaQuarantined(pAd))
+		return FALSE;
+#endif
 #ifdef MT_MAC
 	ExitTxSTypeTable(pAd);
 #endif
@@ -338,6 +346,10 @@ fail:
 	}
 	if (mgmt)
 		RtmpMgmtTaskExit(pAd);
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (RtmpDmaQuarantined(pAd))
+		return FALSE;
+#endif
 	if (qm)
 		qm_exit(pAd);
 	if (tr && tr_ctl_exit(pAd) != NDIS_STATUS_SUCCESS) {
@@ -889,6 +901,10 @@ VOID RTMPDrvClose(VOID *pAdSrc, VOID *net_dev)
 #endif /* LED_CONTROL_SUPPORT */
 	/* Close kernel threads*/
 	RtmpMgmtTaskExit(pAd);
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (RtmpDmaQuarantined(pAd))
+		return;
+#endif
 #ifdef RTMP_MAC_PCI
 	{
 		if (RTMP_TEST_FLAG(pAd, fRTMP_ADAPTER_INTERRUPT_ACTIVE)) {

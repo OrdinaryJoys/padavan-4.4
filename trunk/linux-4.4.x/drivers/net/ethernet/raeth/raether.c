@@ -3850,6 +3850,13 @@ static int raether_remove(struct platform_device *pdev)
 		return 0;
 	ei_local = netdev_priv(dev);
 	rtnl_lock();
+#ifdef CONFIG_K2P_RESET_GUARD
+	/* A completed shutdown has already retired this producer. */
+	if (!ei_local->reset_device.generation) {
+		rtnl_unlock();
+		return -ESHUTDOWN;
+	}
+#endif
 	was_quarantined = ei_local->dma_quarantined;
 	/* This also blocks reopen and private ioctls while publication retires. */
 	WRITE_ONCE(ei_local->dma_quarantined, true);

@@ -546,6 +546,13 @@ static VOID DEVEXIT rt_pci_remove(struct pci_dev *pci_dev)
 		MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_TRACE, ("===> %s()\n", __func__));
 
 		if (pAd != NULL) {
+#ifdef CONFIG_K2P_RESET_GUARD
+			POS_COOKIE obj = (POS_COOKIE)((RTMP_ADAPTER *)pAd)->OS_Cookie;
+
+			/* device_lock serializes this check with PCI shutdown. */
+			if (!obj->reset_device.generation)
+				return;
+#endif
 			rtnl_lock();
 			if (!RtmpDmaBeginRemove((RTMP_ADAPTER *)pAd)) {
 				rtnl_unlock();

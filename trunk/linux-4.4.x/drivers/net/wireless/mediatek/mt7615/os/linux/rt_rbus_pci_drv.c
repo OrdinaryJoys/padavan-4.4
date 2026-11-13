@@ -55,6 +55,13 @@ VOID RtmpMgmtTaskExit(RTMP_ADAPTER *pAd)
 		/*RTUSBCMDUp(&pAd->cmdQTask); */
 		ret = RtmpOSTaskKill(&pAd->cmdQTask);
 
+#ifdef CONFIG_K2P_RESET_GUARD
+		if (ret != NDIS_STATUS_SUCCESS &&
+		    RTMP_OS_TASK_LEGALITY(&pAd->cmdQTask)) {
+			RtmpDmaQuarantine(pAd);
+			return;
+		}
+#endif
 		if (ret == NDIS_STATUS_FAILURE)
 			MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_ERROR, ("Kill command task fail!\n"));
 
