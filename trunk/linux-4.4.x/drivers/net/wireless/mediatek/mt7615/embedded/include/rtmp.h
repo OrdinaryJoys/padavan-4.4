@@ -11492,6 +11492,10 @@ BOOLEAN RtmpDmaTeardownCheck(RTMP_ADAPTER *pAd);
 BOOLEAN RtmpDmaResourcesMayRelease(RTMP_ADAPTER *pAd);
 BOOLEAN RtmpDmaQuarantined(RTMP_ADAPTER *pAd);
 BOOLEAN RtmpDmaStopping(RTMP_ADAPTER *pAd);
+#ifdef CONFIG_K2P_RESET_GUARD
+VOID RtmpDmaShutdown(RTMP_ADAPTER *pAd);
+bool RtmpPciDrain(struct pci_dev *pdev);
+#endif
 VOID RtmpDmaQuarantine(RTMP_ADAPTER *pAd);
 BOOLEAN RtmpDmaBeginRemove(RTMP_ADAPTER *pAd);
 BOOLEAN RtmpDmaFinalReleaseCheck(RTMP_ADAPTER *pAd);

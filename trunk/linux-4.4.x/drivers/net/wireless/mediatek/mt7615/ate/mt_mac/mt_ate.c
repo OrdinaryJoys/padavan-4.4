@@ -177,7 +177,8 @@ static INT32 MT_ATEStart(RTMP_ADAPTER *pAd)
 	if_ops->init(pAd);
 	if_ops->clean_trx_q(pAd);
 #endif /* RTMP_MAC_PCI */
-	AsicSetWPDMA(pAd, PDMA_TX_RX, 1);
+	if (AsicSetWPDMA(pAd, PDMA_TX_RX, 1) != TRUE)
+		return NDIS_STATUS_FAILURE;
 	RTMP_CLEAR_FLAG(pAd, fRTMP_ADAPTER_HALT_IN_PROGRESS);
 
 	/* MT7636 Test Mode Freqency offset restore*/
@@ -598,7 +599,8 @@ static INT32 MT_ATEStartRx(RTMP_ADAPTER *pAd)
 	RTMP_IO_WRITE32(pAd, RMAC_RFCR, Value);
 	AsicSetMacTxRx(pAd, ASIC_MAC_RX_RXV, TRUE);
 	/* Enable PDMA */
-	AsicSetWPDMA(pAd, PDMA_TX_RX, 1);
+	if (AsicSetWPDMA(pAd, PDMA_TX_RX, 1) != TRUE)
+		return NDIS_STATUS_FAILURE;
 	ATECtrl->Mode |= ATE_RXFRAME;
 	ATECtrl->did_rx = 1;
 	return Ret;
@@ -626,7 +628,8 @@ static INT32 MT_ATEStopTx(RTMP_ADAPTER *pAd, UINT32 Mode)
 
 		ATECtrl->Mode &= ~ATE_TXFRAME;
 		/* Enable PDMA */
-		AsicSetWPDMA(pAd, PDMA_TX_RX, 1);
+		if (AsicSetWPDMA(pAd, PDMA_TX_RX, 1) != TRUE)
+			return NDIS_STATUS_FAILURE;
 	}
 
 	return Ret;
@@ -1217,7 +1220,8 @@ static INT32 pci_test_frame_tx(RTMP_ADAPTER *pAd)
 		goto pci_tx_frame_err;
 
 	/* Enable PDMA */
-	AsicSetWPDMA(pAd, PDMA_TX_RX, 1);
+	if (AsicSetWPDMA(pAd, PDMA_TX_RX, 1) != TRUE)
+		return NDIS_STATUS_FAILURE;
 	ATECtrl->Mode |= ATE_TXFRAME;
 	HIF_IO_WRITE32(pAd, pTxRing->hw_cidx_addr, pTxRing->TxCpuIdx);
 	return NDIS_STATUS_SUCCESS;

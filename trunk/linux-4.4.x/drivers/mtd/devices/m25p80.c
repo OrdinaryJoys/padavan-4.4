@@ -19,6 +19,7 @@
 #include <linux/errno.h>
 #include <linux/module.h>
 #include <linux/device.h>
+#include <linux/slab.h>
 #include <linux/reboot.h>
 
 #include <linux/mtd/mtd.h>
@@ -195,7 +196,16 @@ static int m25p_probe(struct spi_device *spi)
 
 	data = dev_get_platdata(&spi->dev);
 
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (spi_get_drvdata(spi))
+		return -EBUSY;
+	/* MTD can refuse unregister. A forced driver detach must not free
+	 * the flash object while registered MTD users still hold it.
+	 */
+	flash = kzalloc(sizeof(*flash), GFP_KERNEL);
+#else
 	flash = devm_kzalloc(&spi->dev, sizeof(*flash), GFP_KERNEL);
+#endif
 	if (!flash)
 		return -ENOMEM;
 
@@ -233,15 +243,40 @@ static int m25p_probe(struct spi_device *spi)
 	else
 		flash_name = spi->modalias;
 
-	ret = spi_nor_scan(nor, flash_name, mode);
+#ifdef CONFIG_K2P_RESET_GUARD
+	ret = reboot_guard_begin(&nor->reset_device, REBOOT_GUARD_FLASH_DEVICE);
 	if (ret)
-		return ret;
+		goto fail_probe;
+#endif
+	ret = spi_nor_scan(nor, flash_name, mode);
+	if (ret) {
+#ifdef CONFIG_K2P_RESET_GUARD
+		/* Scan may have changed status/addressing before returning. */
+		reboot_guard_fail(&nor->reset_device, REBOOT_DMA_UNKNOWN);
+#endif
+		goto fail_probe;
+	}
 
 	ppdata.of_node = spi->dev.of_node;
 
-	return mtd_device_parse_register(&nor->mtd, NULL, &ppdata,
+	ret = mtd_device_parse_register(&nor->mtd, NULL, &ppdata,
 			data ? data->parts : NULL,
 			data ? data->nr_parts : 0);
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (ret) {
+		spi_nor_restore(nor);
+		goto fail_probe;
+	}
+	get_device(&spi->dev);
+#endif
+	return ret;
+
+fail_probe:
+#ifdef CONFIG_K2P_RESET_GUARD
+	spi_set_drvdata(spi, NULL);
+	kfree(flash);
+#endif
+	return ret;
 }
 
 
@@ -252,11 +287,23 @@ static int m25p_remove(struct spi_device *spi)
 
 	/* Do not change addressing while registered MTD users still own it. */
 	ret = mtd_device_unregister(&flash->spi_nor.mtd);
-	if (ret)
+	if (ret) {
+#ifdef CONFIG_K2P_RESET_GUARD
+		reboot_guard_fail(&flash->spi_nor.reset_device, REBOOT_DMA_UNKNOWN);
+#endif
 		return ret;
+	}
 	ret = spi_nor_restore(&flash->spi_nor);
+#ifndef CONFIG_K2P_RESET_GUARD
 	if (ret)
 		reboot_dma_failure_report(REBOOT_DMA_UNKNOWN);
+#else
+	if (!ret) {
+		spi_set_drvdata(spi, NULL);
+		kfree(flash);
+		put_device(&spi->dev);
+	}
+#endif
 	return ret;
 }
 
@@ -267,7 +314,9 @@ static void m25p_shutdown(struct spi_device *spi)
 
 	if (ret) {
 		/* device_shutdown has no return status: latch the terminal gate. */
+#ifndef CONFIG_K2P_RESET_GUARD
 		reboot_dma_failure_report(REBOOT_DMA_UNKNOWN);
+#endif
 		dev_err(&spi->dev, "flash address restore failed (%d); restart blocked\n", ret);
 	}
 }

@@ -2581,7 +2581,8 @@ static INT32 MT_ATEStart(RTMP_ADAPTER *pAd)
 		}
 	}
 #endif
-	AsicSetWPDMA(pAd, PDMA_TX_RX, TRUE);
+	if (AsicSetWPDMA(pAd, PDMA_TX_RX, TRUE) != TRUE)
+		return NDIS_STATUS_FAILURE;
 #ifdef CONFIG_AP_SUPPORT
 	APStop(pAd, pMbss, AP_BSS_OPER_ALL);
 #endif /* CONFIG_AP_SUPPORT */
@@ -4548,7 +4549,8 @@ static INT32 MT_ATEStartTx(RTMP_ADAPTER *pAd)
 	}
 #endif
 	/*  Enable PDMA */
-	AsicSetWPDMA(pAd, PDMA_TX_RX, 1);
+	if (AsicSetWPDMA(pAd, PDMA_TX_RX, 1) != TRUE)
+		return NDIS_STATUS_FAILURE;
 	RTMP_CLEAR_FLAG(pAd, fRTMP_ADAPTER_DISABLE_DEQUEUEPACKET);
 
 	/* Calculate duty_cycle related parameter first */
@@ -4698,7 +4700,8 @@ static INT32 MT_ATEStartRx(RTMP_ADAPTER *pAd)
 
 	pAd->WlanCounters[0].FCSErrorCount.u.LowPart = 0;
 	/* Enable PDMA */
-	AsicSetWPDMA(pAd, PDMA_TX_RX, 1);
+	if (AsicSetWPDMA(pAd, PDMA_TX_RX, 1) != TRUE)
+		return NDIS_STATUS_FAILURE;
 	MtATESetMacTxRx(pAd, ASIC_MAC_RX_RXV, TRUE, control_band_idx);
 #ifdef CONFIG_HW_HAL_OFFLOAD
 	MtCmdSetPhyCounter(pAd, 0, TESTMODE_BAND0);

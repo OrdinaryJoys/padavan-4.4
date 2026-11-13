@@ -32,6 +32,9 @@ extern enum ralink_soc_type ralink_soc;
 
 extern __iomem void *rt_sysc_membase;
 extern __iomem void *rt_memc_membase;
+#ifdef CONFIG_K2P_RESET_GUARD
+void ralink_reset_update(u32 clear, u32 set);
+#endif
 
 static inline void rt_sysc_w32(u32 val, unsigned reg)
 {

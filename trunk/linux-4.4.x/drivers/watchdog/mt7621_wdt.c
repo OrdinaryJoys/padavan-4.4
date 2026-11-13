@@ -20,6 +20,8 @@
 #include <linux/moduleparam.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
+#include <linux/reboot.h>
+#include <linux/reboot_guard.h>
 
 #include <asm/mach-ralink/ralink_regs.h>
 
@@ -34,6 +36,10 @@
 #define TMR1CTL_RESTART			BIT(9)
 
 static void __iomem *mt762x_wdt_base;
+#ifdef CONFIG_K2P_RESET_GUARD
+static struct reboot_guard watchdog_guard;
+static bool watchdog_retired;
+#endif
 
 static bool nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, bool, 0);
@@ -71,6 +77,10 @@ static int mt762x_wdt_start(struct watchdog_device *w)
 {
 	u32 t;
 
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (watchdog_retired || !reboot_guard_admit(&watchdog_guard))
+		return -ESHUTDOWN;
+#endif
 	rt_wdt_w32(TIMER_REG_TMR1CTL, 1000 << 16);
 	mt762x_wdt_set_timeout(w, w->timeout);
 
@@ -135,17 +145,31 @@ static int mt762x_wdt_probe(struct platform_device *pdev)
 	if (IS_ERR(mt762x_wdt_base))
 		return PTR_ERR(mt762x_wdt_base);
 
+#ifdef CONFIG_K2P_RESET_GUARD
+	ret = reboot_guard_begin(&watchdog_guard, REBOOT_GUARD_RUNTIME);
+	if (ret)
+		return ret;
+	watchdog_retired = false;
+#endif
 	/* MT7621 boards may omit a watchdog reset line in their device tree. */
 	if (of_find_property(pdev->dev.of_node, "resets", NULL)) {
 		ret = device_reset(&pdev->dev);
-		if (ret)
+		if (ret) {
+#ifdef CONFIG_K2P_RESET_GUARD
+			reboot_guard_fail(&watchdog_guard, REBOOT_WATCHDOG_UNSAFE);
+#endif
 			return ret;
+		}
 	}
 
 	/* The core starts inactive; establish the same state in hardware. */
 	ret = mt762x_wdt_stop(&mt762x_wdt_dev);
-	if (ret)
+	if (ret) {
+#ifdef CONFIG_K2P_RESET_GUARD
+		reboot_guard_fail(&watchdog_guard, REBOOT_WATCHDOG_UNSAFE);
+#endif
 		return ret;
+	}
 
 	mt762x_wdt_dev.dev = &pdev->dev;
 	mt762x_wdt_dev.bootstatus = mt762x_wdt_bootcause();
@@ -157,22 +181,46 @@ static int mt762x_wdt_probe(struct platform_device *pdev)
 	ret = watchdog_register_device(&mt762x_wdt_dev);
 	if (!ret)
 		dev_info(&pdev->dev, "Initialized\n");
+#ifdef CONFIG_K2P_RESET_GUARD
+	else
+		reboot_guard_finish(&watchdog_guard);
+#endif
 
 	return ret;
 }
 
+static void mt762x_wdt_shutdown(struct platform_device *pdev)
+{
+#ifdef CONFIG_K2P_RESET_GUARD
+	int ret;
+
+	mutex_lock(&mt762x_wdt_dev.lock);
+	if (!watchdog_retired) {
+		watchdog_retired = true;
+		ret = mt762x_wdt_stop(&mt762x_wdt_dev);
+		if (ret) {
+			reboot_guard_fail(&watchdog_guard, REBOOT_WATCHDOG_UNSAFE);
+			dev_err(&pdev->dev, "watchdog may still reset hardware (%d)\n", ret);
+		} else {
+			clear_bit(WDOG_ACTIVE, &mt762x_wdt_dev.status);
+			reboot_guard_finish(&watchdog_guard);
+		}
+	}
+	mutex_unlock(&mt762x_wdt_dev.lock);
+#else
+	mt762x_wdt_stop(&mt762x_wdt_dev);
+#endif
+}
+
 static int mt762x_wdt_remove(struct platform_device *pdev)
 {
+#ifdef CONFIG_K2P_RESET_GUARD
+	mt762x_wdt_shutdown(pdev);
+#endif
 	watchdog_unregister_device(&mt762x_wdt_dev);
 
 	return 0;
 }
-
-static void mt762x_wdt_shutdown(struct platform_device *pdev)
-{
-	mt762x_wdt_stop(&mt762x_wdt_dev);
-}
-
 static const struct of_device_id mt762x_wdt_match[] = {
 	{ .compatible = "mtk,mt7621-wdt" },
 	{},

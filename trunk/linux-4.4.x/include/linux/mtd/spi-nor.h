@@ -13,6 +13,7 @@
 #include <linux/bitops.h>
 #include <linux/mtd/cfi.h>
 #include <linux/mtd/mtd.h>
+#include <linux/reboot_guard.h>
 
 /*
  * Manufacturer IDs
@@ -181,6 +182,10 @@ struct spi_nor {
 	u32			flags;
 	/* Protected by lock; a retired addressing mode cannot admit MTD I/O. */
 	bool			restore_started;
+#ifdef CONFIG_K2P_RESET_GUARD
+	struct reboot_guard	reset_device;
+	struct reboot_guard	reset_io;
+#endif
 	int			restore_error;
 	u8			cmd_buf[SPI_NOR_MAX_CMD_SIZE];
 

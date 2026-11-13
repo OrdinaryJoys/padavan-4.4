@@ -15,6 +15,8 @@
 #include <linux/kmod.h>
 #include <linux/kmsg_dump.h>
 #include <linux/reboot.h>
+#include <linux/reboot_guard.h>
+#include <linux/delay.h>
 #include <linux/suspend.h>
 #include <linux/syscalls.h>
 #include <linux/syscore_ops.h>
@@ -102,6 +104,9 @@ EXPORT_SYMBOL(reboot_dma_failure_check);
  */
 void emergency_restart(void)
 {
+#ifdef CONFIG_K2P_RESET_GUARD
+	reboot_guard_park(false);
+#endif
 	reboot_dma_failure_check(false);
 	kmsg_dump(KMSG_DUMP_EMERG);
 	machine_emergency_restart();
@@ -110,6 +115,10 @@ EXPORT_SYMBOL_GPL(emergency_restart);
 
 void kernel_restart_prepare(char *cmd)
 {
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (!reboot_guard_prepare(true))
+		reboot_guard_park(true);
+#endif
 	blocking_notifier_call_chain(&reboot_notifier_list, SYS_RESTART, cmd);
 	system_state = SYSTEM_RESTART;
 	usermodehelper_disable();
@@ -257,7 +266,21 @@ void migrate_to_reboot_cpu(void)
  */
 void kernel_restart(char *cmd)
 {
+#ifdef CONFIG_K2P_RESET_GUARD
+	unsigned long deadline;
+#endif
 	kernel_restart_prepare(cmd);
+#ifdef CONFIG_K2P_RESET_GUARD
+	/* Allow an already admitted remove to finish with IRQs still enabled.
+	 * A timeout cannot retire any owner or undo device_shutdown().
+	 */
+	deadline = jiffies + 5 * HZ;
+	while (!reboot_guard_drained()) {
+		if (reboot_dma_failures() || time_after_eq(jiffies, deadline))
+			reboot_guard_park(true);
+		msleep(20);
+	}
+#endif
 	migrate_to_reboot_cpu();
 	syscore_shutdown();
 	if (!cmd)
@@ -265,12 +288,20 @@ void kernel_restart(char *cmd)
 	else
 		pr_emerg("Restarting system with command '%s'\n", cmd);
 	kmsg_dump(KMSG_DUMP_RESTART);
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (!reboot_guard_seal())
+		reboot_guard_park(true);
+#endif
 	machine_restart(cmd);
 }
 EXPORT_SYMBOL_GPL(kernel_restart);
 
 static void kernel_shutdown_prepare(enum system_states state)
 {
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (!reboot_guard_prepare(false))
+		reboot_guard_park(true);
+#endif
 	blocking_notifier_call_chain(&reboot_notifier_list,
 		(state == SYSTEM_HALT) ? SYS_HALT : SYS_POWER_OFF, NULL);
 	system_state = state;

@@ -175,6 +175,12 @@ BOOLEAN RtmpDmaLifecycleGet(RTMP_ADAPTER *pAd)
 	if (pAd->dma_removing || RtmpDmaQuarantined(pAd) ||
 		pAd->dma_lifecycle_pinned || !try_module_get(THIS_MODULE))
 		return FALSE;
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (reboot_guard_begin(&obj->reset_dma, REBOOT_GUARD_RUNTIME)) {
+		module_put(THIS_MODULE);
+		return FALSE;
+	}
+#endif
 	/* Acquiring this reference after failed idle or in .remove is too late. */
 	pci_dev_get(obj->pci_dev);
 	spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
@@ -196,9 +202,27 @@ BOOLEAN RtmpDmaMarkActive(RTMP_ADAPTER *pAd)
 		return TRUE;
 	spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
 	allowed = pAd->dma_lifecycle_pinned && !pAd->dma_stopping && !pAd->dma_quarantined;
+#ifdef CONFIG_K2P_RESET_GUARD
+	allowed = allowed &&
+		reboot_guard_admit(&((POS_COOKIE)pAd->OS_Cookie)->reset_dma);
+#endif
 	if (allowed)
 		pAd->dma_quiesced = FALSE;
 	spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
+#ifdef CONFIG_K2P_RESET_GUARD
+	/* First HIF setup owns the open token before enabling bus mastering.
+	 * Teardown must run if setup fails after this point.
+	 */
+	if (allowed) {
+		struct pci_dev *pdev = ((POS_COOKIE)pAd->OS_Cookie)->pci_dev;
+		u16 command;
+
+		pci_set_master(pdev);
+		if (pci_read_config_word(pdev, PCI_COMMAND, &command) ||
+		    command == 0xffff || !(command & PCI_COMMAND_MASTER))
+			return FALSE;
+	}
+#endif
 	return allowed;
 }
 
@@ -219,6 +243,9 @@ VOID RtmpDmaLifecyclePut(RTMP_ADAPTER *pAd)
 	}
 	spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
 	if (release) {
+#ifdef CONFIG_K2P_RESET_GUARD
+		reboot_guard_finish(&obj->reset_dma);
+#endif
 		pci_dev_put(obj->pci_dev);
 		module_put(THIS_MODULE);
 	}
@@ -235,9 +262,13 @@ VOID RtmpDmaQuarantine(RTMP_ADAPTER *pAd)
 	/* Pure allocation/task setup failure before DMA was active is not a
 	 * hardware DMA failure. Once reported, subsequent idle cannot clear it.
 	 */
+#ifdef CONFIG_K2P_RESET_GUARD
+	reboot_guard_fail(&obj->reset_device, REBOOT_DMA_MT7615);
+#else
 	if (pAd->dma_running ||
 		(pAd->dma_lifecycle_pinned && !pAd->dma_quiesced))
 		reboot_dma_failure_report(REBOOT_DMA_MT7615);
+#endif
 	pAd->dma_quarantined = TRUE;
 	pAd->dma_stopping = TRUE;
 	spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
@@ -301,6 +332,15 @@ BOOLEAN RtmpDmaTeardownCheck(RTMP_ADAPTER *pAd)
 		RtmpDmaQuarantine(pAd);
 		return FALSE;
 	}
+#ifdef CONFIG_K2P_RESET_GUARD
+	/* The endpoint's pending-transaction bit is an additional check
+	 * after local DMA idle, before any mappings can be recycled.
+	 */
+	if (!RtmpPciDrain(((POS_COOKIE)pAd->OS_Cookie)->pci_dev)) {
+		RtmpDmaQuarantine(pAd);
+		return FALSE;
+	}
+#endif
 	spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
 	pAd->dma_quiesced = TRUE;
 	spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, flags);
@@ -502,6 +542,42 @@ int mt_wifi_close(VOID *dev)
 	RtmpDmaLifecycleUnlock((RTMP_ADAPTER *)pAd);
 	return 0;
 }
+
+#ifdef CONFIG_K2P_RESET_GUARD
+VOID RtmpDmaShutdown(RTMP_ADAPTER *pAd)
+{
+	POS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;
+	int i;
+
+	rtnl_lock();
+	if (!obj->reset_device.generation)
+		goto unlock;
+	WRITE_ONCE(pAd->dma_removing, TRUE);
+	/* Close actual VIFs before their shared adapter. Directly freeing the
+	 * adapter's configuration would leave ndo_stop and VIF users behind.
+	 */
+	for (i = 0; i < WDEV_NUM_MAX; i++) {
+		struct wifi_dev *wdev = pAd->wdev_list[i];
+
+		if (wdev && wdev->if_dev && wdev->if_dev != pAd->net_dev)
+			dev_close(wdev->if_dev);
+	}
+	dev_close(pAd->net_dev);
+	netif_device_detach(pAd->net_dev);
+	netif_tx_disable(pAd->net_dev);
+
+	RtmpDmaLifecycleLock(pAd);
+	if (RtmpDmaQuarantined(pAd) || pAd->dma_lifecycle_pinned ||
+	    VIRTUAL_IF_NUM(pAd) || pAd->dma_running || pAd->dma_irq_registered ||
+	    !RtmpPciDrain(obj->pci_dev))
+		RtmpDmaQuarantine(pAd);
+	else
+		reboot_guard_finish(&obj->reset_device);
+	RtmpDmaLifecycleUnlock(pAd);
+unlock:
+	rtnl_unlock();
+}
+#endif
 
 
 /*
@@ -758,6 +834,11 @@ INT virtual_if_init_handler(VOID *dev)
 
 	if (RtmpDmaQuarantined(pAd) || READ_ONCE(pAd->dma_removing))
 		return NDIS_STATUS_FAILURE;
+#ifdef CONFIG_K2P_RESET_GUARD
+	if ((IS_PCI_INF(pAd) || IS_PCIE_INF(pAd)) &&
+	    !reboot_guard_admit(&((POS_COOKIE)pAd->OS_Cookie)->reset_device))
+		return NDIS_STATUS_FAILURE;
+#endif
 	if (VIRTUAL_IF_NUM(pAd) == 0) {
 		VIRTUAL_IF_INC(pAd);
 
@@ -1002,6 +1083,11 @@ INT rt28xx_ioctl(PNET_DEV net_dev, struct ifreq *rq, INT cmd)
 		/* So the net_dev->priv will be NULL in 2rd open */
 		return -ENETDOWN;
 	}
+#ifdef CONFIG_K2P_RESET_GUARD
+	if ((IS_PCI_INF((RTMP_ADAPTER *)pAd) || IS_PCIE_INF((RTMP_ADAPTER *)pAd)) &&
+	    !reboot_guard_admit(&((POS_COOKIE)((RTMP_ADAPTER *)pAd)->OS_Cookie)->reset_device))
+		return -ESHUTDOWN;
+#endif
 
 	RTMP_DRIVER_OP_MODE_GET(pAd, &OpMode);
 #ifdef CONFIG_AP_SUPPORT

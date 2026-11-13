@@ -13,6 +13,9 @@
  * GNU General Public License for more details.
  */
 #include "raether.h"
+#ifdef CONFIG_K2P_RESET_GUARD
+#include <asm/mach-ralink/ralink_regs.h>
+#endif
 #include <linux/ioport.h>
 #include "ra_mac.h"
 #include "ra_ioctl.h"
@@ -75,6 +78,12 @@ static const char *const mtk_clks_source_name[] = {
 /* reset frame engine */
 static void fe_reset(void)
 {
+#ifdef CONFIG_K2P_RESET_GUARD
+	ralink_reset_update(0, RALINK_FE_RST | RALINK_PPE_RST);
+	udelay(10);
+	ralink_reset_update(RALINK_FE_RST | RALINK_PPE_RST, 0);
+	udelay(1000);
+#else
 	u32 val = 0;
 
 	val = sys_reg_read(RSTCTRL);
@@ -85,10 +94,17 @@ static void fe_reset(void)
 	val = val & ~(RALINK_FE_RST | RALINK_PPE_RST);
 	sys_reg_write(RSTCTRL, val);
 	udelay(1000);
+#endif
 }
 
 static void fe_gmac_reset(void)
 {
+#ifdef CONFIG_K2P_RESET_GUARD
+	ralink_reset_update(0, RALINK_ETH_RST);
+	udelay(10);
+	ralink_reset_update(RALINK_ETH_RST, 0);
+	udelay(1000);
+#else
 	u32 val = 0;
 
 	val = sys_reg_read(RSTCTRL);
@@ -99,6 +115,7 @@ static void fe_gmac_reset(void)
 	val &= ~(RALINK_ETH_RST);
 	sys_reg_write(RSTCTRL, val);
 	udelay(1000);
+#endif
 }
 
 /* Set the hardware MAC address. */
@@ -1069,7 +1086,11 @@ static int ei_stop_dma(struct net_device *dev)
 	if (pdma_err || qdma_err) {
 		/* Keep all owners and the module pin; a timeout is not DMA retirement. */
 		ei_local->dma_quarantined = true;
+#ifdef CONFIG_K2P_RESET_GUARD
+		reboot_guard_fail(&ei_local->reset_device, REBOOT_DMA_RAETH);
+#else
 		reboot_dma_failure_report(REBOOT_DMA_RAETH);
+#endif
 		pr_err("%s: DMA stop failed (%d/%d); keeping rings, reopen blocked\n",
 		       dev->name, pdma_err, qdma_err);
 		return pdma_err ? pdma_err : qdma_err;
@@ -2719,6 +2740,11 @@ int ei_open(struct net_device *dev)
 	}
 
 	ei_local->module_reserved = true;
+#ifdef CONFIG_K2P_RESET_GUARD
+	err = reboot_guard_begin(&ei_local->reset_dma, REBOOT_GUARD_RUNTIME);
+	if (err)
+		goto fail_module;
+#endif
 
 	pr_info("Raeth %s (", RAETH_VERSION);
 	if (ei_local->features & FE_INT_NAPI)
@@ -2732,8 +2758,15 @@ int ei_open(struct net_device *dev)
 	ei_reset_statistics(ei_local);
 
 	err = ei_init_dma(dev);
-	if (err)
+	if (err) {
+#ifdef CONFIG_K2P_RESET_GUARD
+		if (err == -ETIMEDOUT || ei_local->dma_quarantined) {
+			ei_local->dma_quarantined = true;
+			reboot_guard_fail(&ei_local->reset_dma, REBOOT_DMA_RAETH);
+		}
+#endif
 		goto fail_module;
+	}
 
 	if (ei_local->chip_name != MT7621_FE) {
 		fe_gmac_reset();
@@ -2792,6 +2825,13 @@ int ei_open(struct net_device *dev)
 	err = fe_int_enable(dev);
 	if (err)
 		goto fail_dma;
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (!reboot_guard_admit(&ei_local->reset_dma)) {
+		err = -ESHUTDOWN;
+		fe_int_disable(dev);
+		goto fail_dma;
+	}
+#endif
 	ei_start_dma(dev);
 	if (ei_local->kreset_task)
 		wake_up_process(ei_local->kreset_task);
@@ -2813,6 +2853,10 @@ fail_dma:
 	ei_deinit_dma(dev);
 fail_module:
 	if (!ei_local->dma_quarantined) {
+#ifdef CONFIG_K2P_RESET_GUARD
+		if (ei_local->reset_dma.generation)
+			reboot_guard_finish(&ei_local->reset_dma);
+#endif
 		ei_local->module_reserved = false;
 		module_put(THIS_MODULE);
 	}
@@ -2852,6 +2896,9 @@ int ei_close(struct net_device *dev)
 	fe_reset();
 	if (ei_local->chip_name == MT7622_FE)
 		fe_sw_deinit(ei_local);
+#ifdef CONFIG_K2P_RESET_GUARD
+	reboot_guard_finish(&ei_local->reset_dma);
+#endif
 	ei_local->module_reserved = false;
 	module_put(THIS_MODULE);
 	return 0;
@@ -3593,6 +3640,14 @@ static int rather_probe(struct platform_device *pdev)
 
 	dev_raether = netdev;
 	ei_local = netdev_priv(netdev);
+#ifdef CONFIG_K2P_RESET_GUARD
+	ret = reboot_guard_begin(&ei_local->reset_device, REBOOT_GUARD_RUNTIME);
+	if (ret) {
+		dev_raether = NULL;
+		free_netdev(netdev);
+		return ret;
+	}
+#endif
 	spin_lock_init(&ei_local->page_lock);
 	spin_lock_init(&ei_local->irq_lock);
 	spin_lock_init(&ei_local->mdio_lock);
@@ -3776,6 +3831,9 @@ err_free_dev:
 		debug_proc_exit();
 	raeth_release_resources(ei_local, pdev);
 	dev_raether = NULL;
+#ifdef CONFIG_K2P_RESET_GUARD
+	reboot_guard_finish(&ei_local->reset_device);
+#endif
 	free_netdev(netdev);
 	return ret;
 }
@@ -3825,6 +3883,9 @@ static int raether_remove(struct platform_device *pdev)
 		/* Core ignores .remove's return and releases ALL devres afterwards.
 		 * Our explicit MMIO/clock/parent owners and every DMA allocation stay
 		 * pinned. Do not unregister: ndo_stop failure is ignored there too. */
+#ifdef CONFIG_K2P_RESET_GUARD
+		reboot_guard_fail(&ei_local->reset_device, REBOOT_DMA_RAETH);
+#endif
 		rtnl_unlock();
 		return err ? err : -EBUSY;
 	}
@@ -3846,6 +3907,11 @@ static int raether_remove(struct platform_device *pdev)
 	platform_set_drvdata(pdev, NULL);
 	dev_raether = NULL;
 	raeth_release_resources(ei_local, pdev);
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (ei_local->reset_dma.generation)
+		reboot_guard_finish(&ei_local->reset_dma);
+	reboot_guard_finish(&ei_local->reset_device);
+#endif
 	ei_local->module_reserved = false;
 	module_put(THIS_MODULE);
 	free_netdev(dev);
@@ -3860,11 +3926,21 @@ static void raether_shutdown(struct platform_device *pdev)
 	struct END_DEVICE *ei_local;
 	struct net_device *pseudo;
 	int err;
+#ifdef CONFIG_K2P_RESET_GUARD
+	bool was_quarantined;
+#endif
 
 	if (!dev)
 		return;
 	ei_local = netdev_priv(dev);
 	rtnl_lock();
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (!ei_local->reset_device.generation) {
+		rtnl_unlock();
+		return;
+	}
+	was_quarantined = ei_local->dma_quarantined;
+#endif
 	WRITE_ONCE(ei_local->dma_quarantined, true);
 	pseudo = ei_local->pseudo_dev;
 	netif_device_detach(dev);
@@ -3891,6 +3967,15 @@ static void raether_shutdown(struct platform_device *pdev)
 	if (err)
 		pr_err("%s: shutdown DMA stop failed (%d); keeping all owners\n",
 		       dev->name, err);
+#ifdef CONFIG_K2P_RESET_GUARD
+	else if (was_quarantined) {
+		reboot_guard_fail(&ei_local->reset_device, REBOOT_DMA_RAETH);
+	} else {
+		if (ei_local->reset_dma.generation)
+			reboot_guard_finish(&ei_local->reset_dma);
+		reboot_guard_finish(&ei_local->reset_device);
+	}
+#endif
 	/* Keep rings, MMIO, clocks and existing module/parent references even
  * after idle. Foreign consumers are not retired by device_shutdown().
  * Failed DMA stop is latched by ei_stop_dma() for the core restart gate. */

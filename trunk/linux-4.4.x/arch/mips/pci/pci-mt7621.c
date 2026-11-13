@@ -53,6 +53,7 @@
 #include <linux/of.h>
 #include <linux/of_pci.h>
 #include <linux/platform_device.h>
+#include <linux/reboot_guard.h>
 #include <asm/rt2880/rt_mmap.h>
 #include <ralink_regs.h>
 #include <asm/rt2880/eureka_ep430.h>
@@ -156,6 +157,21 @@ extern void chk_phy_pll(void);
 
 #define RALINK_SYSTEM_CONTROL_BASE	0xbe000000
 #define GPIO_PERST
+#ifdef CONFIG_K2P_RESET_GUARD
+#include <asm/mach-ralink/ralink_regs.h>
+#define ASSERT_SYSRST_PCIE(val)		do {				\
+	if (*(unsigned int *)(0xbe00000c) == 0x00030101)		\
+		ralink_reset_update(0, val);				\
+	else							\
+		ralink_reset_update(val, 0);				\
+} while (0)
+#define DEASSERT_SYSRST_PCIE(val)	do {				\
+	if (*(unsigned int *)(0xbe00000c) == 0x00030101)		\
+		ralink_reset_update(val, 0);				\
+	else							\
+		ralink_reset_update(0, val);				\
+} while (0)
+#else
 #define ASSERT_SYSRST_PCIE(val)		do {	\
 						if (*(unsigned int *)(0xbe00000c) == 0x00030101)	\
 							RALINK_RSTCTRL |= val;	\
@@ -168,6 +184,7 @@ extern void chk_phy_pll(void);
 						else	\
 							RALINK_RSTCTRL |= val;	\
 					} while(0)
+#endif
 #define RALINK_SYSCFG1			*(unsigned int *)(RALINK_SYSTEM_CONTROL_BASE + 0x14)
 #define RALINK_CLKCFG1			*(unsigned int *)(RALINK_SYSTEM_CONTROL_BASE + 0x30)
 #define RALINK_RSTCTRL			*(unsigned int *)(RALINK_SYSTEM_CONTROL_BASE + 0x34)
@@ -618,7 +635,7 @@ void setup_cm_memory_region(struct resource *mem_resource)
 	}
 }
 
-static int mt7621_pci_probe(struct platform_device *pdev)
+static int mt7621_pci_setup(struct platform_device *pdev)
 {
 	unsigned long val = 0;
 
@@ -954,6 +971,23 @@ static int mt7621_pci_probe(struct platform_device *pdev)
 
 
 
+static int mt7621_pci_probe(struct platform_device *pdev)
+{
+#ifdef CONFIG_K2P_RESET_GUARD
+	struct reboot_guard guard = { 0 };
+	int ret;
+
+	ret = reboot_guard_begin(&guard, REBOOT_GUARD_RUNTIME);
+	if (ret)
+		return ret;
+	ret = mt7621_pci_setup(pdev);
+	reboot_guard_finish(&guard);
+	return ret;
+#else
+	return mt7621_pci_setup(pdev);
+#endif
+}
+
 static const struct of_device_id mt7621_pci_ids[] = {
 	{ .compatible = "mediatek,mt7621-pci" },
 	{},
@@ -964,6 +998,9 @@ static struct platform_driver mt7621_pci_driver = {
 	.probe = mt7621_pci_probe,
 	.driver = {
 		.name = "mt7621-pci",
+#ifdef CONFIG_K2P_RESET_GUARD
+		.suppress_bind_attrs = true,
+#endif
 		.owner = THIS_MODULE,
 		.of_match_table = of_match_ptr(mt7621_pci_ids),
 	},

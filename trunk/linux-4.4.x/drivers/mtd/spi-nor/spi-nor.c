@@ -406,6 +406,19 @@ static int erase_chip(struct spi_nor *nor)
 	return nor->write_reg(nor, SPINOR_OP_CHIP_ERASE, NULL, 0);
 }
 
+#ifdef CONFIG_K2P_RESET_GUARD
+/* A failed message may have launched a flash write. Keep its ownership
+ * until a later prepared status read confirms the controller and chip
+ * are ready. The mutex prevents a new operation from reusing it early.
+ */
+static void spi_nor_settle_error(struct spi_nor *nor, int status)
+{
+	if (status && spi_nor_wait_till_ready(nor))
+		return;
+	reboot_guard_finish(&nor->reset_io);
+}
+#endif
+
 static int spi_nor_lock_and_prep(struct spi_nor *nor, enum spi_nor_ops ops)
 {
 	int ret = 0;
@@ -420,6 +433,15 @@ static int spi_nor_lock_and_prep(struct spi_nor *nor, enum spi_nor_ops ops)
 		return -ESHUTDOWN;
 	}
 
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (!nor->reset_io.generation) {
+		ret = reboot_guard_flash_begin(&nor->reset_io, &nor->reset_device);
+		if (ret) {
+			mutex_unlock(&nor->lock);
+			return ret;
+		}
+	}
+#endif
 	if (nor->prepare) {
 		ret = nor->prepare(nor, ops);
 		if (ret) {
@@ -550,6 +572,9 @@ static int spi_nor_erase(struct mtd_info *mtd, struct erase_info *instr)
 
 	write_disable(nor);
 
+#ifdef CONFIG_K2P_RESET_GUARD
+	spi_nor_settle_error(nor, ret);
+#endif
 	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_ERASE);
 
 	instr->state = MTD_ERASE_DONE;
@@ -558,6 +583,9 @@ static int spi_nor_erase(struct mtd_info *mtd, struct erase_info *instr)
 	return ret;
 
 erase_err:
+#ifdef CONFIG_K2P_RESET_GUARD
+	spi_nor_settle_error(nor, ret);
+#endif
 	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_ERASE);
 	instr->state = MTD_ERASE_FAILED;
 	return ret;
@@ -741,6 +769,11 @@ static int spi_nor_lock(struct mtd_info *mtd, loff_t ofs, uint64_t len)
 
 	ret = nor->flash_lock(nor, ofs, len);
 
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (!ret)
+		ret = spi_nor_wait_till_ready(nor);
+	spi_nor_settle_error(nor, ret);
+#endif
 	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_LOCK);
 	return ret;
 }
@@ -756,6 +789,11 @@ static int spi_nor_unlock(struct mtd_info *mtd, loff_t ofs, uint64_t len)
 
 	ret = nor->flash_unlock(nor, ofs, len);
 
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (!ret)
+		ret = spi_nor_wait_till_ready(nor);
+	spi_nor_settle_error(nor, ret);
+#endif
 	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_UNLOCK);
 	return ret;
 }
@@ -771,6 +809,9 @@ static int spi_nor_is_locked(struct mtd_info *mtd, loff_t ofs, uint64_t len)
 
 	ret = nor->flash_is_locked(nor, ofs, len);
 
+#ifdef CONFIG_K2P_RESET_GUARD
+	spi_nor_settle_error(nor, ret < 0 ? ret : 0);
+#endif
 	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_UNLOCK);
 	return ret;
 }
@@ -1075,6 +1116,9 @@ static int spi_nor_read(struct mtd_info *mtd, loff_t from, size_t len,
 
 	ret = nor->read(nor, from, len, retlen, buf);
 
+#ifdef CONFIG_K2P_RESET_GUARD
+	spi_nor_settle_error(nor, ret);
+#endif
 	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_READ);
 	return ret;
 }
@@ -1141,6 +1185,9 @@ static int sst_write(struct mtd_info *mtd, loff_t to, size_t len,
 		write_disable(nor);
 	}
 time_out:
+#ifdef CONFIG_K2P_RESET_GUARD
+	spi_nor_settle_error(nor, ret);
+#endif
 	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_WRITE);
 	return ret;
 }
@@ -1211,6 +1258,9 @@ static int spi_nor_write(struct mtd_info *mtd, loff_t to, size_t len,
 
 	ret = spi_nor_wait_till_ready(nor);
 write_err:
+#ifdef CONFIG_K2P_RESET_GUARD
+	spi_nor_settle_error(nor, ret);
+#endif
 	spi_nor_unlock_and_unprep(nor, SPI_NOR_OPS_WRITE);
 	return ret;
 }
@@ -1322,9 +1372,12 @@ int spi_nor_restore(struct spi_nor *nor)
 	u8 reg;
 
 	/* restore the addressing mode */
+#ifndef CONFIG_K2P_RESET_GUARD
 	if ((nor->addr_width == 4) &&
 		(JEDEC_MFR(nor->info) != SNOR_MFR_SPANSION) &&
-		!(nor->info->flags & SPI_NOR_4B_OPCODES)) {
+		!(nor->info->flags & SPI_NOR_4B_OPCODES))
+#endif
+	{
 		mutex_lock(&nor->lock);
 		if (nor->restore_started) {
 			ret = nor->restore_error;
@@ -1336,6 +1389,33 @@ int spi_nor_restore(struct spi_nor *nor)
 			if (ret)
 				goto record;
 		}
+#ifdef CONFIG_K2P_RESET_GUARD
+		ret = spi_nor_wait_till_ready(nor);
+		if (ret)
+			goto unprepare;
+		if (nor->reset_io.generation)
+			reboot_guard_finish(&nor->reset_io);
+		ret = read_sr(nor);
+		if (ret < 0)
+			goto unprepare;
+		if (ret & SR_WEL) {
+			ret = write_disable(nor);
+			if (ret)
+				goto unprepare;
+			ret = read_sr(nor);
+			if (ret < 0)
+				goto unprepare;
+			if (ret & SR_WEL) {
+				ret = -EIO;
+				goto unprepare;
+			}
+		}
+		ret = 0;
+		if (nor->addr_width != 4 ||
+		    JEDEC_MFR(nor->info) == SNOR_MFR_SPANSION ||
+		    nor->info->flags & SPI_NOR_4B_OPCODES)
+			goto unprepare;
+#endif
 		ret = set_4byte(nor, nor->info, 0);
 		if (ret)
 			goto unprepare;
@@ -1368,6 +1448,12 @@ int spi_nor_restore(struct spi_nor *nor)
 			nor->unprepare(nor, SPI_NOR_OPS_WRITE);
 	record:
 		nor->restore_error = ret;
+#ifdef CONFIG_K2P_RESET_GUARD
+		if (ret)
+			reboot_guard_fail(&nor->reset_device, REBOOT_DMA_UNKNOWN);
+		else
+			reboot_guard_finish(&nor->reset_device);
+#endif
 	unlock:
 		mutex_unlock(&nor->lock);
 		return ret;
@@ -1605,7 +1691,11 @@ int spi_nor_scan(struct spi_nor *nor, const char *name, enum read_mode mode)
 			if (ret) {
 				/* The command may have reached flash despite an error;
 				 * do not reboot through an unknown boot-ROM address mode. */
+#ifdef CONFIG_K2P_RESET_GUARD
+				reboot_guard_fail(&nor->reset_device, REBOOT_DMA_UNKNOWN);
+#else
 				reboot_dma_failure_report(REBOOT_DMA_UNKNOWN);
+#endif
 				return ret;
 			}
 		}

@@ -21,6 +21,8 @@
 #include <linux/err.h>
 #include <linux/reset.h>
 #include <linux/of.h>
+#include <linux/reboot.h>
+#include <linux/reboot_guard.h>
 
 #define DRIVER_NAME			"spi-mt7621"
 
@@ -60,6 +62,9 @@ struct mt7621_spi {
 	void __iomem		*base;
 	u32			hclk_freq;
 	struct clk		*hclk;
+#ifdef CONFIG_K2P_RESET_GUARD
+	struct reboot_guard	reset_device;
+#endif
 };
 
 static inline struct mt7621_spi *spidev_to_mt7621_spi(struct spi_device *spi)
@@ -345,6 +350,11 @@ static int mt7621_spi_probe(struct platform_device *pdev)
 	ms->master = master;
 	ms->hclk_freq = hclk_freq;
 
+#ifdef CONFIG_K2P_RESET_GUARD
+	status = reboot_guard_begin(&ms->reset_device, REBOOT_GUARD_RUNTIME);
+	if (status)
+		goto err_put_master;
+#endif
 	status = device_reset(&pdev->dev);
 	if (status && IS_ENABLED(CONFIG_RESET_CONTROLLER) &&
 	    of_find_property(pdev->dev.of_node, "resets", NULL))
@@ -355,6 +365,10 @@ static int mt7621_spi_probe(struct platform_device *pdev)
 		return 0;
 
 err_put_master:
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (ms->reset_device.generation)
+		reboot_guard_finish(&ms->reset_device);
+#endif
 	dev_set_drvdata(&pdev->dev, NULL);
 	spi_master_put(master);
 err_disable_clk:
@@ -367,17 +381,62 @@ static int mt7621_spi_remove(struct platform_device *pdev)
 	struct spi_master *master;
 	struct mt7621_spi *ms;
 	struct clk *hclk;
+#ifdef CONFIG_K2P_RESET_GUARD
+	struct reboot_guard reset_device;
+	bool idle;
+#endif
 
 	master = dev_get_drvdata(&pdev->dev);
 	ms = spi_master_get_devdata(master);
 
 	hclk = ms->hclk;
+#ifdef CONFIG_K2P_RESET_GUARD
+	reset_device = ms->reset_device;
+	/* The queue is closed and joined by unregister; validate the
+	 * controller separately before returning its terminal ownership.
+	 */
+	idle = !mt7621_spi_busy_wait(ms);
+	if (!idle)
+		reboot_guard_fail(&reset_device, REBOOT_DMA_UNKNOWN);
+#endif
 	spi_unregister_master(master);
 	dev_set_drvdata(&pdev->dev, NULL);
 	clk_disable_unprepare(hclk);
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (reset_device.generation && idle)
+		reboot_guard_finish(&reset_device);
+#endif
 
 	return 0;
 }
+
+#ifdef CONFIG_K2P_RESET_GUARD
+static void mt7621_spi_shutdown(struct platform_device *pdev)
+{
+	struct spi_master *master = dev_get_drvdata(&pdev->dev);
+	struct mt7621_spi *ms = spi_master_get_devdata(master);
+	unsigned long flags;
+	int ret;
+
+	if (!ms->reset_device.generation)
+		return;
+	/* Children have closed NOR I/O and completed any mode restore.
+	 * Close the controller queue before waiting for admitted messages.
+	 */
+	spin_lock_irqsave(&master->queue_lock, flags);
+	master->queue_dead = true;
+	spin_unlock_irqrestore(&master->queue_lock, flags);
+	ret = spi_master_suspend(master);
+	if (!ret)
+		ret = mt7621_spi_busy_wait(ms);
+	if (ret) {
+		reboot_guard_fail(&ms->reset_device, REBOOT_DMA_UNKNOWN);
+		dev_err(&pdev->dev, "SPI shutdown did not drain (%d)\n", ret);
+		return;
+	}
+	reboot_guard_finish(&ms->reset_device);
+}
+#endif
 
 static const struct of_device_id mt7621_spi_match[] = {
 	{ .compatible = "mediatek,mt7621-spi" },
@@ -390,9 +449,15 @@ static struct platform_driver mt7621_spi_driver = {
 		.name = DRIVER_NAME,
 		.owner = THIS_MODULE,
 		.of_match_table = mt7621_spi_match,
+#ifdef CONFIG_K2P_RESET_GUARD
+		.suppress_bind_attrs = true,
+#endif
 	},
 	.probe = mt7621_spi_probe,
 	.remove = mt7621_spi_remove,
+#ifdef CONFIG_K2P_RESET_GUARD
+	.shutdown = mt7621_spi_shutdown,
+#endif
 };
 
 module_platform_driver(mt7621_spi_driver);

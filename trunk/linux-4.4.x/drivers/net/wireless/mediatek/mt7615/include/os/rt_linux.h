@@ -36,6 +36,7 @@ ARRISMOD_EXTERN(void, arris_event_send_hook, int, int, int, char *, int);
 #include <linux/kernel.h>
 #include <linux/spinlock.h>
 #include <linux/mutex.h>
+#include <linux/reboot_guard.h>
 #include <linux/init.h>
 #include <linux/string.h>
 #include <linux/timer.h>
@@ -694,6 +695,10 @@ struct os_cookie {
 #ifdef RTMP_PCI_SUPPORT
 	struct mutex dma_lifecycle_lock;
 	spinlock_t dma_state_lock;
+#ifdef CONFIG_K2P_RESET_GUARD
+	struct reboot_guard reset_device;
+	struct reboot_guard reset_dma;
+#endif
 #endif
 #ifdef RTMP_MAC_PCI
 	PPCI_DEV pci_dev;

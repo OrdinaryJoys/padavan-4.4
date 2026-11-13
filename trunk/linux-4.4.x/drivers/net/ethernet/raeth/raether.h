@@ -51,6 +51,7 @@
 
 #include <linux/delay.h>
 #include <linux/sched.h>
+#include <linux/reboot_guard.h>
 
 #include <asm-generic/pci-dma-compat.h>
 
@@ -243,6 +244,10 @@ struct END_DEVICE {
 	bool irq_active;
 	bool dma_quarantined;
 	bool module_reserved;
+#ifdef CONFIG_K2P_RESET_GUARD
+	struct reboot_guard reset_device;
+	struct reboot_guard reset_dma;
+#endif
 
 	/* TSO */
 	unsigned int skb_txd_num;

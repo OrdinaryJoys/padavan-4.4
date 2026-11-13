@@ -1047,6 +1047,12 @@ NTSTATUS HwRecoveryFromError(RTMP_ADAPTER *pAd)
 			mutex_unlock(&obj->dma_lifecycle_lock);
 			return NDIS_STATUS_FAILURE;
 		}
+#ifdef CONFIG_K2P_RESET_GUARD
+		if (!reboot_guard_admit(&obj->reset_dma)) {
+			mutex_unlock(&obj->dma_lifecycle_lock);
+			return NDIS_STATUS_FAILURE;
+		}
+#endif
 		ret = HwRecoveryFromErrorOwned(pAd);
 		mutex_unlock(&obj->dma_lifecycle_lock);
 		return ret;

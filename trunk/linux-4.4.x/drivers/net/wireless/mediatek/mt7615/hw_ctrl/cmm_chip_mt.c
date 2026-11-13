@@ -159,7 +159,8 @@ VOID MTMlmeLpExit(PRTMP_ADAPTER pAd, struct wifi_dev *wdev)
 #ifdef RTMP_MAC_PCI
 	/*  Enable PDMA */
 	MTWF_LOG(DBG_CAT_HW, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("%s(%d)::PDMA\n", __func__, __LINE__));
-	AsicSetWPDMA(pAd, PDMA_TX_RX, 1);
+	if (AsicSetWPDMA(pAd, PDMA_TX_RX, 1) != TRUE)
+		return;
 	/* Make sure get clear FW own interrupt */
 	RtmpOsMsDelay(100);
 #endif /* RTMP_MAC_PCI */

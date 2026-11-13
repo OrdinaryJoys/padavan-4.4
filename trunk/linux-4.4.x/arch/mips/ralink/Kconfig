@@ -75,6 +75,14 @@ choice
 		select BUILTIN_DTB
 endchoice
 
+config K2P_RESET_GUARD
+	bool "Require quiesced device owners before K2P software reset"
+	depends on SOC_MT7621 && !KEXEC
+	help
+	  Close DMA and flash admissions and require device shutdown to
+	  retire their owners before authorizing the MT7621 reset writes.
+	  Emergency restart without device shutdown cannot obtain authority.
+
 config RALINK_BUILTIN_DTB_NAME
 	string "Built in DTB"
 	help

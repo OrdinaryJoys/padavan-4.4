@@ -804,10 +804,21 @@ VOID RTMPDrvClose(VOID *pAdSrc, VOID *net_dev)
 	pAd->CommonCfg.bCountryFlag = FALSE;
 
 	for (i = 0; i < num_of_tx_ring; i++) {
+#ifdef CONFIG_K2P_RESET_GUARD
+		unsigned int retries = 1000;
+
+		while (READ_ONCE(pAd->DeQueueRunning[i]) && retries--)
+			RtmpusecDelay(1000);
+		if (READ_ONCE(pAd->DeQueueRunning[i])) {
+			RtmpDmaQuarantine(pAd);
+			return;
+		}
+#else
 		while (pAd->DeQueueRunning[i] == TRUE) {
 			MTWF_LOG(DBG_CAT_ALL, DBG_SUBCAT_ALL, DBG_LVL_TRACE, ("Waiting for TxQueue[%d] done..........\n", i));
 			RtmpusecDelay(1000);
 		}
+#endif
 	}
 
 #ifdef CONFIG_AP_SUPPORT

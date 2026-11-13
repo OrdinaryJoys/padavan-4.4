@@ -12,6 +12,7 @@ obj-y     = fork.o exec_domain.o panic.o \
 	    async.o range.o smpboot.o
 
 obj-$(CONFIG_MULTIUSER) += groups.o
+obj-$(CONFIG_K2P_RESET_GUARD) += reboot_guard.o
 
 ifdef CONFIG_FUNCTION_TRACER
 # Do not trace debug files and internal ftrace files

@@ -66,6 +66,7 @@ enum reboot_dma_failure {
 	REBOOT_DMA_RAETH = 1U << 0,
 	REBOOT_DMA_MT7615 = 1U << 1,
 	REBOOT_DMA_UNKNOWN = 1U << 2,
+	REBOOT_WATCHDOG_UNSAFE = 1U << 3,
 };
 extern void reboot_dma_failure_report(unsigned int reasons);
 extern unsigned int reboot_dma_failures(void);

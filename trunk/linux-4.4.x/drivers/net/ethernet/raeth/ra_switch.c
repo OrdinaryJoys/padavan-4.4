@@ -14,6 +14,9 @@
 #include "ra_switch.h"
 #include "ra_mac.h"
 #include "raeth_reg.h"
+#ifdef CONFIG_K2P_RESET_GUARD
+#include <asm/mach-ralink/ralink_regs.h>
+#endif
 
 #define MT7622_CHIP_ID 0x08000008
 
@@ -2695,13 +2698,19 @@ static void mt7530_trgmii_clock_setting(u32 xtal_mode)
 
 void trgmii_set_7621(void)
 {
+#ifndef CONFIG_K2P_RESET_GUARD
 	u32 val = 0;
+#endif
 	u32 val_0 = 0;
 
+#ifdef CONFIG_K2P_RESET_GUARD
+	ralink_reset_update(0, RALINK_FE_RST | RALINK_ETH_RST);
+#else
 	val = sys_reg_read(RSTCTRL);
 	/* MT7621 need to reset GMAC and FE first */
 	val = val | RALINK_FE_RST | RALINK_ETH_RST;
 	sys_reg_write(RSTCTRL, val);
+#endif
 
 	/* set TRGMII clock */
 	val_0 = sys_reg_read(CLK_CFG_0);
@@ -2711,8 +2720,12 @@ void trgmii_set_7621(void)
 	mdelay(1);
 	val_0 = sys_reg_read(CLK_CFG_0);
 	pr_info("set CLK_CFG_0 = 0x%x!!!!!!!!!!!!!!!!!!1\n", val_0);
+#ifdef CONFIG_K2P_RESET_GUARD
+	ralink_reset_update(RALINK_FE_RST | RALINK_ETH_RST, 0);
+#else
 	val = val & ~(RALINK_FE_RST | RALINK_ETH_RST);
 	sys_reg_write(RSTCTRL, val);
+#endif
 	pr_info("trgmii_set_7621 Completed!!\n");
 }
 
@@ -2936,9 +2949,15 @@ static void setup_internal_gsw(void)
 	/* Assert MT7623 RXC reset */
 	reg_bit_one(ETHDMASYS_ETH_SW_BASE + 0x0300, 31, 1);
 	/*For MT7623 reset MT7530 */
+#ifdef CONFIG_K2P_RESET_GUARD
+	ralink_reset_update(0, BIT(2));
+	mdelay(1);
+	ralink_reset_update(BIT(2), 0);
+#else
 	reg_bit_one(RALINK_SYSCTL_BASE + 0x34, 2, 1);
 	mdelay(1);
 	reg_bit_zero(RALINK_SYSCTL_BASE + 0x34, 2, 1);
+#endif
 	mdelay(100);
 
 	/* Wait for Switch Reset Completed */

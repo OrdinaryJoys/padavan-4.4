@@ -2204,6 +2204,9 @@ static INT hif_set_WPDMA(RTMP_ADAPTER *pAd, INT32 TxRx, BOOLEAN enable, UINT8 WP
 	if (dma_pci) {
 		spin_lock_irqsave(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, dma_flags);
 		if (enable && (!pAd->dma_lifecycle_pinned ||
+#ifdef CONFIG_K2P_RESET_GUARD
+			!reboot_guard_admit(&((POS_COOKIE)pAd->OS_Cookie)->reset_dma) ||
+#endif
 			pAd->dma_stopping || pAd->dma_quarantined)) {
 			spin_unlock_irqrestore(&((POS_COOKIE)pAd->OS_Cookie)->dma_state_lock, dma_flags);
 			return FALSE;

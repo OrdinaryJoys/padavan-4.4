@@ -222,6 +222,31 @@ static int rt_pci_resume(struct pci_dev *pci_dev)
 int g_AdapCount;
 #endif
 #endif
+#ifdef CONFIG_K2P_RESET_GUARD
+bool RtmpPciDrain(struct pci_dev *pdev)
+{
+	u16 command, status;
+	int attempt;
+
+	pci_clear_master(pdev);
+	if (pci_read_config_word(pdev, PCI_COMMAND, &command) ||
+	    command == 0xffff || (command & PCI_COMMAND_MASTER) ||
+	    !pci_is_pcie(pdev))
+		return false;
+
+	for (attempt = 0; attempt < 4; attempt++) {
+		if (attempt)
+			msleep(100 << (attempt - 1));
+		if (pci_read_config_word(pdev, pci_pcie_cap(pdev) + PCI_EXP_DEVSTA,
+					 &status) || status == 0xffff)
+			return false;
+		if (!(status & PCI_EXP_DEVSTA_TRPND))
+			return true;
+	}
+	return false;
+}
+#endif
+
 static int DEVINIT rt_pci_probe(struct pci_dev *pdev, const struct pci_device_id *pci_id)
 {
 	void *pAd = NULL, *handle;
@@ -233,6 +258,9 @@ static int DEVINIT rt_pci_probe(struct pci_dev *pdev, const struct pci_device_id
 	RTMP_OS_NETDEV_OP_HOOK netDevHook;
 	unsigned long OpMode;
 	RT_CMD_PCIE_INIT pci_config;
+#ifdef CONFIG_K2P_RESET_GUARD
+	struct reboot_guard reset_device = { 0 };
+#endif
 #ifdef CONFIG_WIFI_MSI_SUPPORT
 	BOOLEAN msi_owned = FALSE;
 #endif
@@ -241,6 +269,16 @@ static int DEVINIT rt_pci_probe(struct pci_dev *pdev, const struct pci_device_id
 	/* A prior failed remove retains drvdata and every dependent owner. */
 	if (pci_get_drvdata(pdev) != NULL)
 		return -EBUSY;
+#ifdef CONFIG_K2P_RESET_GUARD
+	rv = reboot_guard_begin(&reset_device, REBOOT_GUARD_RUNTIME);
+	if (rv)
+		return rv;
+	/* Do not inherit bus-master permission from the boot environment. */
+	if (!RtmpPciDrain(pdev)) {
+		reboot_guard_fail(&reset_device, REBOOT_DMA_MT7615);
+		return -EIO;
+	}
+#endif
 	/*PCIDevInit============================================== */
 	/* wake up and enable device */
 	rv = pci_enable_device(pdev);
@@ -248,6 +286,9 @@ static int DEVINIT rt_pci_probe(struct pci_dev *pdev, const struct pci_device_id
 	if (rv != 0) {
 		MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_ERROR,
 				 ("Enable PCI device failed, errno=%d!\n", rv));
+#ifdef CONFIG_K2P_RESET_GUARD
+		reboot_guard_finish(&reset_device);
+#endif
 		return rv;
 	}
 
@@ -262,13 +303,13 @@ static int DEVINIT rt_pci_probe(struct pci_dev *pdev, const struct pci_device_id
 		if ((rv = pci_set_dma_mask(pdev, DMA_BIT_MASK(64))) != 0) {
 			MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_ERROR,
 					 ("set DMA mask failed!errno=%d\n", rv));
-			return rv;
+			goto err_out;
 		}
 
 		if ((rv = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64))) != 0) {
 			MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_ERROR,
 					 ("set DMA consistent mask failed!errno=%d\n", rv));
-			return rv;
+			goto err_out;
 		}
 	}
 	else
@@ -316,8 +357,10 @@ static int DEVINIT rt_pci_probe(struct pci_dev *pdev, const struct pci_device_id
 				  (ULONG)pci_resource_start(pdev, 0), (ULONG)csr_addr, pdev->irq));
 	}
 
+#ifndef CONFIG_K2P_RESET_GUARD
 	/* Set DMA master */
 	pci_set_master(pdev);
+#endif
 
 	/* Allocate RTMP_ADAPTER adapter structure */
 	os_alloc_mem(NULL, (UCHAR **)&handle, sizeof(struct os_cookie));
@@ -332,6 +375,10 @@ static int DEVINIT rt_pci_probe(struct pci_dev *pdev, const struct pci_device_id
 	memset(handle, 0, sizeof(struct os_cookie));
 	((POS_COOKIE)handle)->pci_dev = pdev;
 	((POS_COOKIE)handle)->pDev = &(pdev->dev);
+#ifdef CONFIG_K2P_RESET_GUARD
+	((POS_COOKIE)handle)->reset_device = reset_device;
+	memset(&((POS_COOKIE)handle)->reset_dma, 0, sizeof(struct reboot_guard));
+#endif
 #ifdef OS_ABL_FUNC_SUPPORT
 	{
 		RTMP_PCI_CONFIG PciConfig;
@@ -450,6 +497,9 @@ err_out:
 		RtmpOsPciMsiDisable(pdev);
 #endif
 	pci_disable_device(pdev);
+#ifdef CONFIG_K2P_RESET_GUARD
+	reboot_guard_finish(&reset_device);
+#endif
 	MTWF_LOG(DBG_CAT_HIF, CATHIF_PCI, DBG_LVL_ERROR, ("<=== %s() failed with rv = %d!\n",
 			 __func__, rv));
 	return -ENODEV; /* probe fail */
@@ -468,6 +518,9 @@ static VOID DEVEXIT rt_pci_remove(struct pci_dev *pci_dev)
 		PNET_DEV net_dev;
 		VOID *pAd = NULL;
 		ULONG csr_addr;
+#ifdef CONFIG_K2P_RESET_GUARD
+		struct reboot_guard reset_device = { 0 };
+#endif
 #ifdef INTELP6_SUPPORT
 #ifdef MULTI_INF_SUPPORT
 		pci_dev_count--;
@@ -506,6 +559,13 @@ static VOID DEVEXIT rt_pci_remove(struct pci_dev *pci_dev)
 			DiagCtrlFree(pAd);
 #endif
 			/* Free RTMP_ADAPTER related structures only after last close. */
+#ifdef CONFIG_K2P_RESET_GUARD
+			reset_device = ((POS_COOKIE)((RTMP_ADAPTER *)pAd)->OS_Cookie)->reset_device;
+			if (!RtmpPciDrain(pci_dev)) {
+				reboot_guard_fail(&reset_device, REBOOT_DMA_MT7615);
+				return;
+			}
+#endif
 			if (!RtmpRaDevCtrlExit(pAd))
 				return;
 			/* Suppress new bus mastering before releasing PCI resources.
@@ -536,6 +596,10 @@ static VOID DEVEXIT rt_pci_remove(struct pci_dev *pci_dev)
 		/* Balance the successful probe's pci_enable_device(). */
 		if (pci_is_enabled(pci_dev))
 			pci_disable_device(pci_dev);
+#ifdef CONFIG_K2P_RESET_GUARD
+		if (reset_device.generation)
+			reboot_guard_finish(&reset_device);
+#endif
 #ifdef INTELP6_SUPPORT
 #ifdef MULTI_INF_SUPPORT
 		g_AdapCount--;
@@ -573,6 +637,16 @@ static VOID rt_pci_shutdown(struct pci_dev *pci_dev)
 	struct net_device *net_dev = pci_get_drvdata(pci_dev);
 	RTMP_ADAPTER *pAd = NULL;
 
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (net_dev) {
+		GET_PAD_FROM_NET_DEV(pAd, net_dev);
+		if (pAd) {
+			RtmpDmaShutdown(pAd);
+			return;
+		}
+	}
+	pci_clear_master(pci_dev);
+#else
 	/* Shutdown is containment, never removal. Keep every DMA/PCI owner. */
 	if (net_dev) {
 		GET_PAD_FROM_NET_DEV(pAd, net_dev);
@@ -596,6 +670,7 @@ static VOID rt_pci_shutdown(struct pci_dev *pci_dev)
 	}
 	/* No claim that clearing master drains transactions already in flight. */
 	pci_clear_master(pci_dev);
+#endif
 }
 
 
