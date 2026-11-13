@@ -28,6 +28,7 @@
 
 #define RTMP_MODULE_OS
 
+#include <linux/device_lifetime.h>
 #include "rtmp_comm.h"
 #include "rtmp_chip.h"
 #include "rt_os_util.h"
@@ -275,6 +276,7 @@ static int DEVINIT rt_pci_probe(struct pci_dev *pdev, const struct pci_device_id
 		return rv;
 	/* Do not inherit bus-master permission from the boot environment. */
 	if (!RtmpPciDrain(pdev)) {
+		device_lifetime_quarantine(&pdev->dev);
 		reboot_guard_fail(&reset_device, REBOOT_DMA_MT7615);
 		return -EIO;
 	}
@@ -690,6 +692,9 @@ static struct pci_driver rt_pci_driver = {
      */
     .driver = {
         .suppress_bind_attrs = true,
+#ifdef CONFIG_K2P_RESET_GUARD
+        .no_forced_unbind = true,
+#endif
     },
 name:
 	RTMP_DRV_NAME,

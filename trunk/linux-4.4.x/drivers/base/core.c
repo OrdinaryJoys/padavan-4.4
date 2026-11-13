@@ -10,6 +10,7 @@
  *
  */
 
+#include <linux/device_lifetime.h>
 #include <linux/cpufreq.h>
 #include <linux/device.h>
 #include <linux/err.h>
@@ -1101,6 +1102,9 @@ int device_add(struct device *dev)
 	if (!dev)
 		goto done;
 
+	error = device_lifetime_add(dev);
+	if (error)
+		goto done;
 	if (!dev->p) {
 		error = device_private_init(dev);
 		if (error)
@@ -1311,6 +1315,9 @@ void device_del(struct device *dev)
 	struct kobject *glue_dir = NULL;
 	struct class_interface *class_intf;
 
+	if (!device_lifetime_remove_begin(dev))
+		return;
+
 	/* Notify clients of device removal.  This call must come
 	 * before dpm_sysfs_remove().
 	 */
@@ -1373,6 +1380,8 @@ EXPORT_SYMBOL_GPL(device_del);
  */
 void device_unregister(struct device *dev)
 {
+	if (!device_lifetime_remove_begin(dev))
+		return;
 	pr_debug("device: '%s': %s\n", dev_name(dev), __func__);
 	device_del(dev);
 	put_device(dev);
@@ -2045,6 +2054,10 @@ int device_move(struct device *dev, struct device *new_parent,
 	dev = get_device(dev);
 	if (!dev)
 		return -EINVAL;
+	if (!device_lifetime_detach_begin(dev)) {
+		put_device(dev);
+		return -EBUSY;
+	}
 
 	device_pm_lock();
 	new_parent = get_device(new_parent);
@@ -2113,6 +2126,7 @@ int device_move(struct device *dev, struct device *new_parent,
 	put_device(old_parent);
 out:
 	device_pm_unlock();
+	device_lifetime_detach_end(dev);
 	put_device(dev);
 	return error;
 }

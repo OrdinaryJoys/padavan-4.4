@@ -10,6 +10,7 @@
  *
  */
 
+#include <linux/device_lifetime.h>
 #include <linux/async.h>
 #include <linux/device.h>
 #include <linux/module.h>
@@ -195,7 +196,7 @@ static ssize_t unbind_store(struct device_driver *drv, const char *buf,
 		device_release_driver(dev);
 		if (dev->parent)
 			device_unlock(dev->parent);
-		err = count;
+		err = dev->driver == drv ? -EBUSY : count;
 	}
 	put_device(dev);
 	bus_put(bus);
@@ -582,7 +583,7 @@ void bus_remove_device(struct device *dev)
 	struct bus_type *bus = dev->bus;
 	struct subsys_interface *sif;
 
-	if (!bus)
+	if (!bus || !device_lifetime_remove_begin(dev))
 		return;
 
 	mutex_lock(&bus->p->mutex);
@@ -701,6 +702,12 @@ int bus_add_driver(struct device_driver *drv)
 	if (error)
 		goto out_unregister;
 
+#ifdef CONFIG_K2P_RESET_GUARD
+	/* A failed module init must never follow a permanently retained probe. */
+	error = driver_add_groups(drv, drv->groups);
+	if (error)
+		goto out_unregister;
+#endif
 	klist_add_tail(&priv->knode_bus, &bus->p->klist_drivers);
 	if (drv->bus->p->drivers_autoprobe) {
 		if (driver_allows_async_probing(drv)) {
@@ -757,7 +764,7 @@ out_put_bus:
  */
 void bus_remove_driver(struct device_driver *drv)
 {
-	if (!drv->bus)
+	if (!drv->bus || !device_lifetime_driver_remove(drv))
 		return;
 
 	if (!drv->suppress_bind_attrs)

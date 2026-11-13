@@ -10,6 +10,7 @@
  *
  */
 
+#include <linux/device_lifetime.h>
 #include <linux/device.h>
 #include <linux/module.h>
 #include <linux/errno.h>
@@ -165,14 +166,17 @@ int driver_register(struct device_driver *drv)
 		return -EBUSY;
 	}
 
+	device_lifetime_driver_start(drv);
 	ret = bus_add_driver(drv);
 	if (ret)
 		return ret;
+#ifndef CONFIG_K2P_RESET_GUARD
 	ret = driver_add_groups(drv, drv->groups);
 	if (ret) {
 		bus_remove_driver(drv);
 		return ret;
 	}
+#endif
 	kobject_uevent(&drv->p->kobj, KOBJ_ADD);
 
 	return ret;
@@ -191,6 +195,8 @@ void driver_unregister(struct device_driver *drv)
 		WARN(1, "Unexpected driver unregister!\n");
 		return;
 	}
+	if (!device_lifetime_driver_remove(drv))
+		return;
 	driver_remove_groups(drv, drv->groups);
 	bus_remove_driver(drv);
 }

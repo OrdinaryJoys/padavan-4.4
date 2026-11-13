@@ -8,6 +8,7 @@
  *
  */
 
+#include <linux/device_lifetime.h>
 #include <linux/pci.h>
 #include <linux/module.h>
 #include <linux/init.h>
@@ -401,7 +402,15 @@ static int pci_device_probe(struct device *dev)
 	int error;
 	struct pci_dev *pci_dev = to_pci_dev(dev);
 	struct pci_driver *drv = to_pci_driver(dev->driver);
+	struct pci_bus *bus;
 
+	/* Bus class objects own resources but are siblings of endpoints in
+	 * the device hierarchy. Retain every upstream bus before touching IRQs. */
+	for (bus = pci_dev->bus; bus; bus = bus->parent) {
+		error = device_lifetime_depend(dev, &bus->dev);
+		if (error)
+			return error;
+	}
 	pci_assign_irq(pci_dev);
 
 	error = pcibios_alloc_irq(pci_dev);
@@ -1317,6 +1326,8 @@ EXPORT_SYMBOL(__pci_register_driver);
 
 void pci_unregister_driver(struct pci_driver *drv)
 {
+	if (!device_lifetime_driver_remove(&drv->driver))
+		return;
 	driver_unregister(&drv->driver);
 	pci_free_dynids(drv);
 }

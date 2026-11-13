@@ -1,0 +1,84 @@
+K2P fixed-device lifetime policy
+==============================
+
+CONFIG_K2P_RESET_GUARD opts the five fixed RAETH, MT7615 PCI, NOR,
+MT7621 SPI and watchdog drivers into no_forced_unbind. This deliberately
+does NOT implement hot removal. During this boot these devices, their
+required ancestors, their bindings and driver modules remain resident.
+Normal netdev close/open and ordered device shutdown are separate APIs.
+In particular, a lifetime hold is not a reboot_guard hardware owner and
+does not prevent a successfully drained normal restart.
+
+Why a remove error is insufficient
+---------------------------------
+In this Linux 4.4 tree __device_release_driver ignores remove's return,
+releases devres and clears the binding. PCI and platform wrappers then
+continue freeing bus resources or dropping references. SPI unregister
+also closes its queue before removing NOR children; their required
+ready/address-restore commands cannot run on an already-closed queue.
+Those forced paths are rejected before their first mutation. Successful
+transactional hot removal, including parent rollback, is not claimed.
+
+Ordering and ownership
+----------------------
+A short raw spinlock orders permanent protection against destructive
+claims. Probe and direct bind enter before any driver callback. Protection
+walks a bounded ancestor chain, pins distinct driver owners transactionally and
+takes one device reference per newly protected object. PCI also records
+every upstream bus class object; those are not endpoint device ancestors.
+No allocation, callback, device mutex, RTNL, MMIO or wait runs under this
+lock. Normal driver ordering remains device locks -> RTNL -> lifecycle
+mutex -> state spinlock -> the independent short core locks.
+
+REMOVING claims are irreversible and idempotent for nested delete wrappers.
+DETACHING is exclusive and ends when a nonprotected detach/move completes.
+A descendant probe cannot install protection while either claim is active.
+An already protected ancestor cannot move. driver unregister claims block
+later probe admission; retained drivers never enter the detach loop or lose
+drv->p. A module reference acquired before probe prevents normal module
+exit even when all WiFi interfaces are down. MODULE_FORCE_UNLOAD is disabled
+in the accepted K2P profile. Do not enable it or call exit functions directly.
+
+Fallible driver-specific sysfs groups are allocated before autoprobe so a
+failed registration cannot follow a permanently retained callback. Target
+module initializers return registration directly. This does not add support
+for arbitrary multi-driver module-init rollback or removable bus drivers;
+the actual PCI/platform/SPI buses here are built in.
+
+Failed initialization
+---------------------
+A known-safe allocation/probe failure may release its devres while probing.
+It keeps the bounded device/module hold and permits the same driver to retry.
+It cannot switch to another driver over the retained hardware graph.
+An uncertain PCI initial-drain, NOR scan/restore or watchdog-stop failure is
+explicitly quarantined before return. Core preserves private data and devres,
+removes the uncompleted sysfs binding, and refuses retries. A separate sticky
+hardware owner/failure prevents terminal reset. Quarantine never pretends
+the failed probe completed successfully. Pure OOM is not marked uncertain.
+
+Unsupported operations and observability
+----------------------------------------
+The normal sysfs bind/unbind files remain suppressed for critical drivers.
+PCI sysfs remove returns -EBUSY for protected hardware. Void kernel deletion
+and unregister APIs return before mutations. They do not stop services or
+attempt partial cleanup. Repeated attempts do not consume references.
+Normal rc WiFi restart on the K2P DBDC profile closes/reopens interfaces and
+regenerates configuration; it does not unload the MT7615 module.
+
+Safety scope and tests
+----------------------
+tests/test_device_lifetime.py executes the production core and destructive
+wrapper bodies with inert kernel/hardware services, including deterministic
+probe-vs-parent-delete schedules, uncertain probe retries, module pin failure,
+exclusive detach, direct bind, unrelated-device removal and negative controls.
+The prior RAETH remove, SPI queue and PCI registration fixtures explicitly
+disable this new lifetime policy
+so its historical driver-cleanup/failure controls remain testable; it is not
+evidence that protected K2P hardware can still be forcibly removed.
+
+Full firmware compilation, MIPS harness execution and actual ELF/image binding
+are distinct from real lockdep/IRQ/PCI/DMA/NOR behavior. Arbitrary kernel code
+that releases a resource directly, forced module text removal, external power
+or watchdog resets, and unsupported topology/bus replacement remain outside
+this policy. Real hot-reset, memory-pressure and efd2-first-upgrade acceptance
+requires separately authorized field testing.

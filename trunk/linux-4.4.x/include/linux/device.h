@@ -264,6 +264,11 @@ struct device_driver {
 	const char		*mod_name;	/* used for built-in modules */
 
 	bool suppress_bind_attrs;	/* disables bind/unbind via sysfs */
+#ifdef CONFIG_K2P_RESET_GUARD
+	bool no_forced_unbind; /* fixed hardware: retain binding and ancestors */
+	bool lifetime_pinned;
+	bool lifetime_unregistering;
+#endif
 	enum probe_type probe_type;
 
 	const struct of_device_id	*of_match_table;
@@ -765,6 +770,10 @@ struct device_dma_parameters {
  */
 struct device {
 	struct device		*parent;
+#ifdef CONFIG_K2P_RESET_GUARD
+	unsigned int lifetime_flags;
+	struct device_driver *lifetime_driver;
+#endif
 
 	struct device_private	*p;
 

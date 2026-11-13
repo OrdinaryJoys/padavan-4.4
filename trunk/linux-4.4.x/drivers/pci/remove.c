@@ -1,3 +1,4 @@
+#include <linux/device_lifetime.h>
 #include <linux/pci.h>
 #include <linux/module.h>
 #include <linux/pci-aspm.h>
@@ -17,6 +18,9 @@ static void pci_free_resources(struct pci_dev *dev)
 
 static void pci_stop_dev(struct pci_dev *dev)
 {
+	if (!device_lifetime_remove_begin(&dev->dev))
+		return;
+
 	pci_pme_active(dev, false);
 
 	if (dev->is_added) {
@@ -32,6 +36,9 @@ static void pci_stop_dev(struct pci_dev *dev)
 
 static void pci_destroy_dev(struct pci_dev *dev)
 {
+	if (!device_lifetime_remove_begin(&dev->dev))
+		return;
+
 	if (!dev->dev.kobj.parent)
 		return;
 
@@ -47,6 +54,9 @@ static void pci_destroy_dev(struct pci_dev *dev)
 
 void pci_remove_bus(struct pci_bus *bus)
 {
+	if (!device_lifetime_remove_begin(bus->bridge))
+		return;
+
 	pci_proc_detach_bus(bus);
 
 	down_write(&pci_bus_sem);
@@ -63,6 +73,9 @@ static void pci_stop_bus_device(struct pci_dev *dev)
 {
 	struct pci_bus *bus = dev->subordinate;
 	struct pci_dev *child, *tmp;
+
+	if (!device_lifetime_remove_begin(&dev->dev))
+		return;
 
 	/*
 	 * Stopping an SR-IOV PF device removes all the associated VFs,
@@ -83,6 +96,9 @@ static void pci_remove_bus_device(struct pci_dev *dev)
 {
 	struct pci_bus *bus = dev->subordinate;
 	struct pci_dev *child, *tmp;
+
+	if (!device_lifetime_remove_begin(&dev->dev))
+		return;
 
 	if (bus) {
 		list_for_each_entry_safe(child, tmp,
@@ -110,6 +126,9 @@ static void pci_remove_bus_device(struct pci_dev *dev)
  */
 void pci_stop_and_remove_bus_device(struct pci_dev *dev)
 {
+	if (!device_lifetime_remove_begin(&dev->dev))
+		return;
+
 	pci_stop_bus_device(dev);
 	pci_remove_bus_device(dev);
 }
@@ -131,6 +150,9 @@ void pci_stop_root_bus(struct pci_bus *bus)
 	if (!pci_is_root_bus(bus))
 		return;
 
+	if (!device_lifetime_remove_begin(bus->bridge))
+		return;
+
 	host_bridge = to_pci_host_bridge(bus->bridge);
 	list_for_each_entry_safe_reverse(child, tmp,
 					 &bus->devices, bus_list)
@@ -147,6 +169,9 @@ void pci_remove_root_bus(struct pci_bus *bus)
 	struct pci_host_bridge *host_bridge;
 
 	if (!pci_is_root_bus(bus))
+		return;
+
+	if (!device_lifetime_remove_begin(bus->bridge))
 		return;
 
 	host_bridge = to_pci_host_bridge(bus->bridge);

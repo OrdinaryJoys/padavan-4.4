@@ -11,6 +11,7 @@
  * by the Free Software Foundation.
  */
 
+#include <linux/device_lifetime.h>
 #include <linux/clk.h>
 #include <linux/reset.h>
 #include <linux/module.h>
@@ -156,6 +157,7 @@ static int mt762x_wdt_probe(struct platform_device *pdev)
 		ret = device_reset(&pdev->dev);
 		if (ret) {
 #ifdef CONFIG_K2P_RESET_GUARD
+			device_lifetime_quarantine(&pdev->dev);
 			reboot_guard_fail(&watchdog_guard, REBOOT_WATCHDOG_UNSAFE);
 #endif
 			return ret;
@@ -166,6 +168,7 @@ static int mt762x_wdt_probe(struct platform_device *pdev)
 	ret = mt762x_wdt_stop(&mt762x_wdt_dev);
 	if (ret) {
 #ifdef CONFIG_K2P_RESET_GUARD
+		device_lifetime_quarantine(&pdev->dev);
 		reboot_guard_fail(&watchdog_guard, REBOOT_WATCHDOG_UNSAFE);
 #endif
 		return ret;
@@ -235,6 +238,10 @@ static struct platform_driver mt762x_wdt_driver = {
 		.name		= KBUILD_MODNAME,
 		.owner		= THIS_MODULE,
 		.of_match_table	= mt762x_wdt_match,
+#ifdef CONFIG_K2P_RESET_GUARD
+		.no_forced_unbind = true,
+		.suppress_bind_attrs = true,
+#endif
 	},
 };
 

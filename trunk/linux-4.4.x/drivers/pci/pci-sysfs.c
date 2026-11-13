@@ -15,6 +15,7 @@
  */
 
 
+#include <linux/device_lifetime.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/pci.h>
@@ -367,6 +368,8 @@ static ssize_t remove_store(struct device *dev, struct device_attribute *attr,
 	if (kstrtoul(buf, 0, &val) < 0)
 		return -EINVAL;
 
+	if (val && !device_lifetime_remove_begin(dev))
+		return -EBUSY;
 	if (val && device_remove_file_self(dev, attr))
 		pci_stop_and_remove_bus_device_locked(to_pci_dev(dev));
 	return count;

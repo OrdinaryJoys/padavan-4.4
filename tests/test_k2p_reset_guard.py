@@ -231,6 +231,9 @@ def nor_program():
 #define kfree(p) do { free(p); allocated_flash = NULL; } while (0)
 static void get_device(struct device *dev) { assert(dev); }
 static void put_device(struct device *dev) { assert(dev); }
+static bool lifetime_quarantined;
+static void device_lifetime_quarantine(struct device *dev) { assert(dev); lifetime_quarantined = true; }
+static bool device_lifetime_quarantined(struct device *dev) { assert(dev); return lifetime_quarantined; }
 static int m25p_probe(''')
     code = code.replace("mutex_init(&n->lock);",
                         "mutex_init(&n->lock); assert(!reboot_guard_begin(&n->reset_device, REBOOT_GUARD_FLASH_DEVICE));")
@@ -245,6 +248,8 @@ def pci_program():
     code = code.replace("void *pDev;};", "void *pDev;struct reboot_guard reset_device,reset_dma;};")
     drain = function(texts["pci"], "RtmpPciDrain")
     boundary = r'''
+static bool lifetime_quarantined;
+static void device_lifetime_quarantine(void *dev) { assert(dev); lifetime_quarantined = true; }
 #define PCI_COMMAND 4
 #define PCI_COMMAND_MASTER 4
 #define PCI_EXP_DEVSTA 10

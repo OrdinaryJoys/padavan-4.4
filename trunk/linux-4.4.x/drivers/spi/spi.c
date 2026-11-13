@@ -15,6 +15,7 @@
  * GNU General Public License for more details.
  */
 
+#include <linux/device_lifetime.h>
 #include <linux/kernel.h>
 #include <linux/device.h>
 #include <linux/init.h>
@@ -2002,6 +2003,8 @@ void spi_unregister_master(struct spi_master *master)
 	int dummy;
 	unsigned long flags;
 
+	if (!device_lifetime_remove_begin(&master->dev))
+		return;
 	if (master->queued) {
 		/* Keep the pump running for already-owned messages while closing
 		 * all new admissions. A timeout is not permission to free an active

@@ -7,6 +7,7 @@
  * This file is released under the GPLv2.
  */
 
+#include <linux/device_lifetime.h>
 #include <linux/device.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -508,6 +509,9 @@ static int release_nodes(struct device *dev, struct list_head *first,
 int devres_release_all(struct device *dev)
 {
 	unsigned long flags;
+
+	if (!device_lifetime_devres_allowed(dev))
+		return -EBUSY;
 
 	/* Looks like an uninitialized device structure */
 	if (WARN_ON(dev->devres_head.next == NULL))

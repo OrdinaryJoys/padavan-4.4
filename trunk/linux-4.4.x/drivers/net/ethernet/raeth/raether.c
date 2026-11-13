@@ -4013,6 +4013,9 @@ static struct platform_driver raeth_driver = {
 		   .owner = THIS_MODULE,
 		   /* Keep manual detach disabled until physical DMA/consumer retirement is tested. */
 		   .suppress_bind_attrs = true,
+#ifdef CONFIG_K2P_RESET_GUARD
+		   .no_forced_unbind = true,
+#endif
 		   .of_match_table = raether_of_ids,
 		   /* .pm = &raeth_pm_ops, */
 		   },

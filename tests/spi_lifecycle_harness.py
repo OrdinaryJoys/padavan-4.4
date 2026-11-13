@@ -717,6 +717,10 @@ static void clk_disable_unprepare(struct clk*c){if(c!=&hclk)abort();check_releas
 static int __unregister(struct device*d,void*p){(void)d;(void)p;return 0;}
 static int device_for_each_child(struct device*d,void*p,int(*fn)(struct device*,void*)){if(d!=&master.dev||p||fn!=__unregister)abort();check_release();child_unregister++;return 0;}
 static void device_unregister(struct device*d){if(d!=&master.dev)abort();check_release();master_unregister++;}
+/* Historical queue cleanup fixture disables fixed-device lifetime policy. */
+static bool device_lifetime_remove_begin(struct device*d){(void)d;return true;}
+static bool device_lifetime_detach_begin(struct device*d){(void)d;return true;}
+static void device_lifetime_detach_end(struct device*d){(void)d;}
 static int driver_allows_async_probing(struct device_driver*d){(void)d;return 0;}
 static void async_synchronize_full(void){abort();}
 static void driver_sysfs_remove(struct device*d){(void)d;}

@@ -451,6 +451,7 @@ static struct platform_driver mt7621_spi_driver = {
 		.of_match_table = mt7621_spi_match,
 #ifdef CONFIG_K2P_RESET_GUARD
 		.suppress_bind_attrs = true,
+		.no_forced_unbind = true,
 #endif
 	},
 	.probe = mt7621_spi_probe,

@@ -140,6 +140,8 @@ struct pci_driver {
  void (*shutdown)(struct pci_dev *),(*remove)(struct pci_dev *);
  struct device_driver driver; struct dynids dynids;
 };
+/* Historical registration fixture uses the disabled lifetime-policy branch. */
+static bool device_lifetime_driver_remove(struct device_driver *d) { (void)d;return true; }
 static int pci_bus_type;
 static int registered, bind_calls, nodes, errors, shutdowns, removes, unregisters, dynid_frees;
 static int registration_error, add_error;

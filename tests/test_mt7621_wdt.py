@@ -186,10 +186,12 @@ class Mt7621WatchdogTests(unittest.TestCase):
         probe = h.function(self.texts['driver'], 'mt762x_wdt_probe')
         reset = ('ret = device_reset(&pdev->dev);\n\t\tif (ret) {\n'
                  '#ifdef CONFIG_K2P_RESET_GUARD\n'
+                 '\t\t\tdevice_lifetime_quarantine(&pdev->dev);\n'
                  '\t\t\treboot_guard_fail(&watchdog_guard, REBOOT_WATCHDOG_UNSAFE);\n'
                  '#endif\n\t\t\treturn ret;\n\t\t}')
         stop = ('ret = mt762x_wdt_stop(&mt762x_wdt_dev);\n\tif (ret) {\n'
                 '#ifdef CONFIG_K2P_RESET_GUARD\n'
+                '\t\tdevice_lifetime_quarantine(&pdev->dev);\n'
                 '\t\treboot_guard_fail(&watchdog_guard, REBOOT_WATCHDOG_UNSAFE);\n'
                 '#endif\n\t\treturn ret;\n\t}')
         self.assertEqual(probe.count(reset), 1)

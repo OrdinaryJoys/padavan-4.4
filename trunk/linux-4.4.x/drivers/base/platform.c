@@ -10,6 +10,7 @@
  * information.
  */
 
+#include <linux/device_lifetime.h>
 #include <linux/string.h>
 #include <linux/platform_device.h>
 #include <linux/of_device.h>
@@ -396,7 +397,7 @@ void platform_device_del(struct platform_device *pdev)
 {
 	int i;
 
-	if (pdev) {
+	if (pdev && device_lifetime_remove_begin(&pdev->dev)) {
 		device_del(&pdev->dev);
 
 		if (pdev->id_auto) {
@@ -435,6 +436,8 @@ EXPORT_SYMBOL_GPL(platform_device_register);
  */
 void platform_device_unregister(struct platform_device *pdev)
 {
+	if (!device_lifetime_remove_begin(&pdev->dev))
+		return;
 	platform_device_del(pdev);
 	platform_device_put(pdev);
 }

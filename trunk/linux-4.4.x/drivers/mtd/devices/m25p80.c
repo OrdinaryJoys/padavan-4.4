@@ -15,6 +15,7 @@
  *
  */
 
+#include <linux/device_lifetime.h>
 #include <linux/err.h>
 #include <linux/errno.h>
 #include <linux/module.h>
@@ -251,6 +252,7 @@ static int m25p_probe(struct spi_device *spi)
 	ret = spi_nor_scan(nor, flash_name, mode);
 	if (ret) {
 #ifdef CONFIG_K2P_RESET_GUARD
+		device_lifetime_quarantine(&spi->dev);
 		/* Scan may have changed status/addressing before returning. */
 		reboot_guard_fail(&nor->reset_device, REBOOT_DMA_UNKNOWN);
 #endif
@@ -264,7 +266,8 @@ static int m25p_probe(struct spi_device *spi)
 			data ? data->nr_parts : 0);
 #ifdef CONFIG_K2P_RESET_GUARD
 	if (ret) {
-		spi_nor_restore(nor);
+		if (spi_nor_restore(nor))
+			device_lifetime_quarantine(&spi->dev);
 		goto fail_probe;
 	}
 	get_device(&spi->dev);
@@ -273,6 +276,8 @@ static int m25p_probe(struct spi_device *spi)
 
 fail_probe:
 #ifdef CONFIG_K2P_RESET_GUARD
+	if (device_lifetime_quarantined(&spi->dev))
+		return ret;
 	spi_set_drvdata(spi, NULL);
 	kfree(flash);
 #endif
@@ -381,6 +386,9 @@ static struct spi_driver m25p80_driver = {
 		.name	= "m25p80",
 		/* A firmware-backed device cannot safely be detached by sysfs. */
 		.suppress_bind_attrs = true,
+#ifdef CONFIG_K2P_RESET_GUARD
+		.no_forced_unbind = true,
+#endif
 		.of_match_table = m25p_of_table,
 	},
 	.id_table	= m25p_ids,

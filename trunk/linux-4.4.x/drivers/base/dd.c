@@ -17,6 +17,7 @@
  * This file is released under the GPLv2
  */
 
+#include <linux/device_lifetime.h>
 #include <linux/device.h>
 #include <linux/delay.h>
 #include <linux/module.h>
@@ -267,9 +268,13 @@ int device_bind_driver(struct device *dev)
 {
 	int ret;
 
+	ret = device_lifetime_probe_begin(dev, dev->driver);
+	if (ret)
+		return ret;
 	ret = driver_sysfs_add(dev);
 	if (!ret)
 		driver_bound(dev);
+	device_lifetime_probe_end(dev);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(device_bind_driver);
@@ -281,6 +286,10 @@ static int really_probe(struct device *dev, struct device_driver *drv)
 {
 	int ret = 0;
 	int local_trigger_count = atomic_read(&deferred_trigger_count);
+
+	ret = device_lifetime_probe_begin(dev, drv);
+	if (ret)
+		return ret;
 
 	atomic_inc(&probe_count);
 	pr_debug("bus: '%s': %s: probing driver %s with device %s\n",
@@ -328,6 +337,14 @@ static int really_probe(struct device *dev, struct device_driver *drv)
 	goto done;
 
 probe_failed:
+	/* An uncertain probe keeps private data and devres but is not bound
+	 * or retried. A numeric reset owner independently vetoes restart. */
+	if (device_lifetime_quarantined(dev)) {
+		driver_sysfs_remove(dev);
+		dev->driver = NULL;
+		ret = 0;
+		goto done;
+	}
 	devres_release_all(dev);
 	driver_sysfs_remove(dev);
 	dev->driver = NULL;
@@ -361,6 +378,7 @@ probe_failed:
 	 */
 	ret = 0;
 done:
+	device_lifetime_probe_end(dev);
 	atomic_dec(&probe_count);
 	wake_up(&probe_waitqueue);
 	return ret;
@@ -664,6 +682,8 @@ static void __device_release_driver(struct device *dev)
 {
 	struct device_driver *drv;
 
+	if (!device_lifetime_detach_begin(dev))
+		return;
 	drv = dev->driver;
 	if (drv) {
 		if (driver_allows_async_probing(drv))
@@ -698,6 +718,7 @@ static void __device_release_driver(struct device *dev)
 						     dev);
 
 	}
+	device_lifetime_detach_end(dev);
 }
 
 /**
@@ -729,6 +750,9 @@ void driver_detach(struct device_driver *drv)
 	struct device_private *dev_prv;
 	struct device *dev;
 
+	/* Veto before the loop: a protected binding must not be retried forever. */
+	if (!device_lifetime_driver_remove(drv))
+		return;
 	for (;;) {
 		spin_lock(&drv->p->klist_devices.k_lock);
 		if (list_empty(&drv->p->klist_devices.k_list)) {
