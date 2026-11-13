@@ -645,7 +645,6 @@ static VOID rt_pci_shutdown(struct pci_dev *pci_dev)
 			return;
 		}
 	}
-	pci_clear_master(pci_dev);
 #else
 	/* Shutdown is containment, never removal. Keep every DMA/PCI owner. */
 	if (net_dev) {
@@ -668,9 +667,9 @@ static VOID rt_pci_shutdown(struct pci_dev *pci_dev)
 			rtnl_unlock();
 		}
 	}
+#endif
 	/* No claim that clearing master drains transactions already in flight. */
 	pci_clear_master(pci_dev);
-#endif
 }
 
 

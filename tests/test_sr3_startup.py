@@ -97,13 +97,13 @@ class SR3StartupTests(unittest.TestCase):
         self.assertEqual(self.run_case('normal','baseline')['registration_busy'],1)
         self.assertEqual(self.run_case('wren-error','baseline')['write_calls'],1)
 
-    def test_actual_baseline_bytes_and_exact_two_changed_functions_are_pinned(self):
+    def test_actual_baseline_bytes_and_changed_functions_are_pinned(self):
         self.assertEqual(set(harness.BASELINE_FUNCTIONS),set(harness.BASELINE_FUNCTIONS_SHA256))
         for name,body in harness.BASELINE_FUNCTIONS.items():
             self.assertEqual(hashlib.sha256(body.encode()).hexdigest(),harness.BASELINE_FUNCTIONS_SHA256[name])
         actual=harness.actual_functions(self.texts)
         changed={name for name,row in actual.items() if row['body']!=harness.BASELINE_FUNCTIONS[name]}
-        self.assertEqual(changed,{'spi_set_wb_drive_strength','spi_nor_scan'})
+        self.assertEqual(changed,{'spi_set_wb_drive_strength','spi_nor_scan','m25p_probe'})
 
     def test_all_actual_exported_functions_and_critical_macros_are_bound(self):
         generated=harness.generate_source(self.texts)

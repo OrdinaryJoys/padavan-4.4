@@ -184,8 +184,14 @@ class Mt7621WatchdogTests(unittest.TestCase):
 
     def test_probe_reset_stop_and_registration_error_mutants_are_rejected(self):
         probe = h.function(self.texts['driver'], 'mt762x_wdt_probe')
-        reset = 'ret = device_reset(&pdev->dev);\n\t\tif (ret)\n\t\t\treturn ret;'
-        stop = 'ret = mt762x_wdt_stop(&mt762x_wdt_dev);\n\tif (ret)\n\t\treturn ret;'
+        reset = ('ret = device_reset(&pdev->dev);\n\t\tif (ret) {\n'
+                 '#ifdef CONFIG_K2P_RESET_GUARD\n'
+                 '\t\t\treboot_guard_fail(&watchdog_guard, REBOOT_WATCHDOG_UNSAFE);\n'
+                 '#endif\n\t\t\treturn ret;\n\t\t}')
+        stop = ('ret = mt762x_wdt_stop(&mt762x_wdt_dev);\n\tif (ret) {\n'
+                '#ifdef CONFIG_K2P_RESET_GUARD\n'
+                '\t\treboot_guard_fail(&watchdog_guard, REBOOT_WATCHDOG_UNSAFE);\n'
+                '#endif\n\t\treturn ret;\n\t}')
         self.assertEqual(probe.count(reset), 1)
         self.assertEqual(probe.count(stop), 1)
         for label, before, after, cases in (
