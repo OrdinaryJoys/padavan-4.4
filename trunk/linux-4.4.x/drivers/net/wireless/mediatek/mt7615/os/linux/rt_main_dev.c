@@ -543,43 +543,6 @@ int mt_wifi_close(VOID *dev)
 	return 0;
 }
 
-#ifdef CONFIG_K2P_RESET_GUARD
-VOID RtmpDmaShutdown(RTMP_ADAPTER *pAd)
-{
-	POS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;
-	int i;
-
-	rtnl_lock();
-	if (!obj->reset_device.generation)
-		goto unlock;
-	WRITE_ONCE(pAd->dma_removing, TRUE);
-	/* Close actual VIFs before their shared adapter. Directly freeing the
-	 * adapter's configuration would leave ndo_stop and VIF users behind.
-	 */
-	for (i = 0; i < WDEV_NUM_MAX; i++) {
-		struct wifi_dev *wdev = pAd->wdev_list[i];
-
-		if (wdev && wdev->if_dev && wdev->if_dev != pAd->net_dev)
-			dev_close(wdev->if_dev);
-	}
-	dev_close(pAd->net_dev);
-	netif_device_detach(pAd->net_dev);
-	netif_tx_disable(pAd->net_dev);
-
-	RtmpDmaLifecycleLock(pAd);
-	if (RtmpDmaQuarantined(pAd) || pAd->dma_lifecycle_pinned ||
-	    VIRTUAL_IF_NUM(pAd) || pAd->dma_running || pAd->dma_irq_registered ||
-	    RTMP_OS_TASK_LEGALITY(&pAd->cmdQTask) ||
-	    !RtmpPciDrain(obj->pci_dev))
-		RtmpDmaQuarantine(pAd);
-	else
-		reboot_guard_finish(&obj->reset_device);
-	RtmpDmaLifecycleUnlock(pAd);
-unlock:
-	rtnl_unlock();
-}
-#endif
-
 
 /*
  * ========================================================================
@@ -1249,6 +1212,25 @@ static BOOLEAN RtmpPhyNetDevCloseAll(RTMP_ADAPTER *pAd, PNET_DEV net_dev)
 	RtmpOSNetDevProtect(0);
 	return retired;
 }
+
+#ifdef CONFIG_K2P_RESET_GUARD
+VOID RtmpDmaShutdown(RTMP_ADAPTER *pAd)
+{
+	POS_COOKIE obj = (POS_COOKIE)pAd->OS_Cookie;
+	bool retired;
+
+	/* The PCI device lock excludes remove and repeated shutdown. */
+	if (!obj->reset_device.generation)
+		return;
+	retired = RtmpPhyNetDevCloseAll(pAd, pAd->net_dev);
+	RtmpDmaLifecycleLock(pAd);
+	if (!retired || !RtmpPciDrain(obj->pci_dev))
+		RtmpDmaQuarantine(pAd);
+	else
+		reboot_guard_finish(&obj->reset_device);
+	RtmpDmaLifecycleUnlock(pAd);
+}
+#endif
 
 BOOLEAN RtmpPhyNetDevExit(VOID *pAd, PNET_DEV net_dev)
 {
