@@ -4724,6 +4724,33 @@ BOOLEAN ApCliAutoConnectBWAdjust(
 	Note:
 	===================================================
 */
+/* The MLME worker can reach auto-connect while device_shutdown closes the
+ * interfaces under RTNL and joins that worker. A blocking rtnl_lock here
+ * would then wait for the closer which is itself waiting for this worker.
+ * Keep normal contention retryable, but retire promptly once shutdown or
+ * the last interface close has published its stopping state. */
+static BOOLEAN ApCliAutoConnectLock(RTMP_ADAPTER *pAd)
+{
+#ifdef CONFIG_K2P_RESET_GUARD
+	for (;;) {
+		if (READ_ONCE(pAd->dma_removing) || RtmpDmaStopping(pAd))
+			return FALSE;
+		if (rtnl_trylock()) {
+			if (READ_ONCE(pAd->dma_removing) || RtmpDmaStopping(pAd)) {
+				rtnl_unlock();
+				return FALSE;
+			}
+			return TRUE;
+		}
+		msleep(20);
+	}
+#else
+	(void)pAd;
+	RtmpOSNetDevProtect(1);
+	return TRUE;
+#endif
+}
+
 BOOLEAN ApCliAutoConnectExec(
 	IN  PRTMP_ADAPTER   pAd,
 	IN struct wifi_dev *wdev)
@@ -5062,7 +5089,8 @@ BOOLEAN ApCliAutoConnectExec(
 		}
 	} else {
 		MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_ERROR, ("Error! Out of table range: (BssNr=%d).\n", pSsidBssTab->BssNr));
-		RtmpOSNetDevProtect(1);
+		if (!ApCliAutoConnectLock(pAd))
+			return FALSE;
 		old_ioctl_if = pObj->ioctl_if;
 		old_ioctl_if_type = pObj->ioctl_if_type;
 		pObj->ioctl_if = ifIdx;
@@ -5074,7 +5102,8 @@ BOOLEAN ApCliAutoConnectExec(
 		MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("<--- ApCliAutoConnectExec()\n"));
 		return FALSE;
 	}
-	RtmpOSNetDevProtect(1);
+	if (!ApCliAutoConnectLock(pAd))
+		return FALSE;
 	old_ioctl_if = pObj->ioctl_if;
 	old_ioctl_if_type = pObj->ioctl_if_type;
 	pObj->ioctl_if = ifIdx;
@@ -5164,7 +5193,8 @@ VOID ApCliSwitchCandidateAP(
 		MTWF_LOG(DBG_CAT_CLIENT, CATCLIENT_APCLI, DBG_LVL_TRACE, ("No candidate AP, the process is about to stop.\n"));
 		pAd->ApCfg.ApCliAutoConnectRunning[ifIdx] = FALSE;
 	}
-	RtmpOSNetDevProtect(1);
+	if (!ApCliAutoConnectLock(pAd))
+		return;
 	old_ioctl_if = pObj->ioctl_if;
 	old_ioctl_if_type = pObj->ioctl_if_type;
 	pObj->ioctl_if = ifIdx;
