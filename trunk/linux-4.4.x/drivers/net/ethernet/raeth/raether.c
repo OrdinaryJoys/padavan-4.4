@@ -3962,8 +3962,10 @@ static void raether_shutdown(struct platform_device *pdev)
 		return;
 	ei_local = netdev_priv(dev);
 #ifdef CONFIG_K2P_RESET_GUARD
-	if (raether_shutdown_rtnl(ei_local))
-		reboot_guard_park(true);
+	if (raether_shutdown_rtnl(ei_local)) {
+		reboot_dma_failure_check(true);
+		return;
+	}
 #else
 	rtnl_lock();
 #endif
@@ -3984,8 +3986,10 @@ static void raether_shutdown(struct platform_device *pdev)
 	mii_mgr_detach();
 	debug_proc_exit();
 #ifdef CONFIG_K2P_RESET_GUARD
-	if (raether_shutdown_rtnl(ei_local))
-		reboot_guard_park(true);
+	if (raether_shutdown_rtnl(ei_local)) {
+		reboot_dma_failure_check(true);
+		return;
+	}
 #else
 	rtnl_lock();
 #endif

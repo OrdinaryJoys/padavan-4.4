@@ -69,7 +69,7 @@ static void rtnl_unlock(void) { unlock_count++; assert(!pthread_mutex_unlock(&ne
 static void msleep(int ms) { assert(ms==20); jiffies+=2; }
 static void reboot_guard_fail(struct reboot_guard *g,unsigned int why) { assert(g==&owner.reset_device&&why==REBOOT_DMA_RAETH);failure++; }
 static void reboot_guard_finish(struct reboot_guard *g) { assert(g->generation);g->generation=0;finished++; }
-static void reboot_guard_park(bool sleep) { assert(sleep && failure); parks++; longjmp(parked,1); }
+static void reboot_dma_failure_check(bool sleep) { assert(sleep && failure); parks++; longjmp(parked,1); }
 static struct net_device *platform_get_drvdata(struct platform_device *p) { return p->dev; }
 static void *netdev_priv(struct net_device *d) { return d->priv; }
 static void netif_device_detach(struct net_device *d) { d->attached=0;detach_count++; }
@@ -165,7 +165,7 @@ class RaethShutdownRtnlTests(unittest.TestCase):
         self.assertIn('time_after_eq(jiffies, deadline)',helper)
         self.assertLess(helper.index('reboot_guard_fail('),helper.index('return -ETIMEDOUT;'))
         self.assertEqual(shutdown.count('raether_shutdown_rtnl(ei_local)'),2)
-        self.assertEqual(shutdown.count('reboot_guard_park(true);'),2)
+        self.assertEqual(shutdown.count('reboot_dma_failure_check(true);'),2)
         self.assertLess(shutdown.index('mii_mgr_detach();'),shutdown.rindex('raether_shutdown_rtnl(ei_local)'))
         self.assertLess(shutdown.rindex('raether_shutdown_rtnl(ei_local)'),shutdown.index('ei_stop_dma(dev)'))
 
