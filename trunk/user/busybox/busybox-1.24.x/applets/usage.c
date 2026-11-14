@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 #include "autoconf.h"
 
@@ -48,8 +49,19 @@ int main(void)
 	qsort(usage_array,
 		num_messages, sizeof(usage_array[0]),
 		compare_func);
-	for (i = 0; i < num_messages; i++)
-		write(STDOUT_FILENO, usage_array[i].usage, strlen(usage_array[i].usage) + 1);
+	for (i = 0; i < num_messages; i++) {
+		const char *p = usage_array[i].usage;
+		size_t remaining = strlen(p) + 1;
+		while (remaining) {
+			ssize_t written = write(STDOUT_FILENO, p, remaining);
+			if (written < 0 && errno == EINTR)
+				continue;
+			if (written <= 0 || (size_t)written > remaining)
+				return 1;
+			p += written;
+			remaining -= written;
+		}
+	}
 
 	return 0;
 }

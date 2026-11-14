@@ -1,4 +1,5 @@
 #!/bin/sh
+set -e
 
 target="$1"
 loc="$2"
@@ -16,17 +17,24 @@ if test $? != 0; then
 	exit 1
 fi
 
-exec >"$target.$$"
+raw="$target.$$.usage"
+octets="$target.$$.octets"
+filtered="$target.$$.filtered"
+packed="$target.$$.packed"
+stripped="$target.$$.stripped"
+trap 'rm -f -- "$raw" "$octets" "$filtered" "$packed" "$stripped" "$target.$$"' 0
+"$loc/usage" >"$raw" || exit 1
+exec >"$target.$$" || exit 1
 
 echo '#define UNPACKED_USAGE "" \'
-"$loc/usage" | od -v -b \
-| grep -v '^ ' \
-| $SED -e 's/^[^ ]*//' \
+od -v -b <"$raw" >"$octets"
+grep -v '^ ' <"$octets" >"$filtered" || [ "$?" -eq 1 ]
+$SED -e 's/^[^ ]*//' \
 	-e 's/ //g' \
 	-e '/^$/d' \
 	-e 's/\(...\)/\\\1/g' \
 	-e 's/^/"/' \
-	-e 's/$/" \\/'
+	-e 's/$/" \\/' <"$filtered"
 echo ''
 # "grep -v '^ '" is for toybox's od bug: od -b prints some extra lines:
 #0000000 010 000 010 000 133 055 144 146 135 040 133 055 143 040 103 117
@@ -47,13 +55,15 @@ echo '#define PACKED_USAGE \'
 ##	-e '/^$/d' \
 ##	-e 's/\(..\)\(..\)/0x\2,0x\1,/g'
 ##	-e 's/$/ \\/'
-"$loc/usage" | bzip2 -1 | $DD bs=2 skip=1 2>/dev/null | od -v -b \
-| grep -v '^ ' \
-| $SED -e 's/^[^ ]*//' \
+bzip2 -1 <"$raw" >"$packed"
+$DD bs=2 skip=1 <"$packed" >"$stripped" 2>/dev/null
+od -v -b <"$stripped" >"$octets"
+grep -v '^ ' <"$octets" >"$filtered" || [ "$?" -eq 1 ]
+$SED -e 's/^[^ ]*//' \
 	-e 's/ //g' \
 	-e '/^$/d' \
 	-e 's/\(...\)/0\1,/g' \
-	-e 's/$/ \\/'
+	-e 's/$/ \\/' <"$filtered"
 echo ''
 
-mv -- "$target.$$" "$target"
+mv -- "$target.$$" "$target" || exit 1
