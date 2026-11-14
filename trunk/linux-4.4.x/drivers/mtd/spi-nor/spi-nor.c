@@ -14,6 +14,7 @@
 #include <linux/errno.h>
 #include <linux/module.h>
 #include <linux/device.h>
+#include <linux/delay.h>
 #include <linux/mutex.h>
 #include <linux/reboot.h>
 #include <linux/math64.h>
@@ -1370,6 +1371,9 @@ int spi_nor_restore(struct spi_nor *nor)
 {
 	int ret;
 	u8 reg;
+#ifdef CONFIG_K2P_RESET_GUARD
+	unsigned long lock_deadline = jiffies + DEFAULT_READY_WAIT_JIFFIES;
+#endif
 
 	/* restore the addressing mode */
 #ifndef CONFIG_K2P_RESET_GUARD
@@ -1378,7 +1382,20 @@ int spi_nor_restore(struct spi_nor *nor)
 		!(nor->info->flags & SPI_NOR_4B_OPCODES))
 #endif
 	{
+#ifdef CONFIG_K2P_RESET_GUARD
+		/* A stuck I/O owner must not trap device_shutdown forever before
+		 * the reset guard can observe the failure. A timeout does not
+		 * cancel that owner: retain both tokens and veto reset instead. */
+		while (!mutex_trylock(&nor->lock)) {
+			if (time_after_eq(jiffies, lock_deadline)) {
+				reboot_guard_fail(&nor->reset_device, REBOOT_DMA_UNKNOWN);
+				return -ETIMEDOUT;
+			}
+			msleep(20);
+		}
+#else
 		mutex_lock(&nor->lock);
+#endif
 		if (nor->restore_started) {
 			ret = nor->restore_error;
 			goto unlock;

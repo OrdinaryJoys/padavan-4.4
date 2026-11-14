@@ -57,6 +57,14 @@ static void trace(char c){(void)c;}
 static void mutex_init(pthread_mutex_t *p){assert(!pthread_mutex_init(p,NULL));}
 static void mutex_lock(pthread_mutex_t *p){assert(!pthread_mutex_lock(p));}
 static void mutex_unlock(pthread_mutex_t *p){assert(!pthread_mutex_unlock(p));}
+#ifdef CONFIG_K2P_RESET_GUARD
+static int fake_lock_failures;
+static int mutex_trylock(pthread_mutex_t *p){
+ if(fake_lock_failures>0){fake_lock_failures--;return 0;}
+ return pthread_mutex_trylock(p)==0;
+}
+static void msleep(unsigned int ms){assert(ms==20);jiffies+=2;}
+#endif
 static void cond_resched(void){jiffies+=10UL*HZ;}
 static void udelay(unsigned int n){assert(n==100);delay_calls++;}
 static int fail(int op){ops[op]++;return op==failop && ops[op]==failnth;}

@@ -239,6 +239,21 @@ static int m25p_probe(''')
                         "mutex_init(&n->lock); assert(!reboot_guard_begin(&n->reset_device, REBOOT_GUARD_FLASH_DEVICE));")
     code = code.replace("if(!thread_read)spi_nor_unlock_and_unprep(n,SPI_NOR_OPS_READ);",
                         "if(!thread_read){spi_nor_settle_error(n,0);spi_nor_unlock_and_unprep(n,SPI_NOR_OPS_READ);}")
+    old = 'else if(!strcmp(action,"shutdown"))m25p_shutdown(&spi);'
+    assert code.count(old) == 1
+    code = code.replace(old, r'''else if(!strcmp(action,"shutdown"))m25p_shutdown(&spi);
+  else if(!strcmp(action,"shutdown-lock-stuck") || !strcmp(action,"shutdown-lock-wrap")){
+   if(!strcmp(action,"shutdown-lock-wrap"))jiffies=~0UL-2*HZ;
+   assert(!pthread_mutex_lock(&n->lock));m25p_shutdown(&spi);
+   assert(reboot_dma_failures()==REBOOT_DMA_UNKNOWN);
+   assert(!reboot_guard_drained() && !n->restore_started && !read_calls && !trace_count);
+   assert(pthread_mutex_trylock(&n->lock)==EBUSY);
+   assert(!pthread_mutex_unlock(&n->lock));result=-ETIMEDOUT;
+  }else if(!strcmp(action,"shutdown-lock-retry")){
+   fake_lock_failures=3;m25p_shutdown(&spi);
+   assert(!fake_lock_failures && jiffies>=6 && !reboot_dma_failures());
+   assert(n->restore_started && reboot_guard_drained());
+  }''')
     return SHIM + HEADER + "#define SR_WEL 2\n" + code
 
 
@@ -422,6 +437,23 @@ class K2pResetGuardTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             row = json.loads(result.stdout)
             self.assertEqual((row["failures"], row["gate_blocked"], row["next"]), (4, 1, -108))
+
+    def test_nor_shutdown_lock_timeout_retains_owner_and_vetoes_reset(self):
+        code = nor_program()
+        for cmd in self.compile("nor-lock", code):
+            for case in ("shutdown-lock-stuck", "shutdown-lock-wrap", "shutdown-lock-retry"):
+                result = self.run_case(cmd, case, "239", "-1", "1", "0", "0", "0", "0", "0", "16", "0")
+                self.assertEqual(result.returncode, 0, (case, result.stderr))
+                row = json.loads(result.stdout)
+                if case != "shutdown-lock-retry":
+                    self.assertEqual((row["ret"], row["failures"], row["gate_blocked"], row["commands"]),
+                                     (-110, 4, 1, []))
+        needle = 'reboot_guard_fail(&nor->reset_device, REBOOT_DMA_UNKNOWN);'
+        self.assertGreaterEqual(code.count(needle), 2)
+        broken = code.replace(needle, '(void)0;', 1)
+        for cmd in self.compile("nor-lock-broken", broken):
+            result = self.run_case(cmd, "shutdown-lock-stuck", "239", "-1", "1", "0", "0", "0", "0", "0", "16", "0")
+            self.assertNotEqual(result.returncode, 0)
 
     def test_pci_probe_never_sets_master_even_when_adapter_allocation_fails(self):
         for cmd in self.compile("pci", pci_program()):
