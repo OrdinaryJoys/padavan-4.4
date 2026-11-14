@@ -239,6 +239,18 @@ static int m25p_probe(''')
                         "mutex_init(&n->lock); assert(!reboot_guard_begin(&n->reset_device, REBOOT_GUARD_FLASH_DEVICE));")
     code = code.replace("if(!thread_read)spi_nor_unlock_and_unprep(n,SPI_NOR_OPS_READ);",
                         "if(!thread_read){spi_nor_settle_error(n,0);spi_nor_unlock_and_unprep(n,SPI_NOR_OPS_READ);}")
+    anchor = 'static void check_gate(void)'
+    assert code.count(anchor) == 1
+    code = code.replace(anchor, r'''static void *hold_nor_io(void *arg){
+ struct spi_nor *n=arg;
+ assert(!pthread_mutex_lock(&n->lock));
+ assert(!reboot_guard_flash_begin(&n->reset_io,&n->reset_device));
+ assert(!pthread_mutex_lock(&barrier));entered=1;assert(!pthread_cond_broadcast(&condition));
+ while(!release_bus)assert(!pthread_cond_wait(&condition,&barrier));
+ assert(!pthread_mutex_unlock(&barrier));
+ reboot_guard_finish(&n->reset_io);assert(!pthread_mutex_unlock(&n->lock));return NULL;
+}
+static void check_gate(void)''')
     old = 'else if(!strcmp(action,"shutdown"))m25p_shutdown(&spi);'
     assert code.count(old) == 1
     code = code.replace(old, r'''else if(!strcmp(action,"shutdown"))m25p_shutdown(&spi);
@@ -249,6 +261,17 @@ static int m25p_probe(''')
    assert(!reboot_guard_drained() && !n->restore_started && !read_calls && !trace_count);
    assert(pthread_mutex_trylock(&n->lock)==EBUSY);
    assert(!pthread_mutex_unlock(&n->lock));result=-ETIMEDOUT;
+  }else if(!strcmp(action,"shutdown-io-stalled")){
+   assert(!pthread_create(&first,NULL,hold_nor_io,n));
+   assert(!pthread_mutex_lock(&barrier));while(!entered)assert(!pthread_cond_wait(&condition,&barrier));
+   assert(!pthread_mutex_unlock(&barrier));m25p_shutdown(&spi);
+   assert(reboot_dma_failures()==REBOOT_DMA_UNKNOWN);
+   assert(!reboot_guard_drained() && n->reset_io.generation && n->reset_device.generation);
+   assert(!n->restore_started && !read_calls && !trace_count);
+   assert(!pthread_mutex_lock(&barrier));release_bus=1;assert(!pthread_cond_broadcast(&condition));
+   assert(!pthread_mutex_unlock(&barrier));assert(!pthread_join(first,NULL));
+   assert(!n->reset_io.generation && n->reset_device.generation && !reboot_guard_drained());
+   result=-ETIMEDOUT;
   }else if(!strcmp(action,"shutdown-lock-retry")){
    fake_lock_failures=3;m25p_shutdown(&spi);
    assert(!fake_lock_failures && jiffies>=6 && !reboot_dma_failures());
@@ -401,6 +424,11 @@ class K2pResetGuardTests(unittest.TestCase):
                                 str(path), "-o", str(output)],
                                text=True, capture_output=True, timeout=90)
             self.assertEqual(r.returncode, 0, r.stderr)
+            if label == "mips" and name in ("nor-lock", "nor-lock-broken"):
+                target_dir = os.environ.get("K2P_RESET_GUARD_TARGET_DIR")
+                if target_dir:
+                    shutil.copyfile(path, Path(target_dir) / ("target-" + name + ".c"))
+                    shutil.copyfile(output, Path(target_dir) / ("target-" + name + ".elf"))
             yield [*runner, str(output)]
 
     def run_case(self, cmd, *args):
@@ -441,7 +469,7 @@ class K2pResetGuardTests(unittest.TestCase):
     def test_nor_shutdown_lock_timeout_retains_owner_and_vetoes_reset(self):
         code = nor_program()
         for cmd in self.compile("nor-lock", code):
-            for case in ("shutdown-lock-stuck", "shutdown-lock-wrap", "shutdown-lock-retry"):
+            for case in ("shutdown-lock-stuck", "shutdown-lock-wrap", "shutdown-io-stalled", "shutdown-lock-retry"):
                 result = self.run_case(cmd, case, "239", "-1", "1", "0", "0", "0", "0", "0", "16", "0")
                 self.assertEqual(result.returncode, 0, (case, result.stderr))
                 row = json.loads(result.stdout)
