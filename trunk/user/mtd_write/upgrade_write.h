@@ -81,6 +81,18 @@
 #ifndef FWUP_MUNLOCKALL
 #define FWUP_MUNLOCKALL munlockall
 #endif
+#ifndef FWUP_EXEC_OPEN
+#define FWUP_EXEC_OPEN() open("/proc/self/exe", O_RDONLY | O_CLOEXEC)
+#endif
+#ifndef FWUP_EXEC_STATFS
+#define FWUP_EXEC_STATFS fstatfs
+#endif
+#ifndef FWUP_EXEC_MLOCK
+#define FWUP_EXEC_MLOCK FWUP_MLOCK
+#endif
+#ifndef FWUP_EXEC_CLOSE
+#define FWUP_EXEC_CLOSE close
+#endif
 #ifndef FWUP_OOM_PATH
 #define FWUP_OOM_PATH "/proc/self/oom_score_adj"
 #endif
@@ -113,6 +125,67 @@ struct fwup_status {
 	unsigned int sequence;
 	uint32_t image_bytes;
 };
+
+/* Linux 4.4 mlockall ignores VMA fixup/population failures. The staged
+ * executable is a static, fixed-address ELF32 on tmpfs. Explicitly lock
+ * every loadable code/data segment while PREWRITE is still authoritative.
+ * This does not prove future stack, kernel memory or hardware safety. */
+#ifndef FWUP_EXEC_LOCK
+#include <elf.h>
+static int fwup_exec_read(int fd, void *buffer, size_t length, off_t offset)
+{
+	unsigned char *p = buffer;
+	while (length) {
+		ssize_t n = pread(fd, p, length, offset);
+		if (n < 0 && errno == EINTR) continue;
+		if (n <= 0 || (size_t)n > length) return -1;
+		p += n; length -= (size_t)n; offset += n;
+	}
+	return 0;
+}
+
+static int fwup_lock_executable(void)
+{
+	Elf32_Ehdr eh;
+	Elf32_Phdr ph;
+	struct stat st;
+	struct statfs fs;
+	unsigned int i, loads = 0, have_exec = 0, have_write = 0;
+	unsigned long total = 0;
+	int fd, result = -1;
+	fd = FWUP_EXEC_OPEN();
+	if (fd < 0) return -1;
+	if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_uid != FWUP_OWNER ||
+	    st.st_nlink != 1 || (st.st_mode & 07777) != 0700 || st.st_size < (off_t)sizeof(eh) ||
+	    st.st_size > 1024 * 1024 ||
+	    FWUP_EXEC_STATFS(fd, &fs) || (unsigned long)fs.f_type != 0x01021994UL ||
+	    fwup_exec_read(fd, &eh, sizeof(eh), 0)) goto out;
+	if (memcmp(eh.e_ident, ELFMAG, SELFMAG) || eh.e_ident[EI_CLASS] != ELFCLASS32 ||
+	    eh.e_ident[EI_DATA] != ELFDATA2LSB || eh.e_ident[EI_VERSION] != EV_CURRENT ||
+	    eh.e_type != ET_EXEC || eh.e_machine != EM_MIPS || eh.e_version != EV_CURRENT ||
+	    eh.e_ehsize != sizeof(eh) || eh.e_phentsize != sizeof(ph) ||
+	    !eh.e_phnum || eh.e_phnum > 64 || eh.e_phoff < sizeof(eh) || eh.e_phoff > (uint64_t)st.st_size ||
+	    (uint64_t)eh.e_phnum * sizeof(ph) > (uint64_t)st.st_size - eh.e_phoff) goto out;
+	for (i = 0; i < eh.e_phnum; i++) {
+		if (fwup_exec_read(fd, &ph, sizeof(ph), (off_t)eh.e_phoff + i * sizeof(ph))) goto out;
+		if (ph.p_type == PT_INTERP || ph.p_type == PT_DYNAMIC) goto out;
+		if (ph.p_type != PT_LOAD || !ph.p_memsz) continue;
+		if (!(ph.p_flags & PF_R) || (ph.p_flags & (PF_W | PF_X)) == (PF_W | PF_X) ||
+		    ph.p_filesz > ph.p_memsz || ph.p_offset > (uint64_t)st.st_size ||
+		    ph.p_filesz > (uint64_t)st.st_size - ph.p_offset ||
+		    ph.p_vaddr > UINT32_MAX - ph.p_memsz || ph.p_memsz > 4U * 1024U * 1024U ||
+		    total > 4U * 1024U * 1024U - ph.p_memsz) goto out;
+		if (FWUP_EXEC_MLOCK((const void *)(uintptr_t)ph.p_vaddr, ph.p_memsz)) goto out;
+		total += ph.p_memsz; loads++;
+		have_exec |= !!(ph.p_flags & PF_X); have_write |= !!(ph.p_flags & PF_W);
+	}
+	if (loads && have_exec && have_write) result = 0;
+out:
+	if (FWUP_EXEC_CLOSE(fd)) result = -1;
+	return result;
+}
+#define FWUP_EXEC_LOCK fwup_lock_executable
+#endif
 
 static int fwup_error(const char *message, int result)
 {
@@ -430,6 +503,9 @@ static int firmware_upgrade_write(const char *image, const char *target, const c
 	memory_lock_attempted = 1;
 	if (FWUP_MLOCKALL(MCL_CURRENT | MCL_FUTURE) != 0) {
 		message = "cannot lock complete writer memory before flash"; goto out;
+	}
+	if (FWUP_EXEC_LOCK() != 0) {
+		message = "cannot lock static writer load segments"; goto out;
 	}
 	/* Unlike mlockall, Linux 4.4 mlock returns range population errors.
 	 * Check both large immutable input and the readback stack pages while

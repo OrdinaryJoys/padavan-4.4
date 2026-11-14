@@ -176,6 +176,7 @@ static int state_rename(int a,const char*b,int c,const char*d){
 static void*allocate(size_t n){if(fault("memory")){errno=ENOMEM;return NULL;}allocated_bytes=n;return allocated_memory=malloc(n);}
 static int memory_lock(int flags){event("memory-lock");if(flags!=(MCL_CURRENT|MCL_FUTURE)){errno=EINVAL;return -1;}
  if(fault("memory-lock")||fault("memory-unlock")){errno=ENOMEM;return -1;}memory_resident=1;return 0;}
+static int executable_lock(void){if(fault("executable-lock")){event("executable-lock");errno=ENOMEM;return -1;}return 0;}
 static int memory_range_lock(const void*p,size_t n){
  const char *name=++range_locks==1?"snapshot-lock":"readback-lock";
  event(name);
@@ -251,6 +252,7 @@ static int oom_close(int fd){int result;event("oom-close");result=close(fd);oom_
 #define FWUP_STATE_RENAME state_rename
 #define FWUP_ALLOC allocate
 #define FWUP_FREE memory_free
+#define FWUP_EXEC_LOCK executable_lock
 #define FWUP_MLOCKALL memory_lock
 #define FWUP_MLOCK memory_range_lock
 #define FWUP_MUNLOCKALL memory_unlock
@@ -533,6 +535,14 @@ int main(int argc,char**argv){if(argc!=4)return 99;_exit(firmware_upgrade_write(
         self.assertIn('memory-lock', self.events());self.assertIn('memory-unlock', self.events())
         self.assertLess(self.events().index('memory-lock'), self.events().index('memory-unlock'))
 
+    def test_executable_lock_failure_after_mlockall_is_prewrite(self):
+        self.assert_prewrite(self.run_writer('executable-lock'))
+        events = self.events()
+        self.assertLess(events.index('memory-lock'), events.index('executable-lock'))
+        self.assertLess(events.index('executable-lock'), events.index('memory-free'))
+        self.assertIn('memory-unlock', events)
+        self.assertFalse(set(events) & {'snapshot-lock', 'erase', 'write'})
+
     def test_checked_range_failure_after_successful_mlockall_is_safe_and_never_erases(self):
         for fault in ('snapshot-lock', 'readback-lock'):
             with self.subTest(fault=fault):
@@ -568,6 +578,17 @@ int main(int argc,char**argv){if(argc!=4)return 99;_exit(firmware_upgrade_write(
         self.assertNotIn('erase', events)
         self.assertIn('memory-free', events)
         self.assertIn('memory-unlock', events)
+
+    def test_missing_executable_lock_negative_control_would_erase(self):
+        original = (SOURCE / 'upgrade_write.h').read_text()
+        check = 'FWUP_EXEC_LOCK() != 0'
+        self.assertEqual(original.count(check), 1)
+        binary = self.compile_variant('unchecked-executable', original.replace(check, '0'))
+        result = self.run_writer('executable-lock', binary=binary)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.record()['state'], 'VERIFIED')
+        self.assertIn('erase', self.events())
+        self.assertNotIn('executable-lock', self.events())
 
     def test_missing_checked_ranges_negative_control_would_erase_despite_population_failure(self):
         original = (SOURCE / 'upgrade_write.h').read_text()
@@ -779,6 +800,7 @@ static int test_ioctl(int fd,unsigned long command,void*p){
 }
 #define FWUP_IOCTL test_ioctl
 #define FWUP_MTD_FSTAT test_stat
+#define FWUP_EXEC_LOCK() 0
 #include "upgrade_write.h"
 int main(void){struct mtd_info_user info;int reader=-1,fd=fwup_open_device(&info,&reader);
  if(fd<0)return 1;close(fd);close(reader);return 0;}
