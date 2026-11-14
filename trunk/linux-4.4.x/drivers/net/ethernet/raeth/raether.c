@@ -23,7 +23,9 @@
 #include "raether_hwlro.h"
 #include "ra_ethtool.h"
 #include <linux/capability.h>
+#include <linux/jiffies.h>
 #include <linux/reboot.h>
+#include <linux/rtnetlink.h>
 
 #include "mtk_hnat/nf_hnat_mtk.h"
 
@@ -3925,6 +3927,25 @@ static int raether_remove(struct platform_device *pdev)
 	return 0;
 }
 
+#ifdef CONFIG_K2P_RESET_GUARD
+/* device_shutdown holds device/parent locks and must not force-reset while
+ * a network owner is still running. Bound only RTNL acquisition; on failure
+ * retain every owner and park the coordinator before other shutdown work. */
+static int raether_shutdown_rtnl(struct END_DEVICE *ei_local)
+{
+	unsigned long deadline = jiffies + 40UL * HZ;
+
+	while (!rtnl_trylock()) {
+		if (time_after_eq(jiffies, deadline)) {
+			reboot_guard_fail(&ei_local->reset_device, REBOOT_DMA_RAETH);
+			return -ETIMEDOUT;
+		}
+		msleep(20);
+	}
+	return 0;
+}
+#endif
+
 /* Shutdown is terminal, but it is not remove. In particular a failed idle
  * observation must never make live DMA owners available for reuse. */
 static void raether_shutdown(struct platform_device *pdev)
@@ -3940,7 +3961,12 @@ static void raether_shutdown(struct platform_device *pdev)
 	if (!dev)
 		return;
 	ei_local = netdev_priv(dev);
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (raether_shutdown_rtnl(ei_local))
+		reboot_guard_park(true);
+#else
 	rtnl_lock();
+#endif
 #ifdef CONFIG_K2P_RESET_GUARD
 	if (!ei_local->reset_device.generation) {
 		rtnl_unlock();
@@ -3957,7 +3983,12 @@ static void raether_shutdown(struct platform_device *pdev)
 	/* Readers can need RTNL: retire publication without holding it. */
 	mii_mgr_detach();
 	debug_proc_exit();
+#ifdef CONFIG_K2P_RESET_GUARD
+	if (raether_shutdown_rtnl(ei_local))
+		reboot_guard_park(true);
+#else
 	rtnl_lock();
+#endif
 	netif_tx_disable(dev);
 	if (pseudo)
 		netif_tx_disable(pseudo);
