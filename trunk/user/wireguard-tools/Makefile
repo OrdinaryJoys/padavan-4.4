@@ -7,11 +7,19 @@ all: download_test extract_test
 	$(MAKE) -C $(SRC_NAME)/src WITH_BASHCOMPLETION=no WITH_WGQUICK=yes WITH_SYSTEMDUNITS=no wg
 
 download_test:
-	( if [ ! -f $(SRC_NAME).tar.xz ]; then \
-		wget -t5 --timeout=20 -O $(SRC_NAME).tar.xz $(SRC_URL); \
+	@set -eu; archive="$(SRC_NAME).tar.xz"; tmp="$$archive.tmp.$$$$"; \
+	trap 'rm -f "$$tmp"' EXIT; trap 'exit 1' HUP INT TERM; \
+	if [ -f "$$archive" ] && printf '%s  %s\n' '$(SRC_SHA256)' "$$archive" | sha256sum -c -; then \
+		exit 0; \
 	fi; \
-	echo "$(SRC_SHA256)  $(SRC_NAME).tar.xz" | sha256sum -c -; \
-	)
+	for attempt in 1 2 3; do \
+		rm -f "$$tmp"; \
+		if wget -t2 --timeout=20 -O "$$tmp" '$(SRC_URL)' && \
+		   printf '%s  %s\n' '$(SRC_SHA256)' "$$tmp" | sha256sum -c -; then \
+			mv -f "$$tmp" "$$archive"; exit 0; \
+		fi; \
+	done; \
+	echo "Unable to download a verified $(SRC_NAME) archive" >&2; exit 1
 
 extract_test:
 	( if [ ! -d $(SRC_NAME) ]; then \
