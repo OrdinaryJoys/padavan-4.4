@@ -355,8 +355,13 @@ static void rt_wdt_w32(unsigned int reg, u32 value)
 }
 static u32 rt_wdt_r32(unsigned int reg) { assert(reg == TIMER_REG_TMR1CTL); return control; }
 static int mt762x_wdt_ping(struct watchdog_device *w) { assert(w); return 0; }
-static void mutex_lock(pthread_mutex_t *lock) { assert(!pthread_mutex_lock(lock)); }
+static unsigned long jiffies;
+#define HZ 100UL
+#define time_after_eq(a,b) ((long)((a)-(b)) >= 0)
+static int mutex_trylock(pthread_mutex_t *lock) { return !pthread_mutex_trylock(lock); }
 static void mutex_unlock(pthread_mutex_t *lock) { assert(!pthread_mutex_unlock(lock)); }
+static void msleep(unsigned int ms) { assert(ms == 20); jiffies += 2; }
+static void reboot_dma_failure_check(bool may_sleep) { assert(may_sleep); abort(); }
 static void clear_bit(unsigned int bit, unsigned long *word) { *word &= ~(1UL << bit); }
 #define dev_err(...) ((void)0)
 '''
@@ -389,7 +394,7 @@ int main(int argc, char **argv)
 }
 '''
     bodies = ("mt762x_wdt_set_timeout", "mt762x_wdt_start", "mt762x_wdt_stop",
-              "mt762x_wdt_shutdown")
+              "mt762x_wdt_shutdown_lock", "mt762x_wdt_shutdown")
     return (SHIM + HEADER + REASONS + RECORD + CORE + stubs
             + "\n".join(function(driver, name) for name in bodies) + cases)
 

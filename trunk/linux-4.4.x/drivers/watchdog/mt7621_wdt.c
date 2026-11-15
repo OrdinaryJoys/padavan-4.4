@@ -13,6 +13,8 @@
 
 #include <linux/device_lifetime.h>
 #include <linux/clk.h>
+#include <linux/delay.h>
+#include <linux/jiffies.h>
 #include <linux/reset.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -192,12 +194,33 @@ static int mt762x_wdt_probe(struct platform_device *pdev)
 	return ret;
 }
 
+#ifdef CONFIG_K2P_RESET_GUARD
+/* A timeout reports unknown ownership; it does not stop an armed timer. */
+static int mt762x_wdt_shutdown_lock(void)
+{
+	unsigned long deadline = jiffies + HZ;
+
+	while (!mutex_trylock(&mt762x_wdt_dev.lock)) {
+		if (time_after_eq(jiffies, deadline)) {
+			reboot_guard_fail(&watchdog_guard, REBOOT_WATCHDOG_UNSAFE);
+			return -ETIMEDOUT;
+		}
+		msleep(20);
+	}
+	return 0;
+}
+#endif
+
 static void mt762x_wdt_shutdown(struct platform_device *pdev)
 {
 #ifdef CONFIG_K2P_RESET_GUARD
 	int ret;
 
-	mutex_lock(&mt762x_wdt_dev.lock);
+	if (mt762x_wdt_shutdown_lock()) {
+		/* Never unregister or advance shutdown with an unknown owner. */
+		reboot_dma_failure_check(true);
+		return;
+	}
 	if (!watchdog_retired) {
 		watchdog_retired = true;
 		ret = mt762x_wdt_stop(&mt762x_wdt_dev);
