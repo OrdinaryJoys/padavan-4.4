@@ -59,7 +59,7 @@ static void watchdog_unregister_device(struct watchdog_device *w) { assert(w==&m
 %s
 %s
 int main(int argc,char **argv) {
- struct platform_device p={0}; pthread_t t; bool held;
+ struct platform_device p={0}; static pthread_t t; static bool held;
  assert(argc==2); held=!strcmp(argv[1],"held") || !strcmp(argv[1],"wrap") || !strcmp(argv[1],"remove-held");
  if(!strcmp(argv[1],"wrap"))jiffies=~0UL-40;
  if(!strcmp(argv[1],"retry"))fail_tries=3;
