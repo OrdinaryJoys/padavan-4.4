@@ -1108,6 +1108,7 @@ typedef unsigned long ULONG;
 typedef unsigned int u32,UINT32;
 #define TRUE 1
 #define FALSE 0
+#define HZ 100UL
 #define BIT(n) (1U << (n))
 #define IS_ENABLED(x) (x)
 #define CONFIG_PCI 1
@@ -1218,6 +1219,7 @@ static void pci_msix_shutdown(struct pci_dev *d) {(void)d;}
 static void mii_mgr_detach(void) {assert(!rtnl_depth);}
 static void debug_proc_exit(void) {assert(!rtnl_depth);}
 static int kthread_stop(void *t) {assert(t && rtnl_depth);return 0;}
+static int __attribute__((unused)) kthread_stop_timeout(void *t, unsigned long timeout, int *result) {assert(timeout==10UL*HZ);*result=kthread_stop(t);return 0;}
 static void fe_int_disable(struct net_device *d) {assert(d && rtnl_depth);}
 static void synchronize_irq(int irq) {assert(irq);irq_sync++;}
 static void interrupt_disable(RTMP_ADAPTER *a) {a->flags &= ~fRTMP_ADAPTER_INTERRUPT_ACTIVE;}
