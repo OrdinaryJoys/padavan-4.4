@@ -3959,7 +3959,7 @@ static void raether_shutdown(struct platform_device *pdev)
 	struct net_device *dev = platform_get_drvdata(pdev);
 	struct END_DEVICE *ei_local;
 	struct net_device *pseudo;
-	int err;
+	int err, thread_result;
 #ifdef CONFIG_K2P_RESET_GUARD
 	bool was_quarantined;
 #endif
@@ -4003,11 +4003,17 @@ static void raether_shutdown(struct platform_device *pdev)
 	if (pseudo)
 		netif_tx_disable(pseudo);
 	if (ei_local->kreset_task) {
-		kthread_stop(ei_local->kreset_task);
+		err = kthread_stop_timeout(ei_local->kreset_task, 10UL * HZ,
+					   &thread_result);
+		if (err)
+			goto thread_stalled;
 		ei_local->kreset_task = NULL;
 	}
 	if (ei_local->kphy_poll_task) {
-		kthread_stop(ei_local->kphy_poll_task);
+		err = kthread_stop_timeout(ei_local->kphy_poll_task, 10UL * HZ,
+					   &thread_result);
+		if (err)
+			goto thread_stalled;
 		ei_local->kphy_poll_task = NULL;
 	}
 	fe_int_disable(dev);
@@ -4028,6 +4034,16 @@ static void raether_shutdown(struct platform_device *pdev)
  * after idle. Foreign consumers are not retired by device_shutdown().
  * Failed DMA stop is latched by ei_stop_dma() for the core restart gate. */
 	rtnl_unlock();
+	return;
+
+thread_stalled:
+	/* The timed-out task reference and every DMA/device owner stay live. */
+#ifdef CONFIG_K2P_RESET_GUARD
+	reboot_guard_fail(&ei_local->reset_device, REBOOT_DMA_RAETH);
+#else
+	reboot_dma_failure_report(REBOOT_DMA_RAETH);
+#endif
+	reboot_dma_failure_check(true);
 }
 
 #if (0)

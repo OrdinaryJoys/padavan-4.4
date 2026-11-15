@@ -511,6 +511,33 @@ int kthread_stop(struct task_struct *k)
 }
 EXPORT_SYMBOL(kthread_stop);
 
+/* A timed-out stop is not a stopped thread. Transfer the extra task
+ * reference to the caller, which must keep all dependent objects alive. */
+int kthread_stop_timeout(struct task_struct *k, unsigned long timeout,
+			 int *thread_result)
+{
+	struct kthread *kthread;
+
+	if (!thread_result)
+		return -EINVAL;
+	get_task_struct(k);
+	kthread = to_live_kthread(k);
+	if (kthread) {
+		set_bit(KTHREAD_SHOULD_STOP, &kthread->flags);
+		__kthread_unpark(k, kthread);
+		wake_up_process(k);
+		if (!wait_for_completion_timeout(&kthread->exited, timeout)) {
+			put_task_stack(k);
+			return -ETIMEDOUT;
+		}
+		put_task_stack(k);
+	}
+	*thread_result = k->exit_code;
+	put_task_struct(k);
+	return 0;
+}
+EXPORT_SYMBOL(kthread_stop_timeout);
+
 int kthreadd(void *unused)
 {
 	struct task_struct *tsk = current;

@@ -43,7 +43,7 @@ static struct platform_device platform;
 static pthread_mutex_t network = PTHREAD_MUTEX_INITIALIZER, barrier = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
 static int start_owner, owns_lock, release_owner, phase, owner_started, failure, parks;
-static int locks,unlock_count,detach_count,mdio_count,proc_count,tx_count,irq_count,stop_count,finished;
+static int locks,unlock_count,detach_count,mdio_count,proc_count,tx_count,irq_count,stop_count,finished,thread_calls,retained_refs;
 static unsigned long jiffies;
 static jmp_buf parked;
 static const char *scenario;
@@ -65,9 +65,11 @@ static int rtnl_trylock(void) {
  if(pthread_mutex_trylock(&network))return 0;
  return 1;
 }
+static void rtnl_lock(void) { assert(!pthread_mutex_lock(&network)); }
 static void rtnl_unlock(void) { unlock_count++; assert(!pthread_mutex_unlock(&network)); }
 static void msleep(int ms) { assert(ms==20); jiffies+=2; }
 static void reboot_guard_fail(struct reboot_guard *g,unsigned int why) { assert(g==&owner.reset_device&&why==REBOOT_DMA_RAETH);failure++; }
+static void reboot_dma_failure_report(unsigned int why) { assert(why==REBOOT_DMA_RAETH);failure++; }
 static void reboot_guard_finish(struct reboot_guard *g) { assert(g->generation);g->generation=0;finished++; }
 static void reboot_dma_failure_check(bool sleep) { assert(sleep && failure); parks++; longjmp(parked,1); }
 static struct net_device *platform_get_drvdata(struct platform_device *p) { return p->dev; }
@@ -76,7 +78,11 @@ static void netif_device_detach(struct net_device *d) { d->attached=0;detach_cou
 static void mii_mgr_detach(void) { phase=1;mdio_count++; }
 static void debug_proc_exit(void) { proc_count++; if(!strcmp(scenario,"second"))start_contender(); }
 static void netif_tx_disable(struct net_device *d) { d->tx=0;tx_count++; }
-static int kthread_stop(void *p) { assert(p);return 0; }
+static int kthread_stop_timeout(void *p,unsigned long timeout,int *result) {
+ assert(p && timeout==10UL*HZ);thread_calls++;
+ if ((!strcmp(scenario,"thread-first") && p==(void *)1) || (!strcmp(scenario,"thread-second") && p==(void *)2)) {retained_refs++;return -ETIMEDOUT;}
+ *result=0;return 0;
+}
 static int fe_int_disable(struct net_device *d) { assert(d);irq_count++;return 0; }
 static int ei_stop_dma(struct net_device *d) { assert(d);stop_count++;return 0; }
 %s
@@ -86,6 +92,7 @@ int main(int argc,char **argv) {
  assert(argc==2);scenario=argv[1];platform.dev=&main_dev;main_dev.priv=&owner;
  main_dev.attached=pseudo.attached=1;main_dev.tx=pseudo.tx=1;owner.pseudo_dev=&pseudo;
  owner.reset_device.generation=1;owner.reset_dma.generation=1;
+ if(!strncmp(scenario,"thread-",7)){owner.kreset_task=(void *)1;owner.kphy_poll_task=(void *)2;}
  if(!strcmp(scenario,"first")||!strcmp(scenario,"wrap")||!strcmp(scenario,"second")){
   assert(!pthread_create(&worker,NULL,owner_thread,NULL));
   if(strcmp(scenario,"second"))start_contender();
@@ -101,6 +108,13 @@ int main(int argc,char **argv) {
   assert(jumped && failure==1 && parks==1 && owner_started);
   assert(detach_count==2 && mdio_count==1 && proc_count==1 && !tx_count && !irq_count && !stop_count && !finished);
   assert(owner.reset_device.generation && owner.reset_dma.generation && owner.dma_quarantined);
+ } else if(!strncmp(scenario,"thread-",7)) {
+  assert(jumped && failure==1 && parks==1 && retained_refs==1);
+  assert(detach_count==2 && mdio_count==1 && proc_count==1 && tx_count==2 && !irq_count && !stop_count && !finished);
+  assert(owner.kphy_poll_task==(void *)2 && owner.dma_quarantined);
+  if(!strcmp(scenario,"thread-first"))assert(owner.kreset_task==(void *)1 && thread_calls==1);
+  else assert(!owner.kreset_task && thread_calls==2);
+  assert(!pthread_mutex_unlock(&network)); /* test-only release after simulated park */
  } else {
   assert(!jumped && !failure && !parks && detach_count==2 && mdio_count==1 && proc_count==1);
   assert(tx_count==2 && irq_count==1 && stop_count==1 && finished==2 && unlock_count==2);
@@ -142,13 +156,24 @@ class RaethShutdownRtnlTests(unittest.TestCase):
                 self.assertTrue(cc and all(runner))
                 subprocess.run([cc,'-std=gnu11','-O2','-pthread','-Wall','-Wextra','-Werror',
                                 '-Wno-unused-function',*flags,str(src),'-o',str(binary)],check=True,timeout=90)
-                for case in ('normal','retry','first','second','wrap'):
+                for case in ('normal','retry','first','second','wrap','thread-first','thread-second'):
                     subprocess.run([*runner,str(binary),case],check=True,timeout=12,
                                    env={**os.environ,'ASAN_OPTIONS':'symbolize=0'})
                 if cc==target and target and os.environ.get('K2P_RAETH_RTNL_TARGET_DIR'):
                     dest=Path(os.environ['K2P_RAETH_RTNL_TARGET_DIR'])
                     shutil.copyfile(src,dest/'target-raeth-rtnl.c')
                     shutil.copyfile(binary,dest/'target-raeth-rtnl.elf')
+                src.write_text(code.replace('#define CONFIG_K2P_RESET_GUARD 1','#undef CONFIG_K2P_RESET_GUARD',1))
+                subprocess.run([cc,'-std=gnu11','-O2','-pthread','-Wall','-Wextra','-Werror',
+                                '-Wno-unused-function',*flags,str(src),'-o',str(binary)],check=True,timeout=90)
+                for case in ('thread-first','thread-second'):
+                    subprocess.run([*runner,str(binary),case],check=True,timeout=12,
+                                   env={**os.environ,'ASAN_OPTIONS':'symbolize=0'})
+                if cc==target and target and os.environ.get('K2P_RAETH_RTNL_TARGET_DIR'):
+                    dest=Path(os.environ['K2P_RAETH_RTNL_TARGET_DIR'])
+                    shutil.copyfile(src,dest/'target-raeth-rtnl-disabled.c')
+                    shutil.copyfile(binary,dest/'target-raeth-rtnl-disabled.elf')
+                src.write_text(code)
             old='reboot_guard_fail(&ei_local->reset_device, REBOOT_DMA_RAETH);'
             self.assertEqual(helper.count(old),1)
             src.write_text(FIXTURE % (helper.replace(old,'(void)0;'),shutdown))
@@ -156,6 +181,19 @@ class RaethShutdownRtnlTests(unittest.TestCase):
                             str(src),'-o',str(binary)],check=True,timeout=90)
             broken=subprocess.run([str(binary),'first'],capture_output=True,timeout=12)
             self.assertNotEqual(broken.returncode,0)
+            before, stalled = shutdown.split('thread_stalled:',1)
+            for guarded, old, new in (
+                (True, 'reboot_guard_fail(&ei_local->reset_device, REBOOT_DMA_RAETH);', '(void)0;'),
+                (False, 'reboot_dma_failure_report(REBOOT_DMA_RAETH);', '(void)0;'),
+            ):
+                self.assertEqual(stalled.count(old),1)
+                variant = FIXTURE % (helper,before+'thread_stalled:'+stalled.replace(old,new,1))
+                if not guarded:variant=variant.replace('#define CONFIG_K2P_RESET_GUARD 1','#undef CONFIG_K2P_RESET_GUARD',1)
+                src.write_text(variant)
+                subprocess.run([compilers[0][0],'-std=gnu11','-O2','-pthread','-Wno-unused-function',
+                                str(src),'-o',str(binary)],check=True,timeout=90)
+                broken=subprocess.run([str(binary),'thread-first'],capture_output=True,timeout=12)
+                self.assertNotEqual(broken.returncode,0)
 
     def test_both_shutdown_acquisitions_are_guarded(self):
         source=SOURCE.read_text()
@@ -165,7 +203,7 @@ class RaethShutdownRtnlTests(unittest.TestCase):
         self.assertIn('time_after_eq(jiffies, deadline)',helper)
         self.assertLess(helper.index('reboot_guard_fail('),helper.index('return -ETIMEDOUT;'))
         self.assertEqual(shutdown.count('raether_shutdown_rtnl(ei_local)'),2)
-        self.assertEqual(shutdown.count('reboot_dma_failure_check(true);'),2)
+        self.assertEqual(shutdown.count('reboot_dma_failure_check(true);'),3)
         self.assertLess(shutdown.index('mii_mgr_detach();'),shutdown.rindex('raether_shutdown_rtnl(ei_local)'))
         self.assertLess(shutdown.rindex('raether_shutdown_rtnl(ei_local)'),shutdown.index('ei_stop_dma(dev)'))
 

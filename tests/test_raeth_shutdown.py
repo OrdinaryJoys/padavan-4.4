@@ -87,7 +87,7 @@ class RaethShutdownTests(unittest.TestCase):
   self.mutate('raether_shutdown','\tnetif_tx_disable(dev);','\t/* missing main TX join */','up-pseudo','missing-tx')
   self.mutate('raether_shutdown','\tfe_int_disable(dev);','\t/* missing IRQ join */','up-pseudo','missing-irq')
   self.mutate('raether_shutdown','\tfe_int_disable(dev);\n\terr = ei_stop_dma(dev);','\terr = ei_stop_dma(dev);\n\tfe_int_disable(dev);','up-pseudo','idle-before-irq')
-  self.mutate('raether_shutdown','\t\tkthread_stop(ei_local->kreset_task);','\t\t/* missing thread join */','up-pseudo','missing-thread')
+  self.mutate('raether_shutdown','\t\terr = kthread_stop_timeout(ei_local->kreset_task, 10UL * HZ,\n\t\t\t\t\t   &thread_result);','\t\terr = 0; /* missing thread join */','up-pseudo','missing-thread')
   self.mutate('raether_shutdown','\tWRITE_ONCE(ei_local->dma_quarantined, true);','\tWRITE_ONCE(ei_local->dma_quarantined, false);','up-pseudo','reopen-allowed')
   self.mutate('raether_shutdown','\trtnl_unlock();\n\t/* Readers','\t/* still holding RTNL */\n\t/* Readers','up-pseudo','retire-under-rtnl')
  def test_bounded_idle_and_platform_pm_continuation_mutants_are_detected(self):

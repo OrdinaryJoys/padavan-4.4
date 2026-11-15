@@ -242,6 +242,21 @@ static int m25p_probe(''')
     timer_stubs = r'''
 struct timer_list { void (*function)(unsigned long); unsigned long data; };
 struct m25p_shutdown_watch { struct timer_list timer; struct spi_nor *nor; bool expired; };
+struct completion { pthread_mutex_t mutex; pthread_cond_t cv; int done; };
+#define DECLARE_COMPLETION_ONSTACK(n) struct completion n = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0 }
+struct m25p_shutdown_work { struct completion *done,*release; struct spi_nor *nor; int result; };
+struct task_struct { pthread_t thread; int (*fn)(void *); void *arg; int result; };
+static struct task_struct fake_worker;
+static void complete(struct completion *c) { assert(!pthread_mutex_lock(&c->mutex));c->done=1;assert(!pthread_cond_broadcast(&c->cv));assert(!pthread_mutex_unlock(&c->mutex)); }
+static void wait_for_completion(struct completion *c) { assert(!pthread_mutex_lock(&c->mutex));while(!c->done)assert(!pthread_cond_wait(&c->cv,&c->mutex));assert(!pthread_mutex_unlock(&c->mutex)); }
+static unsigned long wait_for_completion_timeout(struct completion *c,unsigned long t) { assert(t);wait_for_completion(c);return 1; }
+static void *fake_worker_run(void *p) { struct task_struct *t=p;t->result=t->fn(t->arg);return NULL; }
+static struct task_struct *fake_kthread_create(int (*fn)(void *),void *arg) { fake_worker.fn=fn;fake_worker.arg=arg;return &fake_worker; }
+#define kthread_create(fn,arg,name) fake_kthread_create((fn),(arg))
+static void get_task_struct(struct task_struct *t) { assert(t==&fake_worker); }
+static void put_task_struct(struct task_struct *t) { assert(t==&fake_worker); }
+static void wake_up_process(struct task_struct *t) { assert(!pthread_create(&t->thread,NULL,fake_worker_run,t)); }
+static int kthread_stop_timeout(struct task_struct *t,unsigned long timeout,int *result) { assert(timeout);assert(!pthread_join(t->thread,NULL));*result=t->result;return 0; }
 #define READ_ONCE(x) (x)
 #define WRITE_ONCE(x,v) ((x)=(v))
 #define setup_timer_on_stack(t,fn,arg) do { (t)->function=(fn); (t)->data=(arg); } while (0)
@@ -251,7 +266,7 @@ static void destroy_timer_on_stack(struct timer_list *t) { assert(t->function); 
 '''
     anchor = 'static void m25p_shutdown('
     assert code.count(anchor) == 1
-    code = code.replace(anchor, timer_stubs + function(source('drivers/mtd/devices/m25p80.c'), 'm25p_shutdown_timeout') + '\n' + anchor)
+    code = code.replace(anchor, timer_stubs + function(source('drivers/mtd/devices/m25p80.c'), 'm25p_shutdown_worker') + '\n' + function(source('drivers/mtd/devices/m25p80.c'), 'm25p_shutdown_timeout') + '\n' + anchor)
     anchor = 'static void check_gate(void)'
     assert code.count(anchor) == 1
     code = code.replace(anchor, r'''static void *hold_nor_io(void *arg){

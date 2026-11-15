@@ -40,6 +40,12 @@ struct task_struct *kthread_create_on_cpu(int (*threadfn)(void *data),
 void kthread_bind(struct task_struct *k, unsigned int cpu);
 void kthread_bind_mask(struct task_struct *k, const struct cpumask *mask);
 int kthread_stop(struct task_struct *k);
+/* thread_result is required and is written only on completion. On timeout
+ * the caller receives one task reference and must retain it until the
+ * thread and all objects it can touch are safely retired. The caller must
+ * hold a valid task pointer and serialize concurrent stop operations. */
+int kthread_stop_timeout(struct task_struct *k, unsigned long timeout,
+			 int *thread_result);
 bool kthread_should_stop(void);
 bool kthread_should_park(void);
 bool kthread_freezable_should_stop(bool *was_frozen);

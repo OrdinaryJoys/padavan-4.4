@@ -25,6 +25,9 @@
 #include <linux/reboot_guard.h>
 #include <linux/jiffies.h>
 #include <linux/timer.h>
+#include <linux/completion.h>
+#include <linux/kthread.h>
+#include <linux/sched.h>
 
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
@@ -324,6 +327,24 @@ struct m25p_shutdown_watch {
 	bool expired;
 };
 
+struct m25p_shutdown_work {
+	struct completion *done;
+	struct completion *release;
+	struct spi_nor *nor;
+	int result;
+};
+
+static int m25p_shutdown_worker(void *data)
+{
+	struct m25p_shutdown_work *work = data;
+
+	work->result = spi_nor_restore(work->nor);
+	complete(work->done);
+	/* The coordinator keeps the stack alive until this worker is joined. */
+	wait_for_completion(work->release);
+	return 0;
+}
+
 static void m25p_shutdown_timeout(unsigned long data)
 {
 	struct m25p_shutdown_watch *watch = (void *)data;
@@ -339,15 +360,43 @@ static void m25p_shutdown(struct spi_device *spi)
 	int ret;
 #ifdef CONFIG_K2P_RESET_GUARD
 	struct m25p_shutdown_watch watch;
+	struct m25p_shutdown_work work;
+	struct task_struct *worker;
+	DECLARE_COMPLETION_ONSTACK(done);
+	DECLARE_COMPLETION_ONSTACK(release);
+	int worker_result;
 
 	watch.nor = &flash->spi_nor;
 	watch.expired = false;
 	setup_timer_on_stack(&watch.timer, m25p_shutdown_timeout,
 			     (unsigned long)&watch);
 	mod_timer(&watch.timer, jiffies + 120UL * HZ);
-#endif
-	ret = spi_nor_restore(&flash->spi_nor);
-#ifdef CONFIG_K2P_RESET_GUARD
+	work.nor = &flash->spi_nor;
+	work.done = &done;
+	work.release = &release;
+	worker = kthread_create(m25p_shutdown_worker, &work, "m25p-shutdown");
+	if (IS_ERR(worker)) {
+		reboot_guard_fail(&flash->spi_nor.reset_device, REBOOT_DMA_UNKNOWN);
+		goto stalled;
+	}
+	/* Take ownership before waking: the worker may otherwise exit first. */
+	get_task_struct(worker);
+	wake_up_process(worker);
+	if (!wait_for_completion_timeout(&done, 100UL * HZ)) {
+		reboot_guard_fail(&flash->spi_nor.reset_device, REBOOT_DMA_UNKNOWN);
+		goto stalled;
+	}
+	ret = work.result;
+	complete(&release);
+	if (kthread_stop_timeout(worker, 10UL * HZ, &worker_result)) {
+		reboot_guard_fail(&flash->spi_nor.reset_device, REBOOT_DMA_UNKNOWN);
+		goto stalled;
+	}
+	put_task_struct(worker);
+	if (worker_result) {
+		reboot_guard_fail(&flash->spi_nor.reset_device, REBOOT_DMA_UNKNOWN);
+		goto stalled;
+	}
 	del_timer_sync(&watch.timer);
 	destroy_timer_on_stack(&watch.timer);
 	if (READ_ONCE(watch.expired)) {
@@ -355,6 +404,8 @@ static void m25p_shutdown(struct spi_device *spi)
 		reboot_dma_failure_check(true);
 		return;
 	}
+#else
+	ret = spi_nor_restore(&flash->spi_nor);
 #endif
 
 	if (ret) {
@@ -364,6 +415,15 @@ static void m25p_shutdown(struct spi_device *spi)
 #endif
 		dev_err(&spi->dev, "flash address restore failed (%d); restart blocked\n", ret);
 	}
+#ifdef CONFIG_K2P_RESET_GUARD
+	return;
+
+stalled:
+	/* Keep the worker, its SPI request, flash and this stack alive. */
+	del_timer_sync(&watch.timer);
+	destroy_timer_on_stack(&watch.timer);
+	reboot_dma_failure_check(true);
+#endif
 }
 
 /*
