@@ -22,6 +22,9 @@
 #include <linux/device.h>
 #include <linux/slab.h>
 #include <linux/reboot.h>
+#include <linux/reboot_guard.h>
+#include <linux/jiffies.h>
+#include <linux/timer.h>
 
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
@@ -312,10 +315,47 @@ static int m25p_remove(struct spi_device *spi)
 	return ret;
 }
 
+#ifdef CONFIG_K2P_RESET_GUARD
+/* Do not cancel a possibly owned synchronous SPI message. The timer merely
+ * publishes failure while the shutdown stack and device remain in place. */
+struct m25p_shutdown_watch {
+	struct timer_list timer;
+	struct spi_nor *nor;
+	bool expired;
+};
+
+static void m25p_shutdown_timeout(unsigned long data)
+{
+	struct m25p_shutdown_watch *watch = (void *)data;
+
+	reboot_guard_fail(&watch->nor->reset_device, REBOOT_DMA_UNKNOWN);
+	WRITE_ONCE(watch->expired, true);
+}
+#endif
+
 static void m25p_shutdown(struct spi_device *spi)
 {
 	struct m25p	*flash = spi_get_drvdata(spi);
-	int ret = spi_nor_restore(&flash->spi_nor);
+	int ret;
+#ifdef CONFIG_K2P_RESET_GUARD
+	struct m25p_shutdown_watch watch;
+
+	watch.nor = &flash->spi_nor;
+	watch.expired = false;
+	setup_timer_on_stack(&watch.timer, m25p_shutdown_timeout,
+			     (unsigned long)&watch);
+	mod_timer(&watch.timer, jiffies + 120UL * HZ);
+#endif
+	ret = spi_nor_restore(&flash->spi_nor);
+#ifdef CONFIG_K2P_RESET_GUARD
+	del_timer_sync(&watch.timer);
+	destroy_timer_on_stack(&watch.timer);
+	if (READ_ONCE(watch.expired)) {
+		/* A late completion does not revoke an already published failure. */
+		reboot_dma_failure_check(true);
+		return;
+	}
+#endif
 
 	if (ret) {
 		/* device_shutdown has no return status: latch the terminal gate. */

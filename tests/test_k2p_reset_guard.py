@@ -239,6 +239,19 @@ static int m25p_probe(''')
                         "mutex_init(&n->lock); assert(!reboot_guard_begin(&n->reset_device, REBOOT_GUARD_FLASH_DEVICE));")
     code = code.replace("if(!thread_read)spi_nor_unlock_and_unprep(n,SPI_NOR_OPS_READ);",
                         "if(!thread_read){spi_nor_settle_error(n,0);spi_nor_unlock_and_unprep(n,SPI_NOR_OPS_READ);}")
+    timer_stubs = r'''
+struct timer_list { void (*function)(unsigned long); unsigned long data; };
+struct m25p_shutdown_watch { struct timer_list timer; struct spi_nor *nor; bool expired; };
+#define READ_ONCE(x) (x)
+#define WRITE_ONCE(x,v) ((x)=(v))
+#define setup_timer_on_stack(t,fn,arg) do { (t)->function=(fn); (t)->data=(arg); } while (0)
+static void mod_timer(struct timer_list *t, unsigned long until) { assert(t->function && until); }
+static void del_timer_sync(struct timer_list *t) { assert(t->function); }
+static void destroy_timer_on_stack(struct timer_list *t) { assert(t->function); }
+'''
+    anchor = 'static void m25p_shutdown('
+    assert code.count(anchor) == 1
+    code = code.replace(anchor, timer_stubs + function(source('drivers/mtd/devices/m25p80.c'), 'm25p_shutdown_timeout') + '\n' + anchor)
     anchor = 'static void check_gate(void)'
     assert code.count(anchor) == 1
     code = code.replace(anchor, r'''static void *hold_nor_io(void *arg){

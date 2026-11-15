@@ -3301,14 +3301,16 @@ void ei_ioc_setting(struct platform_device *pdev, struct END_DEVICE *ei_local)
 	}
 }
 
-void fe_chip_name_config(struct END_DEVICE *ei_local, struct platform_device *pdev)
+static int fe_chip_name_config(struct END_DEVICE *ei_local, struct platform_device *pdev)
 {
 	const char *pm;
 	int ret;
 
 	ret = of_property_read_string(pdev->dev.of_node, "compatible", &pm);
+	if (ret)
+		return ret;
 
-	if (!ret && !strcasecmp(pm, "mediatek,mt7621-eth")) {
+	if (!strcasecmp(pm, "mediatek,mt7621-eth")) {
 		ei_local->chip_name = MT7621_FE;
 		pr_info("CHIP_ID = MT7621\n");
 	} else if (!strcasecmp(pm, "mediatek,mt7622-raeth")) {
@@ -3322,7 +3324,9 @@ void fe_chip_name_config(struct END_DEVICE *ei_local, struct platform_device *pd
 		pr_info("CHIP_ID = LEOPARD_FE\n");
 	} else {
 		pr_info("CHIP_ID error\n");
+		return -ENODEV;
 	}
+	return 0;
 }
 
 void raeth_set_wol(bool enable)
@@ -3659,7 +3663,9 @@ static int rather_probe(struct platform_device *pdev)
 	ei_local->netdev = netdev;
 	fe_features_config(ei_local);
 	fe_architecture_config(ei_local);
-	fe_chip_name_config(ei_local, pdev);
+	ret = fe_chip_name_config(ei_local, pdev);
+	if (ret)
+		goto err_free_dev;
 	raeth_arch_setting(ei_local, pdev);
 	ret = fe_tx_rx_dec(ei_local, pdev);
 	if (ret)
