@@ -2722,7 +2722,7 @@ void fe_set_sw_lro_my_ip(char *lan_ip_addr)
 
 int ei_open(struct net_device *dev)
 {
-	int err;
+	int err, stop_err, thread_result;
 	struct END_DEVICE *ei_local;
 
 	ei_local = netdev_priv(dev);
@@ -2845,11 +2845,17 @@ int ei_open(struct net_device *dev)
 fail_dma:
 	/* No DMA enable occurs until all fallible open stages have succeeded. */
 	if (ei_local->kreset_task) {
-		kthread_stop(ei_local->kreset_task);
+		stop_err = kthread_stop_timeout(ei_local->kreset_task, 10UL * HZ,
+					   &thread_result);
+		if (stop_err)
+			goto thread_stalled;
 		ei_local->kreset_task = NULL;
 	}
 	if (ei_local->kphy_poll_task) {
-		kthread_stop(ei_local->kphy_poll_task);
+		stop_err = kthread_stop_timeout(ei_local->kphy_poll_task, 10UL * HZ,
+					   &thread_result);
+		if (stop_err)
+			goto thread_stalled;
 		ei_local->kphy_poll_task = NULL;
 	}
 	ei_deinit_dma(dev);
@@ -2863,12 +2869,20 @@ fail_module:
 		module_put(THIS_MODULE);
 	}
 	return err;
+
+thread_stalled:
+	/* Neither ndo_stop nor platform remove errors prevent core teardown.
+	 * Retain the live task and every dependent owner; do not return. */
+	WRITE_ONCE(ei_local->dma_quarantined, true);
+	reboot_dma_failure_report(REBOOT_DMA_RAETH);
+	reboot_dma_failure_check(true);
+	return -ETIMEDOUT;
 }
 
 int ei_close(struct net_device *dev)
 {
 	struct END_DEVICE *ei_local = netdev_priv(dev);
-	int err;
+	int err, thread_result;
 
 	if (ei_local->dma_quarantined)
 		return -EBUSY;
@@ -2882,11 +2896,17 @@ int ei_close(struct net_device *dev)
 		virtualif_close(ei_local->pseudo_dev);
 	}
 	if (ei_local->kreset_task) {
-		kthread_stop(ei_local->kreset_task);
+		err = kthread_stop_timeout(ei_local->kreset_task, 10UL * HZ,
+					   &thread_result);
+		if (err)
+			goto thread_stalled;
 		ei_local->kreset_task = NULL;
 	}
 	if (ei_local->kphy_poll_task) {
-		kthread_stop(ei_local->kphy_poll_task);
+		err = kthread_stop_timeout(ei_local->kphy_poll_task, 10UL * HZ,
+					   &thread_result);
+		if (err)
+			goto thread_stalled;
 		ei_local->kphy_poll_task = NULL;
 	}
 	/* Mask and synchronize IRQ/BH users before the final idle observation. */
@@ -2904,6 +2924,14 @@ int ei_close(struct net_device *dev)
 	ei_local->module_reserved = false;
 	module_put(THIS_MODULE);
 	return 0;
+
+thread_stalled:
+	/* Neither ndo_stop nor platform remove errors prevent core teardown.
+	 * Retain the live task and every dependent owner; do not return. */
+	WRITE_ONCE(ei_local->dma_quarantined, true);
+	reboot_dma_failure_report(REBOOT_DMA_RAETH);
+	reboot_dma_failure_check(true);
+	return -ETIMEDOUT;
 }
 
 static int ei_start_xmit_fake(struct sk_buff *skb, struct net_device *dev)
@@ -3852,7 +3880,7 @@ static int raether_remove(struct platform_device *pdev)
 	struct END_DEVICE *ei_local;
 	struct net_device *pseudo;
 	bool was_quarantined, foreign_users;
-	int err;
+	int err, thread_result;
 
 	if (!dev)
 		return 0;
@@ -3880,11 +3908,17 @@ static int raether_remove(struct platform_device *pdev)
 	if (pseudo)
 		netif_tx_disable(pseudo);
 	if (ei_local->kreset_task) {
-		kthread_stop(ei_local->kreset_task);
+		err = kthread_stop_timeout(ei_local->kreset_task, 10UL * HZ,
+					   &thread_result);
+		if (err)
+			goto thread_stalled;
 		ei_local->kreset_task = NULL;
 	}
 	if (ei_local->kphy_poll_task) {
-		kthread_stop(ei_local->kphy_poll_task);
+		err = kthread_stop_timeout(ei_local->kphy_poll_task, 10UL * HZ,
+					   &thread_result);
+		if (err)
+			goto thread_stalled;
 		ei_local->kphy_poll_task = NULL;
 	}
 	fe_int_disable(dev);
@@ -3931,6 +3965,14 @@ static int raether_remove(struct platform_device *pdev)
 	module_put(THIS_MODULE);
 	free_netdev(dev);
 	return 0;
+
+thread_stalled:
+	/* Neither ndo_stop nor platform remove errors prevent core teardown.
+	 * Retain the live task and every dependent owner; do not return. */
+	WRITE_ONCE(ei_local->dma_quarantined, true);
+	reboot_dma_failure_report(REBOOT_DMA_RAETH);
+	reboot_dma_failure_check(true);
+	return -ETIMEDOUT;
 }
 
 #ifdef CONFIG_K2P_RESET_GUARD

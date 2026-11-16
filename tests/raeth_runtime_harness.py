@@ -978,6 +978,7 @@ PREFIX = ('/* Inert seams include optional-profile stubs and production signed l
  '#define unlikely(x) (x)\n'
  '#define READ_ONCE(x) (x)\n'
  '#define WRITE_ONCE(x,v) ((x)=(v))\n'
+ '#define HZ 100UL\n'
  '#define pr_err(...) do {} while(0)\n'
  '#define pr_info(...) do {} while(0)\n'
  '#define pr_warn(...) do {} while(0)\n'
@@ -1086,7 +1087,7 @@ PREFIX = ('/* Inert seams include optional-profile stubs and production signed l
  'static void *kthread_create(int (*f)(void *),void *d,const char *n) {(void)f;(void)d;(void)n;return (void '
  '*)1;}\n'
  'static void wake_up_process(void *p) {(void)p;}\n'
- 'static void kthread_stop(void *p) {(void)p;}\n'
+ 'static int kthread_stop_timeout(void *p, unsigned long timeout, int *out) {(void)p;(void)timeout;*out=0;return 0;}\n'
  'static int fe_reset_thread(void *d) {(void)d;return 0;}\n'
  'static int phy_polling_thread(void *d) {(void)d;return 0;}\n'
  'static void netif_start_queue(struct net_device *d) {(void)d;queue_started=1;}\n'
@@ -1268,7 +1269,7 @@ PREFIX = ('/* Inert seams include optional-profile stubs and production signed l
  '\n'
  '#define CONFIG_RAETH_ESW_CONTROL 1\n'
  'static int fail_esw_post;\n'
- 'static int esw_ioctl_init_post(void) { return fail_esw_post; }\n' '\n/* Core restart API recorder; old owner/event observations stay unchanged. */\n#define REBOOT_DMA_RAETH (1U << 0)\n#define REBOOT_DMA_MT7615 (1U << 1)\nstatic unsigned int restart_failure_reports;\nstatic void reboot_dma_failure_report(unsigned int reasons) { restart_failure_reports |= reasons; }\n')
+ 'static int esw_ioctl_init_post(void) { return fail_esw_post; }\n' '\n/* Core restart API recorder; old owner/event observations stay unchanged. */\n#define REBOOT_DMA_RAETH (1U << 0)\n#define REBOOT_DMA_MT7615 (1U << 1)\nstatic unsigned int restart_failure_reports;\nstatic void reboot_dma_failure_report(unsigned int reasons) { restart_failure_reports |= reasons; }\nstatic void reboot_dma_failure_check(bool sleep) { (void)sleep; abort(); }\n')
 
 SUFFIX = ('\n'
  'int main(int argc,char **argv) {\n'
